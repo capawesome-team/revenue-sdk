@@ -79,13 +79,14 @@ switch (error.code) {
 Both are frequently raised **before any HTTP request is made**:
 
 - **`validation`** — an empty `id`, an empty `items` array, an empty `items[].product`, a `quantity`
-  that isn't a positive integer, an empty `customerId` or `eventName` on `usage.report`, or a usage
-  `value` — or any numeric `metadata` entry — that isn't a finite number.
+  that isn't a positive integer, an empty `customerId` or `eventName` on `usage.report`, a usage
+  `value` — or any numeric `metadata` entry — that isn't a finite number, or a
+  `licenseKeys.update({ activationLimit })` that is neither `null` nor a positive integer.
 - **`unsupported`** — capability gating: `successUrl` on Paddle, `returnUrl` on Lemon Squeezy or
   Paddle, `customerId` on a Lemon Squeezy subscription list, `reason`/`comment` on a provider without
   `cancellationReason`, `uncancel`/`endTrial`/`pause`/`resume`/`revoke` where unsupported, `usage.report`
-  on Lemon Squeezy or Paddle, a `behavior` outside `capabilities.pauseBehaviors`, and a
-  `prorationBehavior` outside `capabilities.prorationBehaviors`.
+  on Lemon Squeezy or Paddle, all four `licenseKeys` methods on Stripe or Paddle, a `behavior` outside
+  `capabilities.pauseBehaviors`, and a `prorationBehavior` outside `capabilities.prorationBehaviors`.
 
 Adapters raise `unsupported` for the finer-grained cases the capability object can't express — a Polar
 checkout with `quantity > 1`, a Lemon Squeezy checkout with more than one item, and so on.

@@ -27,6 +27,7 @@ client.customers; // get / list / listAll
 client.subscriptions; // get / list / listAll / cancel / uncancel / changePlan / endTrial / pause / resume / revoke
 client.customerPortal; // createSession
 client.usage; // report
+client.licenseKeys; // list / listAll / get / update
 ```
 
 The client also exposes two read-only fields derived from the provider:
@@ -98,6 +99,24 @@ const provider = dodoPayments({
 
 Every factory also accepts an optional `baseUrl` (used verbatim, overriding `server`) and an injectable
 `fetch`. See the [provider pages](/docs/providers/polar) for the complete option tables.
+
+## Standalone subpath exports
+
+Not everything needs a client. Each provider subpath also exports plain functions that take their own
+inputs and are used on their own:
+
+- `verifyWebhook` and `parseWebhookEvent` — a webhook handler holds a signing secret, not an API key,
+  and often runs in a different process than the client. See [Webhooks](/docs/concepts/webhooks).
+- `validateLicenseKey`, `activateLicenseKey`, `deactivateLicenseKey` on `revenue-sdk/polar`,
+  `revenue-sdk/lemon-squeezy`, and `revenue-sdk/dodo-payments` — these take **no credential at all** and
+  are meant to run inside the app you ship. See [License keys](/docs/concepts/license-keys).
+
+```ts
+import { validateLicenseKey, verifyWebhook } from 'revenue-sdk/polar';
+```
+
+Merchant-side license-key management does need the credential and stays on the client, as
+`client.licenseKeys`.
 
 ## Thin adapter, fat client
 

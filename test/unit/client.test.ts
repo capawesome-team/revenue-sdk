@@ -9,6 +9,7 @@ const ALL_CAPABILITIES: RevenueCapabilities = {
   checkoutSuccessUrl: true,
   endTrial: true,
   hostedCheckout: true,
+  licenseKeys: true,
   listSubscriptionsByCustomer: true,
   pause: true,
   pauseBehaviors: ['immediately', 'period_end'],
@@ -47,6 +48,9 @@ function fakeProvider(
     revokeSubscription: notImplemented,
     createCustomerPortalSession: notImplemented,
     reportUsage: notImplemented,
+    listLicenseKeys: notImplemented,
+    getLicenseKey: notImplemented,
+    updateLicenseKey: notImplemented,
     ...overrides,
   };
 }
@@ -154,6 +158,27 @@ describe('createClient', () => {
       expect(reportUsage).toHaveBeenCalledOnce();
     });
 
+    it('rejects an invalid license-key activation limit', async () => {
+      const updateLicenseKey = vi.fn();
+      const client = createClient({ provider: fakeProvider({ updateLicenseKey }) });
+      await expectRevenueError(
+        client.licenseKeys.update({ id: 'lk1', activationLimit: 0 }),
+        'validation',
+      );
+      await expectRevenueError(
+        client.licenseKeys.update({ id: 'lk1', activationLimit: 1.5 }),
+        'validation',
+      );
+      expect(updateLicenseKey).not.toHaveBeenCalled();
+    });
+
+    it('allows a null activation limit to clear it', async () => {
+      const updateLicenseKey = vi.fn().mockResolvedValue({ id: 'lk1' });
+      const client = createClient({ provider: fakeProvider({ updateLicenseKey }) });
+      await client.licenseKeys.update({ id: 'lk1', activationLimit: null });
+      expect(updateLicenseKey).toHaveBeenCalledOnce();
+    });
+
     it('rejects an empty plan-change product', async () => {
       const client = createClient({ provider: fakeProvider() });
       await expectRevenueError(
@@ -255,6 +280,28 @@ describe('createClient', () => {
         'unsupported',
       );
       expect(reportUsage).not.toHaveBeenCalled();
+    });
+
+    it('rejects every license-key operation when unsupported', async () => {
+      const listLicenseKeys = vi.fn();
+      const client = createClient({
+        provider: fakeProvider({ listLicenseKeys }, { licenseKeys: false }),
+      });
+      await expectRevenueError(client.licenseKeys.list(), 'unsupported');
+      await expectRevenueError(client.licenseKeys.get({ id: 'lk1' }), 'unsupported');
+      await expectRevenueError(
+        client.licenseKeys.update({ id: 'lk1', disabled: true }),
+        'unsupported',
+      );
+      await expectRevenueError(
+        (async () => {
+          for await (const key of client.licenseKeys.listAll()) {
+            void key;
+          }
+        })(),
+        'unsupported',
+      );
+      expect(listLicenseKeys).not.toHaveBeenCalled();
     });
 
     it('rejects a portal return URL when unsupported', async () => {

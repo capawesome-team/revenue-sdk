@@ -11,9 +11,12 @@ import type {
   EndSubscriptionTrialParams,
   GetCheckoutParams,
   GetCustomerParams,
+  GetLicenseKeyParams,
   GetProductParams,
   GetSubscriptionParams,
+  LicenseKey,
   ListCustomersParams,
+  ListLicenseKeysParams,
   ListProductsParams,
   ListSubscriptionsParams,
   Page,
@@ -27,6 +30,7 @@ import type {
   RevokeSubscriptionParams,
   Subscription,
   UncancelSubscriptionParams,
+  UpdateLicenseKeyParams,
 } from './types.ts';
 
 const DEFAULT_MAX_RETRY_AFTER_SECONDS = 10;
@@ -79,6 +83,12 @@ export interface RevenueClient {
   usage: {
     report(params: ReportUsageParams): Promise<void>;
   };
+  licenseKeys: {
+    list(params?: ListLicenseKeysParams): Promise<Page<LicenseKey>>;
+    listAll(params?: Omit<ListLicenseKeysParams, 'cursor'>): AsyncGenerator<LicenseKey, void>;
+    get(params: GetLicenseKeyParams): Promise<LicenseKey>;
+    update(params: UpdateLicenseKeyParams): Promise<LicenseKey>;
+  };
 }
 
 function sleep(seconds: number): Promise<void> {
@@ -113,6 +123,18 @@ export function createClient(options: CreateClientOptions): RevenueClient {
   function checkQuantity(quantity: number | undefined): void {
     if (quantity !== undefined && (!Number.isInteger(quantity) || quantity < 1)) {
       fail('validation', 'The quantity parameter must be a positive integer');
+    }
+  }
+
+  function requireLicenseKeys(): void {
+    if (!provider.capabilities.licenseKeys) {
+      fail('unsupported', `${provider.name} does not support license keys`);
+    }
+  }
+
+  function checkActivationLimit(limit: number | null | undefined): void {
+    if (limit !== null && limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+      fail('validation', 'The activationLimit parameter must be a positive integer or null');
     }
   }
 
@@ -304,6 +326,28 @@ export function createClient(options: CreateClientOptions): RevenueClient {
         // Deliberately not wrapped in `withRetry`: a replayed usage event is only deduplicated
         // when `idempotencyKey` is set, so an automatic retry would over-bill the customer.
         return provider.reportUsage(params);
+      },
+    },
+
+    licenseKeys: {
+      list: async (params = {}) => {
+        requireLicenseKeys();
+        return withRetry(() => provider.listLicenseKeys(params));
+      },
+      listAll: (params = {}) => {
+        requireLicenseKeys();
+        return listAllOf(params, (p) => provider.listLicenseKeys(p));
+      },
+      get: async (params) => {
+        requireNonEmpty(params.id, 'id');
+        requireLicenseKeys();
+        return withRetry(() => provider.getLicenseKey(params));
+      },
+      update: async (params) => {
+        requireNonEmpty(params.id, 'id');
+        checkActivationLimit(params.activationLimit);
+        requireLicenseKeys();
+        return withRetry(() => provider.updateLicenseKey(params));
       },
     },
   };

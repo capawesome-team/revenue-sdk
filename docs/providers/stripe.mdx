@@ -88,6 +88,7 @@ Events worth subscribing to: `customer.subscription.created`, `customer.subscrip
 | `checkoutSuccessUrl`          | `true`                                 |
 | `endTrial`                    | `true`                                 |
 | `hostedCheckout`              | `true`                                 |
+| `licenseKeys`                 | `false`                                |
 | `listSubscriptionsByCustomer` | `true`                                 |
 | `pause`                       | `true`                                 |
 | `pauseBehaviors`              | `['immediately']`                      |
@@ -142,6 +143,12 @@ Events worth subscribing to: `customer.subscription.created`, `customer.subscrip
   with custom keys needs them passed through `metadata`. A usage `timestamp` may be at most 35 calendar
   days old and 5 minutes ahead. The endpoint allows 1,000 events per second, but only **one concurrent
   call per customer per meter** — parallelize across customers, not within one.
+- **No license keys.** Stripe has no license-key API at all, so `licenseKeys` is `false` and all four
+  `client.licenseKeys` methods throw `unsupported`. Billing Entitlements is not a substitute: it is a
+  derived per-customer feature boolean with no key string, no activation count, and no device identity —
+  and `GET /v1/entitlements/active_entitlements` is secret-key-only (`CustomerSessions` has no
+  `entitlements` component), so a shipped app cannot check its own license. See
+  [License keys](/docs/concepts/license-keys).
 - **No `Retry-After` on 429.** Stripe signals retryability with `Stripe-Should-Retry`, so
   `RevenueError.retryAfter` is usually `undefined` and the client's bounded retry does not engage. Use
   your own back-off.

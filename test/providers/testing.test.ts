@@ -129,6 +129,74 @@ describe('createInMemoryProvider', () => {
     ]);
   });
 
+  it('seeds, paginates, and reads license keys', async () => {
+    const provider = createInMemoryProvider({
+      licenseKeys: [
+        { id: 'lk-1', key: 'AAAA-BBBB', customerId: 'customer-1', activationLimit: 3 },
+        { id: 'lk-2' },
+        { id: 'lk-3', status: 'expired' },
+      ],
+    });
+    const first = await provider.listLicenseKeys({});
+    expect(first.items.map((item) => item.id)).toEqual(['lk-1', 'lk-2']);
+    expect(first.cursor).toBeDefined();
+    const second = await provider.listLicenseKeys({ cursor: first.cursor });
+    expect(second.items.map((item) => item.id)).toEqual(['lk-3']);
+    expect(second.cursor).toBeUndefined();
+
+    await expect(provider.getLicenseKey({ id: 'lk-1' })).resolves.toMatchObject({
+      key: 'AAAA-BBBB',
+      status: 'active',
+      activationLimit: 3,
+      customerId: 'customer-1',
+    });
+    // An omitted `key` falls back to the id, and `status` defaults to active.
+    await expect(provider.getLicenseKey({ id: 'lk-2' })).resolves.toMatchObject({
+      key: 'lk-2',
+      status: 'active',
+    });
+    await expect(provider.getLicenseKey({ id: 'missing' })).rejects.toMatchObject({
+      code: 'not_found',
+    });
+  });
+
+  it('updates license keys and clears limits and expiries with null', async () => {
+    const expiresAt = new Date('2027-01-01T00:00:00Z');
+    const provider = createInMemoryProvider({
+      licenseKeys: [{ id: 'lk-1', activationLimit: 3, expiresAt }],
+    });
+
+    const disabled = await provider.updateLicenseKey({ id: 'lk-1', disabled: true });
+    expect(disabled.status).toBe('disabled');
+    expect(provider.state.licenseKeys[0]!.status).toBe('disabled');
+
+    const updated = await provider.updateLicenseKey({
+      id: 'lk-1',
+      disabled: false,
+      activationLimit: 10,
+      expiresAt: new Date('2028-01-01T00:00:00Z'),
+    });
+    expect(updated).toMatchObject({
+      status: 'active',
+      activationLimit: 10,
+      expiresAt: new Date('2028-01-01T00:00:00Z'),
+    });
+
+    const cleared = await provider.updateLicenseKey({
+      id: 'lk-1',
+      activationLimit: null,
+      expiresAt: null,
+    });
+    expect(cleared.activationLimit).toBeUndefined();
+    expect(cleared.expiresAt).toBeUndefined();
+    // An omitted field leaves the current value alone.
+    expect(cleared.status).toBe('active');
+
+    await expect(provider.updateLicenseKey({ id: 'missing' })).rejects.toMatchObject({
+      code: 'not_found',
+    });
+  });
+
   it('throws not_found for unknown resources', async () => {
     const provider = createInMemoryProvider();
     await expect(provider.getSubscription({ id: 'missing' })).rejects.toMatchObject({

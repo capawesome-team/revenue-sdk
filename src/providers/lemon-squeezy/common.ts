@@ -2,6 +2,9 @@ import type {
   BillingInterval,
   Checkout,
   Customer,
+  LicenseKey,
+  LicenseKeyActivation,
+  LicenseKeyStatus,
   Metadata,
   Order,
   Price,
@@ -11,6 +14,8 @@ import type {
   SubscriptionStatus,
 } from '../../types.ts';
 import { toDate, toMetadata } from '../shared.ts';
+
+export const BASE_URL = 'https://api.lemonsqueezy.com';
 
 export interface LsResource<A> {
   type: string;
@@ -109,6 +114,41 @@ export interface LsSubscriptionInvoiceAttributes {
   user_email?: string | null;
   currency?: string | null;
   total?: number | null;
+}
+
+export interface LsLicenseKeyAttributes {
+  key: string;
+  status: string;
+  activation_limit?: number | null;
+  instances_count?: number;
+  expires_at?: string | null;
+  customer_id?: number | null;
+  // Documented as a boolean but typed as a number in the official SDK, so any truthy value counts.
+  disabled?: boolean | number;
+}
+
+/** The flat license object of the public license API — not a JSON:API resource. */
+export interface LsLicense {
+  id: number;
+  key: string;
+  status: string;
+  activation_limit?: number | null;
+  activation_usage?: number;
+  expires_at?: string | null;
+}
+
+/** The ownership context of a public license API response; callers must assert it themselves. */
+export interface LsLicenseMeta {
+  store_id: number;
+  product_id: number;
+  variant_id: number;
+  customer_id: number;
+}
+
+export interface LsLicenseInstance {
+  id: string;
+  name?: string | null;
+  created_at?: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -291,5 +331,63 @@ export function toOrderFromInvoice(resource: LsResource<LsSubscriptionInvoiceAtt
         ? undefined
         : String(attributes.subscription_id),
     raw: resource,
+  };
+}
+
+function toLicenseKeyStatus(status: string, disabled?: boolean | number): LicenseKeyStatus {
+  if (disabled) {
+    return 'disabled';
+  }
+  switch (status) {
+    case 'disabled':
+      return 'disabled';
+    case 'expired':
+      return 'expired';
+    // `inactive` only means "never activated", which is still a usable key.
+    default:
+      return 'active';
+  }
+}
+
+export function toLicenseKey(resource: LsResource<LsLicenseKeyAttributes>): LicenseKey {
+  const attributes = resource.attributes;
+  return {
+    id: String(resource.id),
+    key: attributes.key,
+    status: toLicenseKeyStatus(attributes.status, attributes.disabled),
+    activationLimit: attributes.activation_limit ?? undefined,
+    activationCount: attributes.instances_count,
+    expiresAt: toDate(attributes.expires_at),
+    customerId:
+      attributes.customer_id === null || attributes.customer_id === undefined
+        ? undefined
+        : String(attributes.customer_id),
+    // `product_id` names the Lemon Squeezy PRODUCT, while the unified `Product` is a variant —
+    // there is no id here that `products.get` would accept, so none is reported.
+    raw: resource,
+  };
+}
+
+export function toLicenseKeyFromLicense(license: LsLicense, meta: LsLicenseMeta): LicenseKey {
+  return {
+    id: String(license.id),
+    key: license.key,
+    status: toLicenseKeyStatus(license.status),
+    activationLimit: license.activation_limit ?? undefined,
+    activationCount: license.activation_usage,
+    expiresAt: toDate(license.expires_at),
+    customerId: String(meta.customer_id),
+    // The unified `Product` is a Lemon Squeezy variant.
+    productId: String(meta.variant_id),
+    raw: license,
+  };
+}
+
+export function toLicenseKeyActivation(instance: LsLicenseInstance): LicenseKeyActivation {
+  return {
+    id: instance.id,
+    label: instance.name ?? undefined,
+    createdAt: toDate(instance.created_at),
+    raw: instance,
   };
 }

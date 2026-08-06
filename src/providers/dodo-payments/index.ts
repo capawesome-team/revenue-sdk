@@ -1,24 +1,26 @@
 import { RevenueError } from '../../errors.ts';
-import { HttpClient, type ProviderErrorInfo } from '../../http.ts';
+import { HttpClient } from '../../http.ts';
 import { clampLimit, decodeCursor, encodeCursor } from '../../pagination.ts';
 import type { ProrationBehavior, RevenueCapabilities, RevenueProvider } from '../../types.ts';
 import { toUsagePayload } from '../shared.ts';
 import {
+  mapError,
+  toBaseUrl,
   toCheckoutFromSession,
   toCheckoutFromStatus,
   toCustomer,
+  toLicenseKey,
   toProduct,
   toSubscription,
   type DodoCheckoutSession,
   type DodoCheckoutSessionStatus,
   type DodoCustomer,
+  type DodoLicenseKey,
   type DodoListResponse,
   type DodoProduct,
   type DodoSubscription,
 } from './common.ts';
 
-const LIVE_BASE_URL = 'https://live.dodopayments.com';
-const TEST_BASE_URL = 'https://test.dodopayments.com';
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 100;
 
@@ -29,6 +31,7 @@ const CAPABILITIES: RevenueCapabilities = {
   // Dodo has no end-trial operation.
   endTrial: false,
   hostedCheckout: true,
+  licenseKeys: true,
   listSubscriptionsByCustomer: true,
   // Dodo has no pause/resume endpoint and no paused subscription status.
   pause: false,
@@ -54,17 +57,6 @@ interface PageCursorState {
   page: number;
 }
 
-function mapError(status: number, body: unknown): ProviderErrorInfo {
-  if (body === null || typeof body !== 'object') {
-    return {};
-  }
-  const { code, message } = body as { code?: unknown; message?: unknown };
-  if (typeof message === 'string') {
-    return { message: typeof code === 'string' ? `${code}: ${message}` : message };
-  }
-  return {};
-}
-
 function toProrationBillingMode(behavior: ProrationBehavior | undefined): string {
   switch (behavior) {
     case undefined:
@@ -81,10 +73,9 @@ function toProrationBillingMode(behavior: ProrationBehavior | undefined): string
 }
 
 export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvider {
-  const baseUrl = options.baseUrl ?? (options.server === 'test' ? TEST_BASE_URL : LIVE_BASE_URL);
   const http = new HttpClient({
     provider: 'dodo-payments',
-    baseUrl,
+    baseUrl: toBaseUrl(options),
     fetchImpl: options.fetch,
     authHeaders: () => ({ Authorization: `Bearer ${options.apiKey}` }),
     mapError,
@@ -303,6 +294,41 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
         },
         signal: params.signal,
       });
+    },
+
+    // The merchant routes are `/license_keys` (underscore); the credential-free activate,
+    // validate, and deactivate routes are `/licenses`. All three below are marked deprecated in
+    // Dodo's SDK in favour of an entitlements-based replacement, but remain functional.
+    async listLicenseKeys(params) {
+      const { page, pageSize, query } = pageQuery(params.cursor, params.limit);
+      const { data } = await http.json<DodoListResponse<DodoLicenseKey>>('/license_keys', {
+        query,
+        signal: params.signal,
+      });
+      return {
+        items: data.items.map(toLicenseKey),
+        cursor: nextCursor(page, pageSize, data.items.length),
+      };
+    },
+
+    async getLicenseKey(params) {
+      const { data } = await http.json<DodoLicenseKey>(`/license_keys/${params.id}`, {
+        signal: params.signal,
+      });
+      return toLicenseKey(data);
+    },
+
+    async updateLicenseKey(params) {
+      const { data } = await http.json<DodoLicenseKey>(`/license_keys/${params.id}`, {
+        method: 'PATCH',
+        body: {
+          activations_limit: params.activationLimit,
+          disabled: params.disabled,
+          expires_at: params.expiresAt === null ? null : params.expiresAt?.toISOString(),
+        },
+        signal: params.signal,
+      });
+      return toLicenseKey(data);
     },
   };
 }
