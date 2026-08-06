@@ -1,0 +1,23 @@
+import type { Metadata } from '../types.ts';
+
+export function toDate(value: string | null | undefined): Date | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+export function toMetadata(value: unknown): Metadata | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).filter(
+    ([, entry]) =>
+      typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean',
+  );
+  if (entries.length === 0) {
+    return undefined;
+  }
+  return Object.fromEntries(entries) as Metadata;
+}
