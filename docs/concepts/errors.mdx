@@ -78,13 +78,14 @@ switch (error.code) {
 
 Both are frequently raised **before any HTTP request is made**:
 
-- **`validation`** — an empty `id`, an empty `items` array, an empty `items[].product`, or a `quantity`
-  that isn't a positive integer.
+- **`validation`** — an empty `id`, an empty `items` array, an empty `items[].product`, a `quantity`
+  that isn't a positive integer, an empty `customerId` or `eventName` on `usage.report`, or a usage
+  `value` — or any numeric `metadata` entry — that isn't a finite number.
 - **`unsupported`** — capability gating: `successUrl` on Paddle, `returnUrl` on Lemon Squeezy or
   Paddle, `customerId` on a Lemon Squeezy subscription list, `reason`/`comment` on a provider without
-  `cancellationReason`, `uncancel`/`endTrial`/`pause`/`resume`/`revoke` where unsupported, a `behavior`
-  outside `capabilities.pauseBehaviors`, and a `prorationBehavior` outside
-  `capabilities.prorationBehaviors`.
+  `cancellationReason`, `uncancel`/`endTrial`/`pause`/`resume`/`revoke` where unsupported, `usage.report`
+  on Lemon Squeezy or Paddle, a `behavior` outside `capabilities.pauseBehaviors`, and a
+  `prorationBehavior` outside `capabilities.prorationBehaviors`.
 
 Adapters raise `unsupported` for the finer-grained cases the capability object can't express — a Polar
 checkout with `quantity > 1`, a Lemon Squeezy checkout with more than one item, and so on.
@@ -133,6 +134,12 @@ of `retryable` and `retryAfter`.
 
 The retry also applies inside `listAll`, so a rate limit hit halfway through an iteration doesn't abort
 the whole walk.
+
+:::note
+`usage.report` is the one call the retry never covers. A replayed usage event is deduplicated only when
+you passed an `idempotencyKey`, so retrying automatically could over-bill the customer — see
+[Usage-based billing](/docs/concepts/usage-based-billing).
+:::
 
 ## Secret redaction
 

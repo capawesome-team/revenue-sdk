@@ -9,4 +9,5 @@ export type {
   InMemorySeed,
   InMemoryState,
   InMemorySubscriptionSeed,
+  InMemoryUsageEvent,
 } from './providers/testing/index.ts';

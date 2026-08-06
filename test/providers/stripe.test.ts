@@ -84,6 +84,13 @@ describe('stripe', () => {
     expect(request.headers['stripe-version']).toBe('2026-07-29.dahlia');
   });
 
+  it('exposes name and capabilities', () => {
+    const { provider } = setup(() => ({ json: {} }));
+    expect(provider.name).toBe('stripe');
+    expect(provider.capabilities.hostedCheckout).toBe(true);
+    expect(provider.capabilities.usageReporting).toBe(true);
+  });
+
   describe('products', () => {
     it('lists products with their active prices', async () => {
       const { provider, stub } = setup(
@@ -125,6 +132,56 @@ describe('stripe', () => {
         request.url.includes('/v1/products?'),
       )[1]!;
       expect(secondListRequest.url).toContain('starting_after=prod_1');
+    });
+
+    async function mapPrice(price: Record<string, unknown>) {
+      const { provider } = setup(
+        routes({
+          '/v1/products/prod_1': { id: 'prod_1', name: 'Pro' },
+          '/v1/prices': { data: [price], has_more: false },
+        }),
+      );
+      const product = await provider.getProduct({ id: 'prod_1' });
+      return product.prices[0]!;
+    }
+
+    it('maps metered prices without an amount', async () => {
+      const price = await mapPrice({
+        ...RECURRING_PRICE,
+        unit_amount: 1,
+        recurring: { interval: 'month', interval_count: 1, usage_type: 'metered' },
+      });
+      expect(price).toMatchObject({ type: 'recurring', model: 'metered', amount: null });
+    });
+
+    it('maps tiered prices without an amount', async () => {
+      const price = await mapPrice({
+        ...RECURRING_PRICE,
+        unit_amount: null,
+        billing_scheme: 'tiered',
+      });
+      expect(price).toMatchObject({ type: 'recurring', model: 'tiered', amount: null });
+    });
+
+    it('maps custom-amount prices without an amount', async () => {
+      const price = await mapPrice({
+        ...RECURRING_PRICE,
+        unit_amount: null,
+        type: 'one_time',
+        recurring: null,
+        custom_unit_amount: { maximum: 10000, minimum: 100, preset: 2000 },
+      });
+      expect(price).toMatchObject({ type: 'one_time', model: 'custom', amount: null });
+    });
+
+    it('prefers metered over tiered', async () => {
+      const price = await mapPrice({
+        ...RECURRING_PRICE,
+        unit_amount: null,
+        billing_scheme: 'tiered',
+        recurring: { interval: 'month', interval_count: 1, usage_type: 'metered' },
+      });
+      expect(price.model).toBe('metered');
     });
   });
 
@@ -441,6 +498,73 @@ describe('stripe', () => {
     expect(form.get('customer')).toBe('cus_1');
     expect(form.get('return_url')).toBe('https://app.example.com/billing');
     expect(session.url).toBe('https://billing.stripe.com/p/session/test_x');
+  });
+
+  describe('reportUsage', () => {
+    const REPORTED_AT = 1754006400;
+
+    const METER_EVENT = {
+      object: 'billing.meter_event',
+      event_name: 'ai_search_api',
+      identifier: 'idmp_1',
+      payload: { stripe_customer_id: 'cus_1', value: '25' },
+      timestamp: REPORTED_AT,
+    };
+
+    function setupUsage() {
+      return setup(routes({ '/v1/billing/meter_events': METER_EVENT }));
+    }
+
+    it('posts a minimal meter event and discards the response', async () => {
+      const { provider, stub } = setupUsage();
+      const result = await provider.reportUsage({
+        customerId: 'cus_1',
+        eventName: 'ai_search_api',
+      });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('POST');
+      expect(new URL(request.url).pathname).toBe('/v1/billing/meter_events');
+      expect(request.headers['content-type']).toBe('application/x-www-form-urlencoded');
+      const form = new URLSearchParams(request.body);
+      expect(form.get('event_name')).toBe('ai_search_api');
+      expect(form.get('payload[stripe_customer_id]')).toBe('cus_1');
+      expect(form.get('payload[value]')).toBeNull();
+      expect(form.get('identifier')).toBeNull();
+      expect(form.get('timestamp')).toBeNull();
+      expect(result).toBeUndefined();
+    });
+
+    it('sends value, metadata, identifier and a unix-second timestamp', async () => {
+      const { provider, stub } = setupUsage();
+      await provider.reportUsage({
+        customerId: 'cus_1',
+        eventName: 'ai_search_api',
+        value: 25,
+        metadata: { region: 'eu', premium: true },
+        idempotencyKey: 'idmp_1',
+        timestamp: new Date(REPORTED_AT * 1000),
+      });
+      const form = new URLSearchParams(stub.requests[0]!.body);
+      expect(form.get('event_name')).toBe('ai_search_api');
+      expect(form.get('payload[stripe_customer_id]')).toBe('cus_1');
+      expect(form.get('payload[value]')).toBe('25');
+      expect(form.get('payload[region]')).toBe('eu');
+      expect(form.get('payload[premium]')).toBe('true');
+      expect(form.get('identifier')).toBe('idmp_1');
+      expect(form.get('timestamp')).toBe(String(REPORTED_AT));
+    });
+
+    it('lets an explicit value override metadata.value', async () => {
+      const { provider, stub } = setupUsage();
+      await provider.reportUsage({
+        customerId: 'cus_1',
+        eventName: 'ai_search_api',
+        value: 25,
+        metadata: { value: 1 },
+      });
+      const form = new URLSearchParams(stub.requests[0]!.body);
+      expect(form.getAll('payload[value]')).toEqual(['25']);
+    });
   });
 
   it('maps Stripe error bodies onto RevenueError', async () => {

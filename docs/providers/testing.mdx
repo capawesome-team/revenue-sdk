@@ -175,8 +175,51 @@ test('creating a checkout records it', async () => {
 ```
 
 `provider.state` is `{ products: Product[], customers: Customer[], subscriptions: Subscription[],
-checkouts: Checkout[] }`. Mutating operations write straight into it, so the seeded objects and the
-returned ones are the same instances.
+checkouts: Checkout[], usageEvents: InMemoryUsageEvent[] }`. Mutating operations write straight into it,
+so the seeded objects and the returned ones are the same instances.
+
+### Reported usage events
+
+`usage.report` appends to `state.usageEvents`, so you can assert on what your code would have billed:
+
+```ts
+test('an API call reports one unit of usage', async () => {
+  const provider = createInMemoryProvider();
+  const client = createClient({ provider });
+
+  await client.usage.report({
+    customerId: 'cus-1',
+    eventName: 'api_request',
+    value: 25,
+    metadata: { region: 'eu' },
+  });
+
+  expect(provider.state.usageEvents[0]).toEqual({
+    customerId: 'cus-1',
+    eventName: 'api_request',
+    payload: { value: 25, region: 'eu' },
+    idempotencyKey: undefined,
+    timestamp: undefined,
+  });
+});
+```
+
+<TypeTable
+  type={{
+    customerId: { type: 'string', description: 'The reported customer.' },
+    eventName: { type: 'string', description: 'The reported meter event name.' },
+    payload: {
+      type: 'Record<string, string | number | boolean>',
+      description: 'metadata with value already merged in — exactly what a real provider receives. {} when neither was given.',
+    },
+    idempotencyKey: { type: 'string', required: false, description: 'The key as passed, undefined when omitted. The in-memory provider does not deduplicate.' },
+    timestamp: { type: 'Date', required: false, description: 'The timestamp as passed, undefined when omitted.' },
+  }}
+/>
+
+The type is exported as `InMemoryUsageEvent` from `revenue-sdk/testing`. Override
+`capabilities: { usageReporting: false }` to exercise the Lemon Squeezy and Paddle fallback path — see
+[Usage-based billing](/docs/concepts/usage-based-billing).
 
 ## Behavior of the mutating operations
 
@@ -191,6 +234,7 @@ returned ones are the same instances.
 | `subscriptions.resume`        | Sets `status: 'active'`, clears `pauseAtPeriodEnd` and `resumesAt`.                |
 | `subscriptions.revoke`        | Sets `status: 'canceled'`, clears `cancelAtPeriodEnd`, and sets `endedAt`.         |
 | `customerPortal.createSession`| Returns a fake portal URL, or throws `not_found` for an unknown customer.          |
+| `usage.report`                | Appends an `InMemoryUsageEvent`; `value` is merged into `payload`.                 |
 
 Anything looked up by an ID that isn't seeded throws `RevenueError` with code `not_found`.
 

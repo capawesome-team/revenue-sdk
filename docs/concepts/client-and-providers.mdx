@@ -26,6 +26,7 @@ client.checkouts; // create / get
 client.customers; // get / list / listAll
 client.subscriptions; // get / list / listAll / cancel / uncancel / changePlan / endTrial / pause / resume / revoke
 client.customerPortal; // createSession
+client.usage; // report
 ```
 
 The client also exposes two read-only fields derived from the provider:
@@ -112,7 +113,7 @@ lives in the client, not the adapter:
     Unsupported options throw `unsupported` instead of being silently dropped.
   </Card>
   <Card title="Bounded retry" icon="refresh-cw">
-    One retry on `rate_limited` when the provider's `Retry-After` is small.
+    One retry on `rate_limited` when the provider's `Retry-After` is small — never for `usage.report`.
   </Card>
   <Card title="Pagination" icon="list">
     The `listAll` async generators follow cursors for you.
@@ -212,6 +213,10 @@ const client = createClient({
   retry: { maxRetryAfterSeconds: 10 },
 });
 ```
+
+`usage.report` is the one exception: it never retries, because a replayed usage event is deduplicated
+only when you passed an `idempotencyKey` — see
+[Usage-based billing](/docs/concepts/usage-based-billing).
 
 Anything beyond that single retry is yours to build — see [Errors](/docs/concepts/errors) for
 `retryable` and `retryAfter`.

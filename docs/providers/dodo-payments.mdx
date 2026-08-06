@@ -96,6 +96,7 @@ normalizes to `subscription.updated` (or `subscription.canceled`), so **upsert**
 | `prorationBehaviors`          | `['invoice_now', 'none']`   |
 | `revoke`                      | `true`                      |
 | `uncancel`                    | `true`                      |
+| `usageReporting`              | `true`                      |
 
 ## Quirks
 
@@ -122,6 +123,12 @@ normalizes to `subscription.updated` (or `subscription.canceled`), so **upsert**
   subscription to return its updated state — one extra request.
 - **Portal session parameters go in the query string** on a POST
   (`POST /customers/{id}/customer-portal/session?return_url=…`).
+- **Usage events require an `event_id`.** `usage.report` posts a one-event batch to `/events/ingest`,
+  and Dodo requires an `event_id` to deduplicate on. When `idempotencyKey` is omitted the SDK generates
+  a UUID — unique per attempt, so **that call is not replay-safe**. A `timestamp` may be at most **one
+  hour** old (and 5 minutes ahead), otherwise the request is rejected with `400`; you cannot backfill.
+  An unknown `customer_id` is dropped silently rather than erroring. See
+  [Usage-based billing](/docs/concepts/usage-based-billing).
 - **`checkouts.get` returns no URL.** The status endpoint omits it, so a `Checkout` read back has
   `url: ''`. Persist the URL from `checkouts.create`.
 

@@ -50,6 +50,15 @@ describe('paddle', () => {
     expect(provider.capabilities.hostedCheckout).toBe(false);
     expect(provider.capabilities.checkoutSuccessUrl).toBe(false);
     expect(provider.capabilities.cancellationReason).toBe(false);
+    expect(provider.capabilities.usageReporting).toBe(false);
+  });
+
+  it('rejects usage reporting', async () => {
+    const { provider } = setup(() => ({ json: { data: [] } }));
+    await expectRevenueError(
+      provider.reportUsage({ customerId: 'ctm_1', eventName: 'api' }),
+      'unsupported',
+    );
   });
 
   it('sends Paddle-Version and bearer auth, and uses the sandbox host', async () => {

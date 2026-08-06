@@ -128,6 +128,8 @@ export function toPrice(price: PaddlePrice): Price {
     id: price.id,
     checkoutRef: price.id,
     type: price.billing_cycle ? 'recurring' : 'one_time',
+    // Paddle has no metered or tiered pricing: a price carries only a `unit_price`, per-country
+    // `unit_price_overrides` (still fixed amounts) and `quantity` min/max bounds — never a model.
     model: 'fixed',
     amount: parseAmount(price.unit_price?.amount) ?? null,
     currency: price.unit_price?.currency_code.toLowerCase() ?? 'usd',

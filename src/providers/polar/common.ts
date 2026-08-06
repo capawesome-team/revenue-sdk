@@ -8,6 +8,7 @@ import type {
   PriceModel,
   Product,
   Subscription,
+  SubscriptionMeter,
   SubscriptionStatus,
 } from '../../types.ts';
 import { toDate, toMetadata } from '../shared.ts';
@@ -57,6 +58,14 @@ export interface PolarCustomer {
   metadata?: Record<string, unknown> | null;
 }
 
+interface PolarSubscriptionMeter {
+  meter_id: string;
+  meter: { name: string };
+  consumed_units: number;
+  credited_units: number;
+  amount: number;
+}
+
 export interface PolarSubscription {
   id: string;
   status: string;
@@ -75,6 +84,7 @@ export interface PolarSubscription {
   started_at?: string | null;
   ends_at?: string | null;
   ended_at?: string | null;
+  meters?: PolarSubscriptionMeter[] | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -201,6 +211,18 @@ function toSubscriptionStatus(status: string): SubscriptionStatus {
   }
 }
 
+function toSubscriptionMeter(meter: PolarSubscriptionMeter): SubscriptionMeter {
+  return {
+    // `meter_id` identifies the meter; the entry's own `id` is the per-subscription row.
+    id: meter.meter_id,
+    name: meter.meter.name,
+    consumedUnits: meter.consumed_units,
+    creditedUnits: meter.credited_units,
+    amount: meter.amount,
+    raw: meter,
+  };
+}
+
 export function toSubscription(subscription: PolarSubscription): Subscription {
   return {
     id: subscription.id,
@@ -220,6 +242,7 @@ export function toSubscription(subscription: PolarSubscription): Subscription {
     startedAt: toDate(subscription.started_at),
     endsAt: toDate(subscription.ends_at),
     endedAt: toDate(subscription.ended_at),
+    meters: subscription.meters?.map(toSubscriptionMeter),
     metadata: toMetadata(subscription.metadata),
     raw: subscription,
   };

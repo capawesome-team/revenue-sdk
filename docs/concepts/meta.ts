@@ -8,6 +8,7 @@ export default defineMeta({
     'products-and-prices',
     'checkouts',
     'subscription-lifecycle',
+    'usage-based-billing',
     'customers-and-portal',
     'webhooks',
     'pagination',

@@ -65,6 +65,7 @@ describe('polar', () => {
     expect(provider.capabilities.prorationBehaviors).toEqual(['invoice_now', 'prorate']);
     expect(provider.capabilities.pause).toBe(true);
     expect(provider.capabilities.pauseBehaviors).toEqual(['period_end']);
+    expect(provider.capabilities.usageReporting).toBe(true);
   });
 
   it('uses the sandbox base URL when configured', async () => {
@@ -105,6 +106,22 @@ describe('polar', () => {
       expect(first.cursor).toBeDefined();
       await provider.listProducts({ cursor: first.cursor });
       expect(stub.requests[1]!.url).toContain('page=2');
+    });
+  });
+
+  it('maps a metered price to the metered model without an amount', async () => {
+    const { provider } = setup(() => ({
+      json: {
+        ...PRODUCT,
+        prices: [{ id: 'price-uuid-2', amount_type: 'metered_unit', price_currency: 'usd' }],
+      },
+    }));
+    const product = await provider.getProduct({ id: 'prod-uuid-1' });
+    expect(product.prices[0]).toMatchObject({
+      id: 'price-uuid-2',
+      model: 'metered',
+      amount: null,
+      currency: 'usd',
     });
   });
 
@@ -202,6 +219,35 @@ describe('polar', () => {
         metadata: { organization_id: 'org_1' },
       });
       expect(subscription.currentPeriodEnd).toEqual(new Date('2026-09-01T00:00:00Z'));
+    });
+
+    it('maps inline meters', async () => {
+      const meter = {
+        id: 'sub-meter-uuid-1',
+        meter_id: 'meter-uuid-1',
+        meter: { id: 'meter-uuid-1', name: 'AI tokens', unit: 'token' },
+        consumed_units: 1234.5,
+        credited_units: 1000,
+        amount: 250,
+      };
+      const { provider } = setup(() => ({ json: { ...SUBSCRIPTION, meters: [meter] } }));
+      const subscription = await provider.getSubscription({ id: 'sub-uuid-1' });
+      expect(subscription.meters).toEqual([
+        {
+          id: 'meter-uuid-1',
+          name: 'AI tokens',
+          consumedUnits: 1234.5,
+          creditedUnits: 1000,
+          amount: 250,
+          raw: meter,
+        },
+      ]);
+    });
+
+    it('leaves meters absent when the payload has none', async () => {
+      const { provider } = setup(() => ({ json: SUBSCRIPTION }));
+      const subscription = await provider.getSubscription({ id: 'sub-uuid-1' });
+      expect(subscription.meters).toBeUndefined();
     });
 
     it('maps scheduled cancellations to cancelAtPeriodEnd', async () => {
@@ -374,6 +420,42 @@ describe('polar', () => {
       return_url: 'https://app.example.com/billing',
     });
     expect(session.url).toBe('https://polar.sh/acme/portal?customer_session_token=tok');
+  });
+
+  describe('reportUsage', () => {
+    it('ingests a single-event batch', async () => {
+      const { provider, stub } = setup(() => ({ json: { inserted: 1, duplicates: 0 } }));
+      await provider.reportUsage({ customerId: 'cus-uuid-1', eventName: 'ai_usage' });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('POST');
+      expect(request.url).toBe('https://api.polar.sh/v1/events/ingest');
+      expect(JSON.parse(request.body!)).toEqual({
+        events: [{ name: 'ai_usage', customer_id: 'cus-uuid-1' }],
+      });
+    });
+
+    it('merges value over metadata and maps the idempotency key and timestamp', async () => {
+      const { provider, stub } = setup(() => ({ json: { inserted: 1, duplicates: 0 } }));
+      await provider.reportUsage({
+        customerId: 'cus-uuid-1',
+        eventName: 'ai_usage',
+        value: 77,
+        metadata: { model: 'sonnet', value: 1 },
+        idempotencyKey: 'evt_abc',
+        timestamp: new Date('2026-08-06T10:00:00Z'),
+      });
+      expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
+        events: [
+          {
+            name: 'ai_usage',
+            customer_id: 'cus-uuid-1',
+            timestamp: '2026-08-06T10:00:00.000Z',
+            external_id: 'evt_abc',
+            metadata: { model: 'sonnet', value: 77 },
+          },
+        ],
+      });
+    });
   });
 
   it('maps Polar error bodies onto RevenueError', async () => {

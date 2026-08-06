@@ -7,6 +7,7 @@ import type {
   RevenueCapabilities,
   RevenueProvider,
 } from '../../types.ts';
+import { toUsagePayload } from '../shared.ts';
 import {
   toCheckout,
   toCustomer,
@@ -43,6 +44,7 @@ const CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['invoice_now', 'none', 'prorate'],
   revoke: true,
   uncancel: true,
+  usageReporting: true,
 };
 
 export interface StripeProviderOptions {
@@ -326,6 +328,36 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
         signal: params.signal,
       });
       return { url: data.url, raw: data };
+    },
+
+    async reportUsage(params) {
+      // A 2xx does NOT mean the usage was recorded: meter events are validated synchronously but
+      // processed asynchronously. An unknown customer or an `event_name` with no matching meter is
+      // dropped silently and only reported through the `v1.billing.meter.error_report_triggered`
+      // and `v1.billing.meter.no_meter_found` webhooks, which this SDK does not parse.
+      //
+      // Stripe keys usage on the CUSTOMER, never on a subscription or subscription item: it
+      // resolves the price through the customer's subscription that contains a price whose
+      // `recurring.meter` matches the meter for this `event_name`. A customer with two
+      // subscriptions sharing one meter is ambiguous and cannot be disambiguated here.
+      //
+      // `stripe_customer_id` and `value` are the meter's DEFAULT payload keys
+      // (`customer_mapping.event_payload_key` / `value_settings.event_payload_key`); a meter
+      // configured with custom keys needs those passed through `metadata` instead.
+      //
+      // Livemode allows 1,000 events/s on a bucket separate from the regular API, but only ONE
+      // concurrent call per customer per meter — parallelize across customers, not within one.
+      await http.json('/v1/billing/meter_events', {
+        method: 'POST',
+        form: encodeForm({
+          event_name: params.eventName,
+          // `stripe_customer_id` is written last so metadata can never clobber it.
+          payload: { ...toUsagePayload(params), stripe_customer_id: params.customerId },
+          identifier: params.idempotencyKey,
+          timestamp: params.timestamp,
+        }),
+        signal: params.signal,
+      });
     },
   };
 }

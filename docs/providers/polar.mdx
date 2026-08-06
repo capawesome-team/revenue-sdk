@@ -108,6 +108,7 @@ Polar emits `subscription.canceled` when a cancellation is merely **scheduled**;
 | `prorationBehaviors`          | `['invoice_now', 'prorate']` |
 | `revoke`                      | `true`                       |
 | `uncancel`                    | `true`                       |
+| `usageReporting`              | `true`                       |
 
 ## Quirks
 
@@ -127,8 +128,19 @@ Polar emits `subscription.canceled` when a cancellation is merely **scheduled**;
   `/v1/customers/` — the SDK sends them exactly as Polar requires. Relevant if you pass a custom
   `baseUrl`.
 - **`external_customer_id`** links your own user IDs to Polar customers; it lives on the raw payload.
-- **No idempotency keys.** Polar's API has none, so retrying a `checkouts.create` may create a second
-  checkout. The client's rate-limit retry never applies to writes that could duplicate a charge.
+  Event ingestion accepts it as an alternative customer key, but `usage.report` always sends the Polar
+  customer ID — external keying needs Polar's native API.
+- **No idempotency keys**, apart from event ingestion. Polar's REST API has none, so retrying a
+  `checkouts.create` may create a second checkout. The client's rate-limit retry never applies to writes
+  that could duplicate a charge.
+- **Usage ingestion is batch-only and deduplicated permanently.** `usage.report` posts a one-event batch
+  to `/v1/events/ingest`, and `idempotencyKey` becomes the event's `external_id` — Polar enforces it with
+  a permanent unique index, so replaying the same key is safe. A backdated `timestamp` is accepted, but
+  events are attributed to billing periods by **receipt time** and Polar never issues a retroactive
+  invoice, so backdating affects reporting only. `metadata` is capped at 50 pairs, keys at 40 characters
+  and string values at 500. See [Usage-based billing](/docs/concepts/usage-based-billing).
+- **Meters are returned inline on the subscription.** Polar is the only provider that populates
+  `Subscription.meters` with the current period's consumed units, credited units, and accrued amount.
 - **`Retry-After` on 429**, so the client's bounded rate-limit retry works out of the box.
 - **Trial length** is normalized to `Price.trialDays` only for day- and week-based trials; month- and
   year-based trials have no exact day count and are left `undefined` — read `raw`.

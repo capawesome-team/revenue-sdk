@@ -2,6 +2,7 @@ import { RevenueError } from '../../errors.ts';
 import { HttpClient, type ProviderErrorInfo } from '../../http.ts';
 import { clampLimit, decodeCursor, encodeCursor } from '../../pagination.ts';
 import type { ProrationBehavior, RevenueCapabilities, RevenueProvider } from '../../types.ts';
+import { toUsagePayload } from '../shared.ts';
 import {
   toCheckoutFromSession,
   toCheckoutFromStatus,
@@ -37,6 +38,7 @@ const CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['invoice_now', 'none'],
   revoke: true,
   uncancel: true,
+  usageReporting: true,
 };
 
 export interface DodoPaymentsProviderOptions {
@@ -275,6 +277,32 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
         },
       );
       return { url: data.link, raw: data };
+    },
+
+    async reportUsage(params) {
+      // `event_id` is required and is what Dodo dedupes on across requests. A generated one is
+      // unique per attempt, so a retry without a caller-supplied `idempotencyKey` double-counts.
+      const eventId = params.idempotencyKey ?? crypto.randomUUID();
+      // The endpoint takes a batch of up to 1000 events; one event per call is enough here.
+      // Timestamps older than 1 hour or more than 5 minutes ahead are rejected with 400 — a much
+      // tighter backdating window than Polar (unbounded) or Stripe (35 days).
+      await http.json<unknown>('/events/ingest', {
+        method: 'POST',
+        body: {
+          events: [
+            {
+              event_id: eventId,
+              customer_id: params.customerId,
+              event_name: params.eventName,
+              timestamp: params.timestamp?.toISOString(),
+              // Metadata values must stay primitive — `Metadata` already enforces that. An
+              // unknown `customer_id` is dropped silently instead of erroring.
+              metadata: toUsagePayload(params),
+            },
+          ],
+        },
+        signal: params.signal,
+      });
     },
   };
 }

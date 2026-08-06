@@ -147,6 +147,7 @@ that `transaction.completed` is the single "money received" signal and payments 
 | `prorationBehaviors`          | `['invoice_now', 'none', 'prorate']`   |
 | `revoke`                      | `true`                                 |
 | `uncancel`                    | `true`                                 |
+| `usageReporting`              | `false`                                |
 
 ## Quirks
 
@@ -169,6 +170,10 @@ that `transaction.completed` is the single "money received" signal and payments 
   every item for the new price. The unified model targets single-product subscriptions.
 - **Proration is always sent** on a plan change, because Paddle requires the field whenever `items`
   changes. Omitting `prorationBehavior` behaves as `prorate` (`prorated_next_billing_period`).
+- **No usage API.** `usage.report` throws `unsupported`. Paddle's own guidance is to meter externally
+  (OpenMeter, m3ter, or your own store) and bill the result as a one-time charge —
+  `POST /subscriptions/{id}/charge` with a price you compute yourself. See
+  [Usage-based billing](/docs/concepts/usage-based-billing).
 - **`management_urls` is absent from webhook payloads**, so portal links must come from
   `customerPortal.createSession` (`POST /customers/{id}/portal-sessions`). `returnUrl` is unsupported.
 

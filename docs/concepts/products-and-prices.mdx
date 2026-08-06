@@ -120,8 +120,10 @@ if (price.model === 'fixed' && price.amount !== null) {
 ```
 
 :::note
-Usage-based billing, tier tables, and seat management are deliberately out of scope for now. The models
-are classified so you can detect and route around them, not manage them.
+Metered usage can be **reported** — `client.usage.report` is supported on Polar, Stripe, and Dodo
+Payments, see [Usage-based billing](/docs/concepts/usage-based-billing). What stays out of scope is the
+catalog side of it: tier tables, seat management, and a normalized `amount` for any model other than
+`fixed`. Those models are classified so you can detect and route around them, not manage them.
 :::
 
 ## Monthly and yearly are separate purchasable units

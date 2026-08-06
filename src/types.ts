@@ -71,6 +71,19 @@ export interface Customer {
 export type SubscriptionStatus =
   'active' | 'canceled' | 'incomplete' | 'past_due' | 'paused' | 'trialing' | 'unpaid';
 
+export interface SubscriptionMeter {
+  /** The meter's identifier. */
+  id: string;
+  name: string;
+  /** Units consumed in the current meter period. */
+  consumedUnits: number;
+  /** Units granted upfront (included allowance or credits). */
+  creditedUnits: number;
+  /** Amount accrued for this meter so far in the current period, in the currency's minor units. */
+  amount: number;
+  raw: unknown;
+}
+
 export interface Subscription {
   id: string;
   /** `canceled` is terminal. A pending "cancel at period end" keeps the status unchanged and sets `cancelAtPeriodEnd`. */
@@ -98,6 +111,8 @@ export interface Subscription {
   endsAt?: Date;
   /** When the subscription actually terminated. */
   endedAt?: Date;
+  /** Per-meter usage for the current period. Absent unless the provider reports it inline — only Polar does. */
+  meters?: SubscriptionMeter[];
   metadata?: Metadata;
   raw: unknown;
 }
@@ -177,6 +192,8 @@ export interface RevenueCapabilities {
   revoke: boolean;
   /** Whether a scheduled cancellation can be reverted via `subscriptions.uncancel`. */
   uncancel: boolean;
+  /** Whether `usage.report` is supported. */
+  usageReporting: boolean;
 }
 
 export interface ListProductsParams extends BaseParams {
@@ -272,6 +289,21 @@ export interface CreateCustomerPortalSessionParams extends BaseParams {
   returnUrl?: string;
 }
 
+export interface ReportUsageParams extends BaseParams {
+  /** The provider's customer identifier. */
+  customerId: string;
+  /** The meter's event name. Must match the meter configuration exactly — providers match case-sensitively. */
+  eventName: string;
+  /** Shorthand for a `value` entry in `metadata`, the key meters aggregate on by default. */
+  value?: number;
+  /** Event properties the meter can filter or aggregate on. */
+  metadata?: Metadata;
+  /** Deduplicates replays. Polar dedupes permanently, Dodo Payments per event ID, Stripe over a rolling 24 hours. */
+  idempotencyKey?: string;
+  /** When the usage occurred. Backdating windows differ sharply per provider — see the usage docs. */
+  timestamp?: Date;
+}
+
 export interface RevenueProvider {
   name: ProviderName;
   capabilities: RevenueCapabilities;
@@ -293,4 +325,5 @@ export interface RevenueProvider {
   createCustomerPortalSession(
     params: CreateCustomerPortalSessionParams,
   ): Promise<CustomerPortalSession>;
+  reportUsage(params: ReportUsageParams): Promise<void>;
 }
