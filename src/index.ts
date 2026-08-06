@@ -1,6 +1,8 @@
+export { createClient } from './client.ts';
 export { RevenueError } from './errors.ts';
 export { detectWebhookProvider } from './webhooks/detect.ts';
 
+export type { CreateClientOptions, RetryOptions, RevenueClient } from './client.ts';
 export type { RevenueErrorCode, RevenueErrorOptions } from './errors.ts';
 export type {
   BaseParams,
