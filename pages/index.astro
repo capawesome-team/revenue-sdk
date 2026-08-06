@@ -226,27 +226,31 @@ const pageDescription =
 >
   <main class="mx-auto w-full max-w-6xl px-6">
     <!-- Hero -->
-    <section class="grid grid-cols-1 items-center gap-12 py-16 sm:py-24 lg:grid-cols-2">
-      <div class="text-center lg:text-left">
+    <section class="py-16 sm:py-24">
+      <div class="text-center">
         <span
           class="inline-flex items-center gap-1.5 rounded-blume border border-border px-3 py-1 text-xs font-medium text-muted-foreground"
         >
-          <Icon name="feather" size={13} />
-          Zero dependencies · Workers-ready
+          <Icon name="graduation-cap" size={13} />
+          Learn one API · Use any provider
         </span>
-        <h1 class="mt-6 text-4xl font-semibold tracking-tight sm:text-5xl">
-          One billing API.<br />Five providers.
+        <h1
+          class="mx-auto mt-6 max-w-[30ch] text-4xl font-semibold tracking-tight text-balance sm:text-5xl"
+        >
+          One TypeScript API for five billing providers
         </h1>
-        <p class="mt-5 max-w-xl text-lg text-muted-foreground lg:pr-6">
-          A unified, normalized TypeScript API over Polar, Lemon Squeezy, Stripe, Paddle, and Dodo
-          Payments. Write your checkout, subscription, and webhook logic once — not five times.
+        <p class="mx-auto mt-5 max-w-[48ch] text-lg text-pretty text-muted-foreground">
+          Learn one SDK, then ship on Stripe, Polar, Paddle, Lemon Squeezy, or Dodo Payments — and
+          switch without a rewrite.
         </p>
 
-        <div class="mt-8 flex max-w-md items-center lg:max-w-none">
+        <div class="mx-auto mt-8 flex max-w-md items-center">
           <div
-            class="flex w-full items-center justify-between gap-2 rounded-blume border border-border bg-code-background px-4 py-3 font-mono text-sm"
+            class="flex w-full items-center justify-between gap-2 rounded-blume border border-border bg-code-background px-4 py-3 text-left font-mono text-sm"
           >
-            <span><span class="select-none text-muted-foreground">$ </span>npm install revenue-sdk</span>
+            <span
+              ><span class="select-none text-muted-foreground">$ </span>npm install revenue-sdk</span
+            >
             <button
               type="button"
               class="copy-install inline-flex shrink-0 items-center text-muted-foreground transition-colors hover:text-foreground"
@@ -259,7 +263,7 @@ const pageDescription =
           </div>
         </div>
 
-        <div class="mt-8 flex flex-wrap items-center justify-center gap-3 lg:justify-start">
+        <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
           <a
             href="/docs"
             class="inline-flex items-center gap-1.5 rounded-blume bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground transition-opacity hover:opacity-90"
@@ -281,10 +285,29 @@ const pageDescription =
             GitHub
           </a>
         </div>
+
+        <div
+          class="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm text-muted-foreground"
+        >
+          <span class="inline-flex items-center gap-1.5">
+            <Icon name="feather" size={14} />
+            Zero dependencies
+          </span>
+          <span class="inline-flex items-center gap-1.5">
+            <Icon name="cloud" size={14} />
+            Workers-ready
+          </span>
+          <span class="inline-flex items-center gap-1.5">
+            <Icon name="sparkles" size={14} />
+            AI-ready docs
+          </span>
+        </div>
       </div>
 
       <!-- Tabbed provider sample -->
-      <div class="overflow-hidden rounded-blume border border-border bg-code-background text-left">
+      <div
+        class="mt-14 overflow-hidden rounded-blume border border-border bg-code-background text-left"
+      >
         <div
           class="flex items-center gap-1 overflow-x-auto border-b border-border px-2 pt-2"
           role="tablist"
