@@ -1,0 +1,278 @@
+---
+title: Production webhook handler
+description: Build a production webhook endpoint — verify the signature, dedupe the delivery, upsert by subscription id, and acknowledge with a fast 2xx.
+sidebar:
+  label: Webhook handler
+---
+
+A billing webhook endpoint has four jobs, in this order: **verify**, **dedupe**, **persist**, and
+**acknowledge fast**. This guide builds one that does all four.
+
+## The shape of a correct handler
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/polar';
+
+export async function POST(request: Request): Promise<Response> {
+  // 1. Read the raw body exactly once — signatures cover these bytes.
+  const headers = request.headers;
+  const body = await request.text();
+
+  // 2. Verify before anything else.
+  if (!(await verifyWebhook({ headers, body, secret: process.env.POLAR_WEBHOOK_SECRET! }))) {
+    return new Response('invalid signature', { status: 401 });
+  }
+
+  // 3. Drop repeats.
+  const deliveryId = headers.get('webhook-id');
+  if (deliveryId && (await alreadyProcessed(deliveryId))) {
+    return new Response(null, { status: 204 });
+  }
+
+  // 4. Parse and persist.
+  const event = await parseWebhookEvent({ headers, body });
+  await handle(event);
+
+  if (deliveryId) {
+    await markProcessed(deliveryId);
+  }
+
+  // 5. Acknowledge.
+  return new Response(null, { status: 204 });
+}
+```
+
+## 1. Verify
+
+`verifyWebhook` returns `false` — never throws — for a missing header, a stale timestamp, a malformed
+secret, or a mismatched signature. Reject with `401` and stop; do not log the body of an unverified
+request as if it were real.
+
+:::warning
+Verification runs over the **raw** body. Any middleware that parses and re-serializes JSON breaks it. In
+Express, mount `express.raw({ type: '*/*' })` on the webhook route specifically.
+:::
+
+## 2. Dedupe
+
+Providers retry deliveries, sometimes for days. Store the delivery ID with a TTL:
+
+```ts
+const DEDUPE_TTL_SECONDS = 60 * 60 * 24 * 3;
+
+async function alreadyProcessed(id: string): Promise<boolean> {
+  return (await kv.get(`webhook:${id}`)) !== null;
+}
+
+async function markProcessed(id: string): Promise<void> {
+  await kv.put(`webhook:${id}`, '1', { expirationTtl: DEDUPE_TTL_SECONDS });
+}
+```
+
+Where the delivery ID lives, per provider:
+
+| Provider          | Dedupe key                                                                   |
+| ----------------- | ----------------------------------------------------------------------------- |
+| **Polar**         | `webhook-id` header                                                          |
+| **Dodo Payments** | `webhook-id` header                                                          |
+| **Stripe**        | `id` on the envelope — `(event.raw as { id: string }).id`                    |
+| **Paddle**        | `event_id` on the envelope — `(event.raw as { event_id: string }).event_id`   |
+| **Lemon Squeezy** | none — derive one from `providerType` + resource ID + the resource's `updated_at` |
+
+```ts
+function dedupeKey(event: WebhookEvent, headers: Headers): string | undefined {
+  const header = headers.get('webhook-id');
+  if (header) return header;
+
+  const raw = event.raw as { id?: string; event_id?: string };
+  return raw.id ?? raw.event_id;
+}
+```
+
+:::note
+Mark the delivery processed **after** the work succeeds, not before. If persistence throws, you want the
+provider's retry to find no dedupe entry and try again.
+:::
+
+## 3. Persist — upsert by subscription ID
+
+Events arrive out of order and overlap. The only robust model is **upsert keyed on the provider
+subscription ID**, with a staleness guard:
+
+```ts
+import type { Subscription, WebhookEvent } from 'revenue-sdk';
+
+async function handle(event: WebhookEvent): Promise<void> {
+  switch (event.type) {
+    case 'subscription.created':
+    case 'subscription.updated':
+    case 'subscription.canceled':
+      await upsertSubscription(event.subscription!);
+      break;
+    case 'order.paid':
+      await recordPayment(event.order!);
+      break;
+    case 'checkout.completed':
+      await linkCustomerFromCheckout(event.checkout!);
+      break;
+    default:
+      logger.debug('unmapped webhook', { providerType: event.providerType });
+  }
+}
+
+async function upsertSubscription(subscription: Subscription): Promise<void> {
+  const stored = await db.subscriptions.find({ providerSubscriptionId: subscription.id });
+
+  // Guard against a retried older event overwriting newer state.
+  if (
+    stored?.currentPeriodEnd &&
+    subscription.currentPeriodEnd &&
+    subscription.currentPeriodEnd < stored.currentPeriodEnd
+  ) {
+    return;
+  }
+
+  await db.subscriptions.upsert({
+    where: { providerSubscriptionId: subscription.id },
+    data: {
+      providerCustomerId: subscription.customerId,
+      status: subscription.status,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      productId: subscription.productId,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      endsAt: subscription.endsAt,
+      endedAt: subscription.endedAt,
+    },
+  });
+}
+```
+
+Three things this gets right:
+
+- **`subscription.created` is not special.** Dodo Payments never emits it, and providers re-send updates
+  freely. Upsert everywhere and insertion order stops mattering.
+- **A scheduled cancellation is an *update*.** It arrives as `subscription.updated` with
+  `cancelAtPeriodEnd: true`; the terminal `subscription.canceled` comes later. Store both fields.
+- **`order.paid` covers renewals.** It is the uniform "money received" signal — on Lemon Squeezy it maps
+  from both `order_created` and `subscription_payment_success`, because renewals emit no order.
+
+## 4. Return 2xx fast
+
+Providers time deliveries out (a few seconds) and count slow responses as failures. Acknowledge as soon
+as the event is durably recorded, and move anything slow — emails, provisioning, analytics — off the
+request path.
+
+On Cloudflare Workers:
+
+```ts
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // ... verify, dedupe, parse ...
+
+    // Durable, fast: write the state the app reads.
+    await upsertSubscription(event.subscription!);
+
+    // Slow and non-critical: after the response.
+    ctx.waitUntil(sendWelcomeEmail(event.subscription!));
+
+    return new Response(null, { status: 204 });
+  },
+};
+```
+
+:::warning
+Only put **non-critical** work in `ctx.waitUntil`. It is not a queue: it has no retries and no
+durability guarantee, and if it throws, the provider has already been told the delivery succeeded.
+Critical work belongs before the response, or on a real queue.
+:::
+
+## Choose your status codes deliberately
+
+| Situation                          | Status | Why                                                                 |
+| ---------------------------------- | ------ | -------------------------------------------------------------------- |
+| Handled, or a duplicate            | `204`  | Success. Stops retries.                                              |
+| Signature invalid                  | `401`  | Never retryable — the secret is wrong or the payload was forged.      |
+| Unknown sender on a shared endpoint| `400`  | Don't ask for a retry you can't handle.                              |
+| Your database is down              | `500`  | **Do** ask for a retry.                                              |
+| Event type you don't handle        | `204`  | It's a success — you simply have nothing to do.                       |
+
+Returning `500` for an unrecognized event type is a common mistake: the provider retries it forever.
+`parseWebhookEvent` maps anything unmapped to `unknown` instead of throwing, so the default branch is a
+no-op by design.
+
+## Logging that stays safe
+
+```ts
+logger.info('webhook', {
+  type: event.type,
+  providerType: event.providerType,
+  subscriptionId: event.subscription?.id,
+  orderId: event.order?.id,
+});
+```
+
+Log the normalized fields, not the raw envelope. Provider payloads can contain customer addresses and
+partial payment details, and error `cause` values hold the provider's response body verbatim — see
+[Errors](/docs/concepts/errors).
+
+## Serving several providers from one endpoint
+
+```ts
+import { detectWebhookProvider, type ProviderName } from 'revenue-sdk';
+import * as dodoPayments from 'revenue-sdk/dodo-payments';
+import * as lemonSqueezy from 'revenue-sdk/lemon-squeezy';
+import * as paddle from 'revenue-sdk/paddle';
+import * as polar from 'revenue-sdk/polar';
+import * as stripe from 'revenue-sdk/stripe';
+
+type WebhookHelpers = Pick<typeof polar, 'verifyWebhook' | 'parseWebhookEvent'>;
+
+const HANDLERS: Record<string, WebhookHelpers> = {
+  'dodo-payments': dodoPayments,
+  'lemon-squeezy': lemonSqueezy,
+  paddle,
+  polar,
+  stripe,
+};
+
+const SECRETS: Partial<Record<ProviderName, string>> = {
+  polar: process.env.POLAR_WEBHOOK_SECRET,
+  stripe: process.env.STRIPE_WEBHOOK_SECRET,
+};
+
+export async function POST(request: Request): Promise<Response> {
+  const headers = request.headers;
+  const body = await request.text();
+
+  const provider = await detectWebhookProvider({ headers, body });
+  const helpers = provider ? HANDLERS[provider] : undefined;
+  const secret = provider ? SECRETS[provider] : undefined;
+  if (!helpers || !secret) {
+    return new Response('unknown sender', { status: 400 });
+  }
+
+  if (!(await helpers.verifyWebhook({ headers, body, secret }))) {
+    return new Response('invalid signature', { status: 401 });
+  }
+
+  await handle(await helpers.parseWebhookEvent({ headers, body }));
+  return new Response(null, { status: 204 });
+}
+```
+
+:::warning
+Detection is routing, not authentication. Headers are attacker-controlled — the `verifyWebhook` call is
+what makes the payload trustworthy.
+:::
+
+Note that importing all five providers this way defeats tree shaking. If you only ever run one provider
+per deployment, pick it with an environment variable at build time instead.
+
+<CardGroup cols={2}>
+  <Card title="Next: Subscription management" icon="settings" href="/docs/guides/subscription-management">
+    Build the account page on top of this state.
+  </Card>
+  <Card title="Webhook events reference" icon="table" href="/docs/reference/webhook-events">
+    Every provider event and what it normalizes to.
+  </Card>
+</CardGroup>

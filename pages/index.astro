@@ -1,0 +1,575 @@
+---
+import { Code } from 'astro:components';
+import PageLayout from 'blume/components/layout/PageLayout.astro';
+import Icon from 'blume/components/Icon.astro';
+import data from 'blume:data';
+
+const { config } = data;
+
+const features = [
+  {
+    icon: 'layers',
+    title: 'One unified API',
+    description: 'Products, checkouts, subscriptions, customers, and webhooks over five providers.',
+  },
+  {
+    icon: 'feather',
+    title: 'Zero dependencies',
+    description: 'Just fetch and Web Crypto. Nothing to audit, nothing to bloat your bundle.',
+  },
+  {
+    icon: 'cloud',
+    title: 'Workers-ready',
+    description: 'No node:* imports. Runs on Cloudflare Workers without nodejs_compat.',
+  },
+  {
+    icon: 'activity',
+    title: 'One status model',
+    description: 'Seven statuses across all providers, with cancelAtPeriodEnd split out.',
+  },
+  {
+    icon: 'webhook',
+    title: 'Webhook verify & parse',
+    description: 'Standalone helpers that take a Web-standard Request — no client needed.',
+  },
+  {
+    icon: 'package',
+    title: 'Tree-shakable subpaths',
+    description: 'Each provider on its own import path, so unused providers never bundle.',
+  },
+  {
+    icon: 'list-checks',
+    title: 'Capability gating',
+    description: 'Providers differ. Unsupported options throw instead of being silently dropped.',
+  },
+  {
+    icon: 'flask-conical',
+    title: 'In-memory testing provider',
+    description: 'Exercise your billing integration without a sandbox account or a test card.',
+  },
+];
+
+const providerTabs = [
+  {
+    id: 'polar',
+    label: 'Polar',
+    code: `import { createClient } from 'revenue-sdk';
+import { polar } from 'revenue-sdk/polar';
+
+const client = createClient({
+  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
+});
+
+const checkout = await client.checkouts.create({
+  items: [{ product: 'PRODUCT_ID' }],
+  customerEmail: 'ada@example.com',
+  successUrl: 'https://example.com/thanks',
+});
+console.log(checkout.url);`,
+  },
+  {
+    id: 'lemon-squeezy',
+    label: 'Lemon Squeezy',
+    code: `import { createClient } from 'revenue-sdk';
+import { lemonSqueezy } from 'revenue-sdk/lemon-squeezy';
+
+const client = createClient({
+  provider: lemonSqueezy({
+    apiKey: process.env.LEMON_SQUEEZY_API_KEY!,
+    storeId: process.env.LEMON_SQUEEZY_STORE_ID!,
+  }),
+});
+
+// Same call, same shape — only the provider changed.
+const checkout = await client.checkouts.create({
+  items: [{ product: 'VARIANT_ID' }],
+  customerEmail: 'ada@example.com',
+});`,
+  },
+  {
+    id: 'stripe',
+    label: 'Stripe',
+    code: `import { createClient } from 'revenue-sdk';
+import { stripe } from 'revenue-sdk/stripe';
+
+const client = createClient({
+  provider: stripe({ secretKey: process.env.STRIPE_SECRET_KEY! }),
+});
+
+const checkout = await client.checkouts.create({
+  items: [{ product: 'price_123', quantity: 1 }],
+  successUrl: 'https://example.com/thanks',
+  metadata: { userId: 'user_123' },
+});`,
+  },
+  {
+    id: 'paddle',
+    label: 'Paddle',
+    code: `import { createClient } from 'revenue-sdk';
+import { paddle } from 'revenue-sdk/paddle';
+
+const client = createClient({
+  provider: paddle({ apiKey: process.env.PADDLE_API_KEY! }),
+});
+
+// Paddle has no hosted checkout — open the
+// transaction with Paddle.js on your own page.
+const checkout = await client.checkouts.create({
+  items: [{ product: 'pri_123', quantity: 1 }],
+  customerEmail: 'ada@example.com',
+});`,
+  },
+  {
+    id: 'dodo-payments',
+    label: 'Dodo Payments',
+    code: `import { createClient } from 'revenue-sdk';
+import { dodoPayments } from 'revenue-sdk/dodo-payments';
+
+const client = createClient({
+  provider: dodoPayments({
+    apiKey: process.env.DODO_PAYMENTS_API_KEY!,
+  }),
+});
+
+const checkout = await client.checkouts.create({
+  items: [{ product: 'PRODUCT_ID' }],
+  successUrl: 'https://example.com/thanks',
+});`,
+  },
+];
+
+const webhookCode = `import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/stripe';
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const headers = request.headers;
+    const body = await request.text();
+
+    const valid = await verifyWebhook({ headers, body, secret: env.STRIPE_WEBHOOK_SECRET });
+    if (!valid) return new Response('invalid signature', { status: 401 });
+
+    const event = await parseWebhookEvent({ headers, body });
+    if (event.type === 'subscription.updated') {
+      // A scheduled cancellation arrives here, not as subscription.canceled.
+      console.log(event.subscription!.status, event.subscription!.cancelAtPeriodEnd);
+    }
+    return new Response(null, { status: 204 });
+  },
+};`;
+
+const statusCode = `// canceled is terminal. A scheduled cancellation keeps the status
+// and sets cancelAtPeriodEnd — the same on all five providers.
+const entitled = subscription.status === 'active' || subscription.status === 'trialing';
+
+if (entitled && subscription.cancelAtPeriodEnd) {
+  banner(\`Your plan ends on \${subscription.endsAt?.toLocaleDateString()}.\`);
+}`;
+
+const capabilityRows = [
+  { label: 'Provider-hosted checkout', values: [true, true, true, false, true] },
+  { label: 'Checkout success URL', values: [true, true, true, false, true] },
+  { label: 'Cancel immediately', values: [true, false, true, true, true] },
+  { label: 'End trial early', values: [true, true, true, true, false] },
+];
+
+const docCards = [
+  {
+    icon: 'zap',
+    title: 'Quickstart',
+    description: 'From empty file to a verified webhook in minutes.',
+    href: '/docs/quickstart',
+  },
+  {
+    icon: 'activity',
+    title: 'Subscription lifecycle',
+    description: 'The unified status model and entitlement checks.',
+    href: '/docs/concepts/subscription-lifecycle',
+  },
+  {
+    icon: 'webhook',
+    title: 'Webhooks',
+    description: 'Verify, parse, dedupe, and fulfill end to end.',
+    href: '/docs/concepts/webhooks',
+  },
+  {
+    icon: 'table',
+    title: 'Reference',
+    description: 'Capability matrix, status mapping, events, error codes.',
+    href: '/docs/reference/capability-matrix',
+  },
+];
+
+const runtimes = ['Node.js ≥ 20', 'Cloudflare Workers', 'Deno', 'Bun'];
+const codeThemes = { light: 'github-light', dark: 'github-dark' } as const;
+
+// Longer than the site description so the home page's meta description reads well in search results.
+const pageDescription =
+  'A unified, normalized TypeScript API over Polar, Lemon Squeezy, Stripe, Paddle, and Dodo Payments — zero dependencies, Workers-ready, fully typed.';
+---
+
+<PageLayout
+  site={{ title: config.title, description: config.description }}
+  logo={config.logo}
+  banner={config.banner}
+  analytics={config.analytics}
+  navigation={data.navigation}
+  favicon={config.favicon}
+  fontCssVars={data.fontCssVars}
+  themeMode={config.theme.mode}
+  searchEnabled={config.search.enabled}
+  siteUrl={config.site}
+  ogEnabled={config.og.enabled}
+  page={{
+    title: 'revenue-sdk — one unified API over five billing providers',
+    description: pageDescription,
+  }}
+>
+  <main class="mx-auto w-full max-w-6xl px-6">
+    <!-- Hero -->
+    <section class="grid grid-cols-1 items-center gap-12 py-16 sm:py-24 lg:grid-cols-2">
+      <div class="text-center lg:text-left">
+        <span
+          class="inline-flex items-center gap-1.5 rounded-blume border border-border px-3 py-1 text-xs font-medium text-muted-foreground"
+        >
+          <Icon name="feather" size={13} />
+          Zero dependencies · Workers-ready
+        </span>
+        <h1 class="mt-6 text-4xl font-semibold tracking-tight sm:text-5xl">
+          One billing API.<br />Five providers.
+        </h1>
+        <p class="mt-5 max-w-xl text-lg text-muted-foreground lg:pr-6">
+          A unified, normalized TypeScript API over Polar, Lemon Squeezy, Stripe, Paddle, and Dodo
+          Payments. Write your checkout, subscription, and webhook logic once — not five times.
+        </p>
+
+        <div class="mt-8 flex max-w-md items-center lg:max-w-none">
+          <div
+            class="flex w-full items-center justify-between gap-2 rounded-blume border border-border bg-code-background px-4 py-3 font-mono text-sm"
+          >
+            <span><span class="select-none text-muted-foreground">$ </span>npm install revenue-sdk</span>
+            <button
+              type="button"
+              class="copy-install inline-flex shrink-0 items-center text-muted-foreground transition-colors hover:text-foreground"
+              data-command="npm install revenue-sdk"
+              aria-label="Copy install command"
+            >
+              <span class="copy-idle"><Icon name="copy" size={15} /></span>
+              <span class="copy-done hidden text-accent"><Icon name="check" size={15} /></span>
+            </button>
+          </div>
+        </div>
+
+        <div class="mt-8 flex flex-wrap items-center justify-center gap-3 lg:justify-start">
+          <a
+            href="/docs"
+            class="inline-flex items-center gap-1.5 rounded-blume bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground transition-opacity hover:opacity-90"
+          >
+            Read the docs
+            <Icon name="arrow-right" size={15} />
+          </a>
+          <a
+            href="/docs/quickstart"
+            class="inline-flex items-center rounded-blume border border-border px-5 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
+          >
+            Quickstart
+          </a>
+          <a
+            href="https://github.com/capawesome-team/revenue-sdk"
+            class="inline-flex items-center gap-1.5 rounded-blume border border-border px-5 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
+          >
+            <Icon name="github" size={15} />
+            GitHub
+          </a>
+        </div>
+      </div>
+
+      <!-- Tabbed provider sample -->
+      <div class="overflow-hidden rounded-blume border border-border bg-code-background text-left">
+        <div
+          class="flex items-center gap-1 overflow-x-auto border-b border-border px-2 pt-2"
+          role="tablist"
+          aria-label="Provider"
+        >
+          {
+            providerTabs.map((tab, index) => (
+              <button
+                type="button"
+                role="tab"
+                id={`tab-${tab.id}`}
+                aria-controls={`panel-${tab.id}`}
+                aria-selected={index === 0 ? 'true' : 'false'}
+                class:list={[
+                  'provider-tab -mb-px whitespace-nowrap rounded-t-blume border-b-2 px-3 py-2 text-xs font-medium transition-colors',
+                  index === 0
+                    ? 'border-accent text-foreground'
+                    : 'border-transparent text-muted-foreground hover:text-foreground',
+                ]}
+              >
+                {tab.label}
+              </button>
+            ))
+          }
+        </div>
+        {
+          providerTabs.map((tab, index) => (
+            <div
+              role="tabpanel"
+              id={`panel-${tab.id}`}
+              aria-labelledby={`tab-${tab.id}`}
+              class:list={['provider-panel overflow-x-auto p-5 text-sm', index === 0 ? '' : 'hidden']}
+            >
+              <Code code={tab.code} lang="ts" themes={codeThemes} />
+            </div>
+          ))
+        }
+      </div>
+    </section>
+
+    <!-- Providers + runtimes -->
+    <section class="pb-8 text-center">
+      <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Works with</p>
+      <div class="mt-4 flex flex-wrap items-center justify-center gap-3">
+        {
+          providerTabs.map((provider) => (
+            <span class="rounded-blume border border-border px-4 py-1.5 text-sm font-medium">
+              {provider.label}
+            </span>
+          ))
+        }
+      </div>
+      <div
+        class="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-sm text-muted-foreground"
+      >
+        {runtimes.map((runtime) => <span>{runtime}</span>)}
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="py-16">
+      <h2 class="sr-only">Features</h2>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {
+          features.map((feature) => (
+            <div class="rounded-blume border border-border p-5 text-left">
+              <span class="text-accent">
+                <Icon name={feature.icon} size={18} />
+              </span>
+              <h3 class="mt-3 text-sm font-semibold">{feature.title}</h3>
+              <p class="mt-2 text-sm text-muted-foreground">{feature.description}</p>
+            </div>
+          ))
+        }
+      </div>
+    </section>
+
+    <!-- Status model -->
+    <section class="py-8">
+      <div class="grid grid-cols-1 items-center gap-10 lg:grid-cols-2">
+        <div class="text-center lg:text-left">
+          <h2 class="text-2xl font-semibold tracking-tight">One subscription status model</h2>
+          <p class="mt-3 text-sm text-muted-foreground lg:pr-8">
+            Every provider spells cancellation differently, and most overload one status to mean both
+            “ended” and “still paid up until the period ends”. <code class="font-mono">revenue-sdk</code>
+            normalizes all of it into seven statuses plus
+            <code class="font-mono">cancelAtPeriodEnd</code>, so
+            <code class="font-mono">canceled</code> always means terminal.
+          </p>
+          <a
+            href="/docs/concepts/subscription-lifecycle"
+            class="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
+          >
+            Read the lifecycle guide
+            <Icon name="arrow-right" size={14} />
+          </a>
+        </div>
+        <div
+          class="overflow-x-auto rounded-blume border border-border bg-code-background p-5 text-left text-sm"
+        >
+          <Code code={statusCode} lang="ts" themes={codeThemes} />
+        </div>
+      </div>
+    </section>
+
+    <!-- Webhooks -->
+    <section class="py-8">
+      <div class="grid grid-cols-1 items-center gap-10 lg:grid-cols-2">
+        <div
+          class="order-2 overflow-x-auto rounded-blume border border-border bg-code-background p-5 text-left text-sm lg:order-1"
+        >
+          <Code code={webhookCode} lang="ts" themes={codeThemes} />
+        </div>
+        <div class="order-1 text-center lg:order-2 lg:text-left">
+          <h2 class="text-2xl font-semibold tracking-tight">Webhooks without the ceremony</h2>
+          <p class="mt-3 text-sm text-muted-foreground lg:pr-8">
+            <code class="font-mono">verifyWebhook</code> and
+            <code class="font-mono">parseWebhookEvent</code> are standalone helpers that take a
+            Web-standard <code class="font-mono">Request</code> — no client needed. They know each
+            provider's signature scheme, including the two that look identical and aren't.
+          </p>
+          <a
+            href="/docs/concepts/webhooks"
+            class="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
+          >
+            Read the webhook guide
+            <Icon name="arrow-right" size={14} />
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Capability matrix teaser -->
+    <section class="py-16">
+      <div class="mx-auto max-w-3xl text-center">
+        <h2 class="text-2xl font-semibold tracking-tight">
+          Providers differ. revenue-sdk tells you how.
+        </h2>
+        <p class="mx-auto mt-3 max-w-xl text-sm text-muted-foreground">
+          Every provider ships a typed capability object, and the client throws
+          <code class="font-mono">unsupported</code> instead of silently dropping options.
+        </p>
+        <div class="mt-6 overflow-x-auto rounded-blume border border-border">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-border bg-muted/50 text-left">
+                <th class="px-4 py-2.5 font-medium">Capability</th>
+                {
+                  providerTabs.map((provider) => (
+                    <th class="px-4 py-2.5 text-center font-medium">{provider.label}</th>
+                  ))
+                }
+              </tr>
+            </thead>
+            <tbody>
+              {
+                capabilityRows.map((row) => (
+                  <tr class="border-b border-border text-left last:border-b-0">
+                    <td class="px-4 py-2.5">{row.label}</td>
+                    {row.values.map((supported) => (
+                      <td class="px-4 py-2.5 text-center">
+                        {supported ? (
+                          <span class="inline-flex text-accent" aria-label="Supported">
+                            <Icon name="check" size={15} />
+                          </span>
+                        ) : (
+                          <span class="text-muted-foreground" aria-label="Not supported">
+                            —
+                          </span>
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+        <a
+          href="/docs/reference/capability-matrix"
+          class="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
+        >
+          See the full capability matrix
+          <Icon name="arrow-right" size={14} />
+        </a>
+      </div>
+    </section>
+
+    <!-- Doc entry cards -->
+    <section class="pb-24">
+      <h2 class="text-center text-2xl font-semibold tracking-tight">Start here</h2>
+      <div class="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {
+          docCards.map((card) => (
+            <a
+              href={card.href}
+              class="group rounded-blume border border-border p-5 text-left transition-colors hover:bg-muted"
+            >
+              <span class="text-accent">
+                <Icon name={card.icon} size={18} />
+              </span>
+              <h3 class="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold">
+                {card.title}
+                <span class="opacity-0 transition-opacity group-hover:opacity-100">
+                  <Icon name="arrow-right" size={13} />
+                </span>
+              </h3>
+              <p class="mt-2 text-sm text-muted-foreground">{card.description}</p>
+            </a>
+          ))
+        }
+      </div>
+    </section>
+  </main>
+
+  <footer slot="footer" class="border-t border-border">
+    <div
+      class="mx-auto flex w-full max-w-6xl flex-col items-center justify-between gap-4 px-6 py-10 text-sm text-muted-foreground sm:flex-row"
+    >
+      <p>
+        © 2026 <a href="https://genz-its.de/" class="transition-colors hover:text-foreground"
+          >Genz IT Solutions GmbH</a
+        >, makers of <a href="https://capawesome.io/" class="transition-colors hover:text-foreground"
+          >Capawesome</a
+        > · MIT licensed
+      </p>
+      <nav class="flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
+        <a href="/docs" class="transition-colors hover:text-foreground">Docs</a>
+        <a href="/changelog" class="transition-colors hover:text-foreground">Changelog</a>
+        <a
+          href="https://github.com/capawesome-team/revenue-sdk"
+          class="transition-colors hover:text-foreground">GitHub</a
+        >
+        <a
+          href="https://www.npmjs.com/package/revenue-sdk"
+          class="transition-colors hover:text-foreground">npm</a
+        >
+      </nav>
+    </div>
+  </footer>
+</PageLayout>
+
+<style is:global>
+  /* Shiki dual themes: the landing page lives outside .prose, so mirror the
+     dark-mode variable switch Blume applies to docs code blocks. */
+  main pre.astro-code {
+    background-color: transparent !important;
+  }
+  :root[data-theme='dark'] main pre.astro-code,
+  :root[data-theme='dark'] main pre.astro-code span {
+    color: var(--shiki-dark, inherit) !important;
+    font-style: var(--shiki-dark-font-style, inherit) !important;
+    font-weight: var(--shiki-dark-font-weight, inherit) !important;
+    text-decoration: var(--shiki-dark-text-decoration, inherit) !important;
+  }
+</style>
+
+<script>
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.copy-install')) {
+    button.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(button.dataset.command ?? '');
+      button.querySelector('.copy-idle')?.classList.add('hidden');
+      button.querySelector('.copy-done')?.classList.remove('hidden');
+      setTimeout(() => {
+        button.querySelector('.copy-idle')?.classList.remove('hidden');
+        button.querySelector('.copy-done')?.classList.add('hidden');
+      }, 1500);
+    });
+  }
+
+  const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('.provider-tab'));
+  const panels = Array.from(document.querySelectorAll<HTMLElement>('.provider-panel'));
+  const activeClasses = ['border-accent', 'text-foreground'];
+  const inactiveClasses = ['border-transparent', 'text-muted-foreground', 'hover:text-foreground'];
+  for (const tab of tabs) {
+    tab.addEventListener('click', () => {
+      for (const other of tabs) {
+        const selected = other === tab;
+        other.setAttribute('aria-selected', String(selected));
+        other.classList.remove(...(selected ? inactiveClasses : activeClasses));
+        other.classList.add(...(selected ? activeClasses : inactiveClasses));
+      }
+      for (const panel of panels) {
+        panel.classList.toggle('hidden', panel.id !== tab.getAttribute('aria-controls'));
+      }
+    });
+  }
+</script>

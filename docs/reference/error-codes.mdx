@@ -1,0 +1,159 @@
+---
+title: Error codes
+description: The full RevenueErrorCode union with its HTTP-status mapping, typical causes, retry semantics, and the client's single bounded rate-limit retry.
+sidebar:
+  label: Error codes
+---
+
+A complete reference of the `RevenueErrorCode` union — with the HTTP statuses each code is derived from
+and its retry semantics. For the conceptual overview see [Errors](/docs/concepts/errors).
+
+## The RevenueError model
+
+<TypeTable
+  type={{
+    code: { type: 'RevenueErrorCode', description: 'Normalized failure code — the field to branch on.' },
+    provider: {
+      type: "'polar' | 'lemon-squeezy' | 'stripe' | 'paddle' | 'dodo-payments' | 'testing'",
+      required: false,
+      description: 'Which provider produced the error.',
+    },
+    status: { type: 'number', required: false, description: 'The HTTP status, when the failure came from a response.' },
+    retryable: { type: 'boolean', description: 'Whether retrying the operation may succeed.' },
+    retryAfter: {
+      type: 'number',
+      required: false,
+      description: 'Seconds to wait, parsed from Retry-After (numeric seconds or an HTTP date).',
+    },
+    cause: { type: 'unknown', required: false, description: 'The parsed provider response body, or the underlying fetch error.' },
+  }}
+/>
+
+`RevenueError` extends `Error`, so `error instanceof RevenueError` and `error.message` work as usual.
+`name` is always `'RevenueError'`.
+
+## The code union
+
+`RevenueErrorCode` is a closed union of **ten** values:
+
+| `code`             | Typical cause                                                     | HTTP status      | `retryable`      |
+| ------------------ | ------------------------------------------------------------------ | ---------------- | ---------------- |
+| `validation`       | Bad parameters, from the provider or a client-side check           | `400`, `422`     | no               |
+| `unauthorized`     | Missing, invalid, or revoked credentials                           | `401`            | no               |
+| `payment_required` | The provider refused for billing reasons (e.g. a declined card)    | `402`            | no               |
+| `forbidden`        | Authenticated, but not allowed                                     | `403`            | no               |
+| `not_found`        | The resource does not exist, or is gone                            | `404`, `410`     | no               |
+| `conflict`         | Conflicts with current state, or a precondition failed             | `409`, `412`     | no               |
+| `rate_limited`     | The provider's rate limit was hit                                  | `429`            | **yes**          |
+| `provider_error`   | An unclassified provider response                                  | any other status | only when `5xx`  |
+| `unsupported`      | The active provider can't do what was requested                    | —                | no               |
+| `network_error`    | The request never completed (DNS, TLS, connection, timeout)        | —                | **yes**          |
+
+`unsupported` and `network_error` have no HTTP status: the first is raised before a request is made, the
+second when the request never produced a response.
+
+:::note
+**Paddle returns HTTP 403 for authentication failures.** The adapter inspects the response error code
+and re-maps `authentication_malformed`, `authentication_missing`, and `invalid_token` to `unauthorized`,
+so a bad API key doesn't look like a permissions problem.
+:::
+
+## Errors raised before any request
+
+These never touch the network:
+
+| Code          | Raised by                                                                                                     |
+| ------------- | -------------------------------------------------------------------------------------------------------------- |
+| `validation`  | An empty `id`, `customerId`, `product`, or `items[].product`; an empty `items` array; a `quantity` that isn't a positive integer |
+| `validation`  | A malformed pagination cursor, a cursor from another provider, or a cursor URL on a different origin           |
+| `unsupported` | Capability gating — `successUrl`, `returnUrl`, `customerId` on a subscription list, `reason`/`comment`, `uncancel`, `endTrial`, `revoke`, and a `prorationBehavior` outside `capabilities.prorationBehaviors` |
+
+Adapters raise `unsupported` at call time for the finer-grained limits a capability boolean can't
+express — see [the capability matrix](/docs/reference/capability-matrix#beyond-the-capability-object).
+
+`validation` is also raised by `parseWebhookEvent` when the payload isn't valid JSON. Note that
+`verifyWebhook` never throws — it returns `false`.
+
+## `retryable` and `retryAfter`
+
+`retryable` defaults to `true` for `rate_limited` and `network_error`, and for **any** error whose HTTP
+`status` is `5xx`. `retryAfter` is parsed from the provider's `Retry-After` header, accepting either
+numeric seconds or an HTTP date (converted to seconds from now, never negative).
+
+Provider behavior on rate limits:
+
+| Provider          | `Retry-After` on 429 | Notes                                                        |
+| ----------------- | -------------------- | ------------------------------------------------------------- |
+| **Polar**         | yes                  | The client's bounded retry engages.                           |
+| **Lemon Squeezy** | usually              |                                                               |
+| **Stripe**        | **no**               | Signals retryability via `Stripe-Should-Retry`; use your own back-off. |
+| **Paddle**        | usually              |                                                               |
+| **Dodo Payments** | usually              |                                                               |
+
+## The client's bounded retry
+
+One retry, and only when all three hold:
+
+1. the code is `rate_limited`,
+2. `retryAfter` is defined,
+3. `retryAfter <= maxRetryAfterSeconds` (default `10`).
+
+```ts
+const client = createClient({
+  provider,
+  retry: { maxRetryAfterSeconds: 10 }, // 0 disables it
+});
+```
+
+It applies to every call, including each page fetched inside `listAll`.
+
+## Secret redaction
+
+`RevenueError` redacts the configured API key or access token from its **message** before construction,
+replacing it with `[redacted]`.
+
+:::warning
+`error.cause` holds the provider's response body verbatim and is **not** redacted. Attach it to a bug
+report deliberately, not to every log line.
+:::
+
+## Handling errors
+
+```ts
+import { RevenueError } from 'revenue-sdk';
+
+try {
+  await client.subscriptions.changePlan({ id, product, prorationBehavior: 'none' });
+} catch (error) {
+  if (error instanceof RevenueError) {
+    switch (error.code) {
+      case 'unsupported':
+        // this provider lacks the capability — check client.capabilities
+        break;
+      case 'payment_required':
+        // the customer's payment failed — surface it, don't retry
+        break;
+      case 'not_found':
+        // the subscription or price no longer exists
+        break;
+      case 'rate_limited':
+        // back off using error.retryAfter
+        break;
+      default:
+        if (error.retryable) {
+          // transient — retry with back-off
+        }
+    }
+  }
+  throw error;
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
+    What throws unsupported, per provider.
+  </Card>
+  <Card title="Errors concept" icon="shield-alert" href="/docs/concepts/errors">
+    Retries, redaction, and the error model.
+  </Card>
+</CardGroup>

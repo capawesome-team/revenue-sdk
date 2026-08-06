@@ -1,0 +1,195 @@
+---
+title: Quickstart
+description: Create a client, create a checkout, verify a webhook in a Cloudflare Worker, and check subscription status — with the same code on all five providers.
+sidebar:
+  label: Quickstart
+  icon: zap
+---
+
+This guide takes you from an empty file to a working integration: a client, a hosted checkout, a
+verified webhook handler, and an entitlement check.
+
+<Steps>
+  <Step title="Install">
+    ```package-install
+    revenue-sdk
+    ```
+  </Step>
+  <Step title="Create a client">
+    Import `createClient` from the package root and a provider factory from its subpath. Every factory
+    also accepts an injectable `fetch` for tests and edge runtimes.
+
+    ```ts
+    import { createClient } from 'revenue-sdk';
+    import { polar } from 'revenue-sdk/polar';
+
+    const client = createClient({
+      provider: polar({
+        accessToken: process.env.POLAR_ACCESS_TOKEN!,
+        server: 'sandbox',
+      }),
+    });
+    ```
+  </Step>
+  <Step title="Create a checkout">
+    `checkouts.create` takes one or more items and returns a normalized `Checkout` with a `url` you
+    redirect the customer to. The `product` field of an item is the provider's purchasable identifier —
+    `Price.checkoutRef` tells you what that is for the active provider.
+
+    ```ts
+    const { items: products } = await client.products.list({ limit: 10 });
+    const price = products[0]!.prices[0]!;
+
+    const checkout = await client.checkouts.create({
+      items: [{ product: price.checkoutRef }],
+      customerEmail: 'ada@example.com',
+      successUrl: 'https://example.com/thanks',
+      metadata: { userId: 'user_123' },
+    });
+
+    // Redirect the customer here.
+    console.log(checkout.url);
+    ```
+
+    :::note
+    Paddle has no provider-hosted checkout: the returned URL points at your own Paddle.js page and
+    `successUrl` throws `unsupported`. See [Checkouts](/docs/concepts/checkouts).
+    :::
+  </Step>
+  <Step title="Handle the webhook">
+    `verifyWebhook` and `parseWebhookEvent` are standalone exports on each provider subpath. Read the
+    raw body **once**, verify it, then parse it. This example is a Cloudflare Worker `fetch` handler.
+
+    ```ts
+    import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/polar';
+
+    interface Env {
+      POLAR_WEBHOOK_SECRET: string;
+    }
+
+    export default {
+      async fetch(request: Request, env: Env): Promise<Response> {
+        const headers = request.headers;
+        const body = await request.text();
+
+        const valid = await verifyWebhook({ headers, body, secret: env.POLAR_WEBHOOK_SECRET });
+        if (!valid) {
+          return new Response('invalid signature', { status: 401 });
+        }
+
+        const event = await parseWebhookEvent({ headers, body });
+        switch (event.type) {
+          case 'subscription.created':
+          case 'subscription.updated':
+          case 'subscription.canceled':
+            // Upsert by event.subscription!.id.
+            break;
+          case 'order.paid':
+            // Money received — including renewals.
+            break;
+          case 'checkout.completed':
+            // The checkout was paid.
+            break;
+        }
+        return new Response(null, { status: 204 });
+      },
+    };
+    ```
+  </Step>
+  <Step title="Check subscription status">
+    A subscription grants access while its `status` is `active` or `trialing`. `canceled` is terminal;
+    a *scheduled* cancellation keeps the status unchanged and sets `cancelAtPeriodEnd`.
+
+    ```ts
+    const subscription = await client.subscriptions.get({ id: 'SUBSCRIPTION_ID' });
+
+    const entitled = subscription.status === 'active' || subscription.status === 'trialing';
+
+    if (entitled && subscription.cancelAtPeriodEnd) {
+      console.log(`Access ends on ${subscription.endsAt?.toISOString()}`);
+    }
+    ```
+  </Step>
+</Steps>
+
+## Switch providers
+
+Switching providers means swapping the `provider` — the rest of your code stays the same.
+
+<CodeGroup>
+
+```ts Polar
+import { createClient } from 'revenue-sdk';
+import { polar } from 'revenue-sdk/polar';
+
+const client = createClient({
+  provider: polar({
+    accessToken: process.env.POLAR_ACCESS_TOKEN!,
+    server: 'sandbox',
+  }),
+});
+```
+
+```ts Lemon Squeezy
+import { createClient } from 'revenue-sdk';
+import { lemonSqueezy } from 'revenue-sdk/lemon-squeezy';
+
+const client = createClient({
+  provider: lemonSqueezy({
+    apiKey: process.env.LEMON_SQUEEZY_API_KEY!,
+    storeId: process.env.LEMON_SQUEEZY_STORE_ID!,
+  }),
+});
+```
+
+```ts Stripe
+import { createClient } from 'revenue-sdk';
+import { stripe } from 'revenue-sdk/stripe';
+
+const client = createClient({
+  provider: stripe({ secretKey: process.env.STRIPE_SECRET_KEY! }),
+});
+```
+
+```ts Paddle
+import { createClient } from 'revenue-sdk';
+import { paddle } from 'revenue-sdk/paddle';
+
+const client = createClient({
+  provider: paddle({
+    apiKey: process.env.PADDLE_API_KEY!,
+    server: 'sandbox',
+  }),
+});
+```
+
+```ts Dodo Payments
+import { createClient } from 'revenue-sdk';
+import { dodoPayments } from 'revenue-sdk/dodo-payments';
+
+const client = createClient({
+  provider: dodoPayments({
+    apiKey: process.env.DODO_PAYMENTS_API_KEY!,
+    server: 'test',
+  }),
+});
+```
+
+</CodeGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Client & providers" icon="layers" href="/docs/concepts/client-and-providers">
+    How the client and provider factories fit together.
+  </Card>
+  <Card title="Subscription lifecycle" icon="activity" href="/docs/concepts/subscription-lifecycle">
+    The unified status model, scheduled cancellations, and entitlement checks.
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/docs/concepts/webhooks">
+    Verify-then-parse, normalized events, and idempotency.
+  </Card>
+  <Card title="Capabilities" icon="toggle-right" href="/docs/concepts/capabilities">
+    What each provider can and can't do, and how the client gates on it.
+  </Card>
+</CardGroup>

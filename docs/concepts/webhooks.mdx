@@ -1,0 +1,293 @@
+---
+title: Webhooks
+description: The verify-then-parse pattern, the raw-body rule, per-provider signature schemes, normalized events, and idempotency.
+sidebar:
+  label: Webhooks
+---
+
+Webhooks are the only trustworthy source of billing truth: the redirect after checkout can be closed,
+retried, or forged, but a signed webhook cannot. `revenue-sdk` ships two standalone helpers per provider
+— `verifyWebhook` and `parseWebhookEvent` — that take a Web-standard `Request` and need no client.
+
+## Verify, then parse
+
+Always in that order. `parseWebhookEvent` does **not** verify anything; it will happily parse a forged
+payload.
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/stripe';
+
+export async function POST(request: Request): Promise<Response> {
+  const headers = request.headers;
+  const body = await request.text();
+
+  const valid = await verifyWebhook({ headers, body, secret: process.env.STRIPE_WEBHOOK_SECRET! });
+  if (!valid) {
+    return new Response('invalid signature', { status: 401 });
+  }
+
+  const event = await parseWebhookEvent({ headers, body });
+  // ...
+  return new Response(null, { status: 204 });
+}
+```
+
+Both helpers accept either shape:
+
+<TypeTable
+  type={{
+    request: { type: 'Request', required: false, description: 'A Web-standard Request. Provide this or headers + body.' },
+    headers: { type: 'Headers | Record<string, string>', required: false, description: 'Request headers, when you pass the body separately. Names are matched case-insensitively.' },
+    body: { type: 'string', required: false, description: 'The raw request body — required with headers.' },
+    secret: { type: 'string', description: 'The endpoint signing secret. verifyWebhook only.' },
+  }}
+/>
+
+`verifyWebhook` returns `false` — it never throws — for a missing header, a stale timestamp, a malformed
+secret, or a mismatched signature. Comparisons are constant-time.
+
+## The raw-body rule
+
+Signatures are computed over the **exact bytes** the provider sent. Any re-serialization (parsing JSON
+and stringifying it again, a body-parser middleware, a proxy that reformats) breaks verification.
+
+Read the body once with `await request.text()` and pass that same string to both helpers:
+
+```ts
+const body = await request.text(); // once
+await verifyWebhook({ headers: request.headers, body, secret });
+await parseWebhookEvent({ headers: request.headers, body });
+```
+
+Passing `{ request }` also works — the helpers clone the request internally — but reading the text once
+is cheaper and makes the raw body available for logging and de-duplication.
+
+:::warning
+In Express and other Node frameworks, mount a raw-body parser on the webhook route
+(`express.raw({ type: '*/*' })`) or the JSON middleware will consume and reshape the payload before you
+can verify it.
+:::
+
+## Signature schemes per provider
+
+You never have to implement these — `verifyWebhook` handles each transparently — but knowing which
+secret goes where saves a lot of debugging:
+
+| Provider          | Header(s)                            | Signed payload             | Key derivation                                       | Digest                                    |
+| ----------------- | ------------------------------------ | -------------------------- | ---------------------------------------------------- | ----------------------------------------- |
+| **Polar**         | `webhook-id`, `webhook-timestamp`, `webhook-signature` | `{id}.{ts}.{body}` | secret **verbatim, including `whsec_`** (UTF-8) | base64, any `v1,` part               |
+| **Dodo Payments** | same (Standard Webhooks)             | `{id}.{ts}.{body}`         | **strip `whsec_`, then base64-decode** into key bytes | base64, any `v1,` part                   |
+| **Stripe**        | `stripe-signature`                   | `{t}.{body}`               | secret verbatim, including `whsec_`                   | lowercase hex, any `v1=` (`v0=` ignored) |
+| **Paddle**        | `paddle-signature` (`ts=…;h1=…`)     | `{ts}:{body}`              | secret verbatim                                       | lowercase hex, any `h1=`                  |
+| **Lemon Squeezy** | `x-signature`                        | body only (no timestamp)   | secret verbatim                                       | hex, compared case-insensitively          |
+
+:::note
+Polar and Dodo Payments both advertise "Standard Webhooks", yet they derive the HMAC key **differently**.
+Polar's own SDK base64-encodes the raw secret before handing it to the reference library, which cancels
+out to using the secret verbatim; Dodo Payments uses the library's strict behavior, where `whsec_` is
+stripped and the remainder base64-decoded. Copying one implementation to the other silently fails every
+signature — `revenue-sdk` implements each exactly.
+:::
+
+Polar, Dodo Payments, Stripe, and Paddle deliveries carry a timestamp and are rejected outside a
+**300-second** tolerance, which bounds replay attacks. Lemon Squeezy sends no timestamp, so replay
+protection has to come from your own de-duplication.
+
+## Normalized events
+
+`parseWebhookEvent` maps the provider payload onto a small closed set:
+
+```ts
+type WebhookEventType =
+  | 'subscription.created'
+  | 'subscription.updated'
+  | 'subscription.canceled'
+  | 'order.paid'
+  | 'checkout.completed'
+  | 'unknown';
+```
+
+<TypeTable
+  type={{
+    type: { type: 'WebhookEventType', description: 'The normalized event type.' },
+    providerType: { type: 'string', description: "The provider's original event type string, always preserved." },
+    subscription: { type: 'Subscription', required: false, description: 'Set on subscription.* events.' },
+    order: { type: 'Order', required: false, description: 'Set on order.paid.' },
+    checkout: { type: 'Checkout', required: false, description: 'Set on checkout.completed (and on not-yet-complete checkout events, which report unknown).' },
+    raw: { type: 'unknown', description: 'The untouched provider envelope.' },
+  }}
+/>
+
+### What each type means
+
+- **`subscription.created`** — a new subscription exists. Dodo Payments has no such event; its first
+  signal arrives as `subscription.updated`, so always upsert rather than insert.
+- **`subscription.updated`** — anything changed: activation, renewal, plan change, pause, resume,
+  past-due, **and a scheduled cancellation**. This is the workhorse.
+- **`subscription.canceled`** — **terminal only**. The subscription has actually ended.
+- **`order.paid`** — money was received, **including renewals**. On Lemon Squeezy this covers both
+  `order_created` (first payment) and `subscription_payment_success` (renewals), since renewals never
+  emit an order.
+- **`checkout.completed`** — a checkout was paid. Only Polar and Stripe expose a checkout event the SDK
+  can confirm as paid.
+- **`unknown`** — everything else. Never an error.
+
+:::warning
+**A scheduled cancellation arrives as `subscription.updated`, not `subscription.canceled`.** Providers
+disagree loudly here: Polar emits `subscription.canceled` when a cancellation is merely *scheduled* and
+`subscription.revoked` when it takes effect; Paddle emits `subscription.updated` for the schedule and
+`subscription.canceled` on the effective date. `revenue-sdk` normalizes both into
+`subscription.updated` (with `cancelAtPeriodEnd: true`) followed later by `subscription.canceled`. Read
+`event.subscription.cancelAtPeriodEnd`, never the provider's event name.
+:::
+
+### Unknown events never throw
+
+Provider event catalogs grow. Anything outside the mapped set comes back as
+`{ type: 'unknown', providerType, raw }` so a new provider event can never crash your endpoint. The one
+case that *does* throw is an unparseable body — a `RevenueError` with code `validation`.
+
+```ts
+switch (event.type) {
+  case 'subscription.created':
+  case 'subscription.updated':
+  case 'subscription.canceled':
+    await upsertSubscription(event.subscription!);
+    break;
+  case 'order.paid':
+    await recordPayment(event.order!);
+    break;
+  case 'checkout.completed':
+    await fulfill(event.checkout!);
+    break;
+  default:
+    // 'unknown' — log providerType and move on.
+    break;
+}
+```
+
+The full per-provider event matrix lives in
+[the webhook events reference](/docs/reference/webhook-events).
+
+## Routing a shared endpoint
+
+`detectWebhookProvider` — exported from the package root — identifies the sender of a delivery so one
+endpoint can serve several providers:
+
+```ts
+import { detectWebhookProvider, type ProviderName } from 'revenue-sdk';
+import * as polar from 'revenue-sdk/polar';
+import * as stripe from 'revenue-sdk/stripe';
+
+type WebhookHelpers = Pick<typeof polar, 'verifyWebhook' | 'parseWebhookEvent'>;
+const handlers: Partial<Record<ProviderName, WebhookHelpers>> = { polar, stripe };
+
+export async function POST(request: Request): Promise<Response> {
+  const headers = request.headers;
+  const body = await request.text();
+
+  const provider = await detectWebhookProvider({ headers, body });
+  const helpers = provider === undefined ? undefined : handlers[provider];
+  if (helpers === undefined) {
+    return new Response('unknown sender', { status: 400 });
+  }
+
+  const secret = secretFor(provider);
+  if (!(await helpers.verifyWebhook({ headers, body, secret }))) {
+    return new Response('invalid signature', { status: 401 });
+  }
+
+  const event = await helpers.parseWebhookEvent({ headers, body });
+  // ...
+  return new Response(null, { status: 204 });
+}
+```
+
+Detection is header-based: `stripe-signature` → Stripe, `paddle-signature` → Paddle, `x-signature` →
+Lemon Squeezy. Polar and Dodo Payments share the Standard Webhooks headers, so the JSON body is
+inspected for `business_id` (present only on Dodo Payments) — which is why the helper is async.
+
+:::warning
+`detectWebhookProvider` is **routing, not authentication.** Headers are attacker-controlled. Always call
+the detected provider's `verifyWebhook` before acting on anything.
+:::
+
+## A full Cloudflare Worker handler
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/polar';
+
+interface Env {
+  POLAR_WEBHOOK_SECRET: string;
+  PROCESSED: KVNamespace;
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    if (request.method !== 'POST') {
+      return new Response('method not allowed', { status: 405 });
+    }
+
+    const headers = request.headers;
+    const body = await request.text();
+
+    if (!(await verifyWebhook({ headers, body, secret: env.POLAR_WEBHOOK_SECRET }))) {
+      return new Response('invalid signature', { status: 401 });
+    }
+
+    // Standard Webhooks: webhook-id is the delivery id.
+    const deliveryId = headers.get('webhook-id');
+    if (deliveryId && (await env.PROCESSED.get(deliveryId)) !== null) {
+      return new Response(null, { status: 204 }); // already handled
+    }
+
+    const event = await parseWebhookEvent({ headers, body });
+    switch (event.type) {
+      case 'subscription.created':
+      case 'subscription.updated':
+      case 'subscription.canceled':
+        await upsertSubscription(event.subscription!);
+        break;
+      case 'order.paid':
+        await recordPayment(event.order!);
+        break;
+    }
+
+    if (deliveryId) {
+      await env.PROCESSED.put(deliveryId, '1', { expirationTtl: 60 * 60 * 24 * 3 });
+    }
+    return new Response(null, { status: 204 });
+  },
+};
+```
+
+## Idempotency
+
+Every provider retries deliveries, and several send overlapping events for one state change. Assume
+**at-least-once, out-of-order** delivery:
+
+1. **Dedupe on the delivery ID.** Store it with a TTL and drop repeats:
+
+   | Provider          | Delivery ID                                                     |
+   | ----------------- | ---------------------------------------------------------------- |
+   | **Polar**         | `webhook-id` header                                              |
+   | **Dodo Payments** | `webhook-id` header                                              |
+   | **Stripe**        | `id` on the event envelope (`raw.id`)                            |
+   | **Paddle**        | `event_id` on the envelope (`raw.event_id`)                      |
+   | **Lemon Squeezy** | no delivery ID — dedupe on `(providerType, subscription/order id, updated timestamp)` |
+
+2. **Upsert, never insert.** Key subscription state on `event.subscription.id`. Reordered events then
+   converge instead of conflicting.
+3. **Ignore stale writes.** Compare against a monotonic field (the provider's `updated_at` in `raw`, or
+   `currentPeriodEnd`) and skip anything older than what you have stored.
+4. **Return 2xx fast.** Acknowledge within a couple of seconds and move slow work off the request — see
+   [the webhook handler guide](/docs/guides/webhook-handler).
+
+<CardGroup cols={2}>
+  <Card title="Next: Pagination" icon="list" href="/docs/concepts/pagination">
+    Cursor pages and the listAll iterators.
+  </Card>
+  <Card title="Production webhook handler" icon="webhook" href="/docs/guides/webhook-handler">
+    A complete, idempotent handler with persistence.
+  </Card>
+</CardGroup>

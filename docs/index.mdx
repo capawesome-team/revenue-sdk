@@ -1,0 +1,112 @@
+---
+title: Introduction
+description: One unified, normalized TypeScript API over Polar, Lemon Squeezy, Stripe, Paddle, and Dodo Payments — zero dependencies and Workers-ready.
+sidebar:
+  label: Introduction
+  icon: rocket
+---
+
+`revenue-sdk` gives you a single, normalized API for five billing providers — **Polar**, **Lemon
+Squeezy**, **Stripe**, **Paddle**, and **Dodo Payments** — so you write your products, checkout,
+subscription, customer-portal, and webhook logic once instead of five times.
+
+It has **zero runtime dependencies** (raw `fetch` and Web Crypto only) and is **edge-compatible**: it
+runs on Node.js ≥ 20, Cloudflare Workers (without `nodejs_compat`), Deno, Bun, and any other
+Web-standard runtime.
+
+:::warning
+`revenue-sdk` is in **early development**. The API may change between releases without a deprecation
+period. Feedback and bug reports are very welcome — please
+[open an issue on GitHub](https://github.com/capawesome-team/revenue-sdk/issues).
+:::
+
+## Why revenue-sdk
+
+<CardGroup cols={2}>
+  <Card title="One unified API" icon="layers">
+    Swap the `provider` and the rest of your code stays the same. No per-provider branching.
+  </Card>
+  <Card title="Normalized types" icon="shapes">
+    `Product`, `Price`, `Checkout`, `Customer`, `Subscription`, `Order` — every model keeps the
+    untouched payload on a `raw` escape hatch.
+  </Card>
+  <Card title="One subscription status model" icon="activity">
+    Seven statuses across all five providers, with `cancelAtPeriodEnd` split out so `canceled` always
+    means terminal.
+  </Card>
+  <Card title="Zero dependencies" icon="feather">
+    Just `fetch` and Web Crypto. Nothing to audit, nothing to bloat your bundle.
+  </Card>
+  <Card title="Workers-ready" icon="cloud">
+    No `node:*` imports. Runs on Cloudflare Workers without `nodejs_compat`.
+  </Card>
+  <Card title="Webhook verify & parse" icon="webhook">
+    Standalone helpers per provider that take a Web-standard `Request` — no client needed.
+  </Card>
+  <Card title="Tree-shakable subpaths" icon="package">
+    Each provider lives on its own import subpath, so unused providers never reach your bundle.
+  </Card>
+  <Card title="Capability gating" icon="toggle-right">
+    Providers differ. The client throws `unsupported` instead of silently dropping an option.
+  </Card>
+</CardGroup>
+
+## A first look
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { polar } from 'revenue-sdk/polar';
+
+const client = createClient({
+  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
+});
+
+const checkout = await client.checkouts.create({
+  items: [{ product: 'PRODUCT_ID' }],
+  customerEmail: 'ada@example.com',
+  successUrl: 'https://example.com/thanks',
+});
+
+console.log(checkout.url);
+```
+
+Switching providers means swapping the `provider` argument — the rest of your code stays the same.
+
+## Supported providers
+
+<CardGroup cols={2}>
+  <Card title="Polar" icon="circle-dot" href="/docs/providers/polar">
+    Merchant of record. Organization access token, external sandbox. Import from `revenue-sdk/polar`.
+  </Card>
+  <Card title="Lemon Squeezy" icon="citrus" href="/docs/providers/lemon-squeezy">
+    Merchant of record. JSON:API, store-scoped, variants as products. Import from
+    `revenue-sdk/lemon-squeezy`.
+  </Card>
+  <Card title="Stripe" icon="credit-card" href="/docs/providers/stripe">
+    Payment processor. Pinned API version, form-encoded wire format. Import from
+    `revenue-sdk/stripe`.
+  </Card>
+  <Card title="Paddle" icon="square-stack" href="/docs/providers/paddle">
+    Merchant of record. Paddle.js checkout on your own domain. Import from `revenue-sdk/paddle`.
+  </Card>
+  <Card title="Dodo Payments" icon="bird" href="/docs/providers/dodo-payments">
+    Merchant of record. Unversioned additive API. Import from `revenue-sdk/dodo-payments`.
+  </Card>
+  <Card title="In-memory testing provider" icon="flask-conical" href="/docs/providers/testing">
+    Seedable fake for your test suite. Import from `revenue-sdk/testing`.
+  </Card>
+</CardGroup>
+
+## Where to next
+
+<CardGroup cols={3}>
+  <Card title="Installation" icon="package" href="/docs/installation">
+    Install the package and learn the subpath exports.
+  </Card>
+  <Card title="Quickstart" icon="zap" href="/docs/quickstart">
+    Create a client, create a checkout, and handle your first webhook.
+  </Card>
+  <Card title="Concepts" icon="book-open" href="/docs/concepts/client-and-providers">
+    Clients, products, checkouts, subscriptions, webhooks, pagination, errors, capabilities.
+  </Card>
+</CardGroup>

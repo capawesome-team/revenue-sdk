@@ -1,0 +1,164 @@
+---
+title: Webhook events
+description: The normalized webhook event union, the exact provider events each one maps from, the signature schemes, and how provider detection works.
+sidebar:
+  label: Webhook events
+---
+
+A complete reference of what `parseWebhookEvent` produces for every provider event it recognizes. For
+verification, the raw-body rule, and idempotency, see [Webhooks](/docs/concepts/webhooks).
+
+## The normalized union
+
+```ts
+type WebhookEventType =
+  | 'subscription.created'
+  | 'subscription.updated'
+  | 'subscription.canceled'
+  | 'order.paid'
+  | 'checkout.completed'
+  | 'unknown';
+```
+
+Every parsed event also carries `providerType` — the provider's original event string — and `raw`, the
+untouched envelope. Anything not listed below comes back as `unknown`; `parseWebhookEvent` never throws
+on an unrecognized type.
+
+## The matrix
+
+### `subscription.created`
+
+| Provider          | Provider event                       |
+| ----------------- | ------------------------------------ |
+| **Polar**         | `subscription.created`               |
+| **Lemon Squeezy** | `subscription_created`               |
+| **Stripe**        | `customer.subscription.created`      |
+| **Paddle**        | `subscription.created`               |
+| **Dodo Payments** | — (none; see the note below)         |
+
+### `subscription.updated`
+
+| Provider          | Provider events                                                                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Polar**         | `subscription.active`, `subscription.canceled`, `subscription.cycled`, `subscription.past_due`, `subscription.paused`, `subscription.resumed`, `subscription.uncanceled`, `subscription.updated` |
+| **Lemon Squeezy** | `subscription_cancelled`, `subscription_paused`, `subscription_resumed`, `subscription_unpaused`, `subscription_updated`                          |
+| **Stripe**        | `customer.subscription.updated`, `customer.subscription.paused`, `customer.subscription.resumed`                                                   |
+| **Paddle**        | `subscription.activated`, `subscription.past_due`, `subscription.paused`, `subscription.resumed`, `subscription.trialing`, `subscription.updated`  |
+| **Dodo Payments** | `subscription.active`, `subscription.on_hold`, `subscription.paused`, `subscription.plan_changed`, `subscription.renewed`, `subscription.updated`  |
+
+### `subscription.canceled` (terminal)
+
+| Provider          | Provider events                                                     |
+| ----------------- | -------------------------------------------------------------------- |
+| **Polar**         | `subscription.revoked`                                              |
+| **Lemon Squeezy** | `subscription_expired`                                              |
+| **Stripe**        | `customer.subscription.deleted`                                     |
+| **Paddle**        | `subscription.canceled`                                             |
+| **Dodo Payments** | `subscription.cancelled`, `subscription.expired`, `subscription.failed` |
+
+### `order.paid`
+
+| Provider          | Provider events                                       |
+| ----------------- | ------------------------------------------------------ |
+| **Polar**         | `order.paid`                                          |
+| **Lemon Squeezy** | `order_created`, `subscription_payment_success`       |
+| **Stripe**        | `invoice.paid`                                        |
+| **Paddle**        | `transaction.completed`                               |
+| **Dodo Payments** | `payment.succeeded`                                   |
+
+### `checkout.completed`
+
+| Provider          | Provider events                                                                       |
+| ----------------- | -------------------------------------------------------------------------------------- |
+| **Polar**         | `checkout.updated` — **only** when the mapped `Checkout.status` is `complete`          |
+| **Lemon Squeezy** | — (checkouts carry no lifecycle status)                                                |
+| **Stripe**        | `checkout.session.completed`, `checkout.session.async_payment_succeeded` — **only** when the mapped `Checkout.status` is `complete` |
+| **Paddle**        | — (use `transaction.completed` → `order.paid`)                                         |
+| **Dodo Payments** | — (use `payment.succeeded` → `order.paid`)                                             |
+
+## The traps this table encodes
+
+:::warning
+**A scheduled cancellation is `subscription.updated`, not `subscription.canceled`.**
+
+Polar emits `subscription.canceled` when a cancellation is merely *scheduled* and `subscription.revoked`
+when it takes effect. Paddle emits `subscription.updated` (with `scheduled_change`) for the schedule and
+`subscription.canceled` on the effective date. Lemon Squeezy emits `subscription_cancelled` for the
+grace period and `subscription_expired` at the end.
+
+`revenue-sdk` normalizes all three shapes to: **schedule → `subscription.updated` with
+`cancelAtPeriodEnd: true`**, **termination → `subscription.canceled`**. Read
+`event.subscription.cancelAtPeriodEnd`, never the provider's event name.
+:::
+
+:::warning
+**Dodo Payments has no `subscription.created`.** Its first signal for a new subscription is
+`subscription.active`, which also fires after recovery from `on_hold`. Always **upsert** on subscription
+events rather than insert — see [the webhook handler guide](/docs/guides/webhook-handler).
+:::
+
+:::note
+**`checkout.session.completed` can mean unpaid.** For delayed payment methods, Stripe finishes the
+session with `payment_status: "unpaid"`. `revenue-sdk` maps that to `Checkout.status: 'open'`, so the
+event comes back as `unknown` (with `checkout` attached) rather than `checkout.completed`. The
+settlement arrives later as `checkout.session.async_payment_succeeded`. Polar behaves the same way for a
+`checkout.updated` that isn't yet `succeeded`.
+:::
+
+:::note
+**Renewals never emit an order on Lemon Squeezy.** `order_created` fires for the first payment only, so
+`subscription_payment_success` (which carries a subscription invoice) is mapped to `order.paid` as well.
+On Paddle, `transaction.paid` is deliberately left unmapped so `transaction.completed` is the single
+"money received" signal and payments don't fire twice.
+:::
+
+## Which model each event carries
+
+| Normalized event         | Populated field  |
+| ------------------------ | ---------------- |
+| `subscription.created`   | `subscription`   |
+| `subscription.updated`   | `subscription`   |
+| `subscription.canceled`  | `subscription`   |
+| `order.paid`             | `order`          |
+| `checkout.completed`     | `checkout`       |
+| `unknown`                | `checkout` for a not-yet-complete Polar/Stripe checkout event; otherwise nothing but `raw` |
+
+## Signature schemes
+
+| Provider          | Header(s)                                             | Signed payload           | Key derivation                                        | Digest                                    | Tolerance |
+| ----------------- | ----------------------------------------------------- | ------------------------ | ------------------------------------------------------ | ----------------------------------------- | --------- |
+| **Polar**         | `webhook-id`, `webhook-timestamp`, `webhook-signature` | `{id}.{ts}.{body}`      | secret **verbatim, including `whsec_`**                 | base64, any `v1,` part                    | 300 s     |
+| **Dodo Payments** | same (Standard Webhooks)                              | `{id}.{ts}.{body}`       | **strip `whsec_`, then base64-decode** into key bytes   | base64, any `v1,` part                    | 300 s     |
+| **Stripe**        | `stripe-signature`                                    | `{t}.{body}`             | secret verbatim, including `whsec_`                     | lowercase hex, any `v1=` (`v0=` ignored)  | 300 s     |
+| **Paddle**        | `paddle-signature` (`ts=…;h1=…`)                      | `{ts}:{body}`            | secret verbatim                                         | lowercase hex, any `h1=`                  | 300 s     |
+| **Lemon Squeezy** | `x-signature`                                         | body only (no timestamp) | secret verbatim                                         | hex, compared case-insensitively          | —         |
+
+`verifyWebhook` returns `false` (never throws) for a missing header, a stale timestamp, a malformed
+secret, or a mismatched signature, and all comparisons are constant-time.
+
+## Provider detection
+
+`detectWebhookProvider` inspects headers, then the body when it has to:
+
+| Signal                                              | Result           |
+| --------------------------------------------------- | ---------------- |
+| `stripe-signature` present                          | `stripe`         |
+| `paddle-signature` present                          | `paddle`         |
+| `x-signature` present                               | `lemon-squeezy`  |
+| `webhook-id` + `webhook-signature`, body has `business_id` | `dodo-payments` |
+| `webhook-id` + `webhook-signature`, body has no `business_id` | `polar`  |
+| anything else (or unparseable body)                 | `undefined`      |
+
+:::warning
+Detection is **routing, not authentication**. Headers are attacker-controlled — always verify with the
+detected provider's `verifyWebhook` before acting.
+:::
+
+<CardGroup cols={2}>
+  <Card title="Error codes" icon="list" href="/docs/reference/error-codes">
+    The RevenueError union and HTTP mapping.
+  </Card>
+  <Card title="Webhook handler guide" icon="webhook" href="/docs/guides/webhook-handler">
+    Verify, dedupe, upsert, acknowledge.
+  </Card>
+</CardGroup>

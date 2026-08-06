@@ -1,0 +1,136 @@
+---
+title: Polar
+description: Configure the Polar provider — organization access token, the separate sandbox host, webhook signing secret, capabilities, and quirks.
+sidebar:
+  label: Polar
+---
+
+Polar is a merchant of record for digital products. Import the factory from `revenue-sdk/polar`.
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { polar } from 'revenue-sdk/polar';
+
+const client = createClient({
+  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
+});
+```
+
+## Factory options
+
+<TypeTable
+  type={{
+    accessToken: {
+      type: 'string',
+      description: 'Organization access token (polar_oat_…). Sent as a Bearer credential.',
+    },
+    server: {
+      type: "'production' | 'sandbox'",
+      default: 'production',
+      description: 'Selects api.polar.sh or sandbox-api.polar.sh.',
+    },
+    baseUrl: { type: 'string', required: false, description: 'Overrides server; used verbatim.' },
+    fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+  }}
+/>
+
+## Authentication
+
+Create an **organization access token** in the Polar dashboard under **Settings → Developers → Access
+tokens**. Organization tokens are scoped to a single organization, which is why the factory needs no
+organization ID.
+
+```ts
+polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! });
+```
+
+Grant the token the scopes for what you use: products, checkouts, customers, subscriptions, and
+customer sessions.
+
+## Sandbox
+
+Polar's sandbox is a **separate environment on a separate host** (`sandbox-api.polar.sh`) with its own
+organization, its own products, and its own tokens — a production token will not authenticate against
+it.
+
+```ts
+polar({
+  accessToken: process.env.POLAR_SANDBOX_ACCESS_TOKEN!,
+  server: 'sandbox',
+});
+```
+
+## Webhooks
+
+Create the endpoint in the Polar dashboard under **Settings → Webhooks**, choose the **Raw** payload
+format, and copy the generated signing secret.
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/polar';
+
+const headers = request.headers;
+const body = await request.text();
+
+if (!(await verifyWebhook({ headers, body, secret: env.POLAR_WEBHOOK_SECRET }))) {
+  return new Response('invalid signature', { status: 401 });
+}
+
+const event = await parseWebhookEvent({ headers, body });
+```
+
+Polar uses [Standard Webhooks](https://www.standardwebhooks.com/) headers (`webhook-id`,
+`webhook-timestamp`, `webhook-signature`) with a 300-second timestamp tolerance. The signing secret is
+used **verbatim, including its `whsec_` prefix** — do not strip or base64-decode it.
+
+Events worth subscribing to: `subscription.created`, `subscription.updated`, `subscription.active`,
+`subscription.canceled`, `subscription.uncanceled`, `subscription.revoked`, `subscription.cycled`,
+`order.paid`, `checkout.updated`.
+
+:::warning
+Polar emits `subscription.canceled` when a cancellation is merely **scheduled**; the terminal event is
+`subscription.revoked`. `revenue-sdk` normalizes them to `subscription.updated` and
+`subscription.canceled` respectively — see [Webhooks](/docs/concepts/webhooks).
+:::
+
+## Capabilities
+
+| Capability                    | Value                        |
+| ----------------------------- | ---------------------------- |
+| `cancellationReason`          | `true`                       |
+| `checkoutStatus`              | `true`                       |
+| `checkoutSuccessUrl`          | `true`                       |
+| `endTrial`                    | `true`                       |
+| `hostedCheckout`              | `true`                       |
+| `listSubscriptionsByCustomer` | `true`                       |
+| `portalReturnUrl`             | `true`                       |
+| `prorationBehaviors`          | `['invoice_now', 'prorate']` |
+| `revoke`                      | `true`                       |
+| `uncancel`                    | `true`                       |
+
+## Quirks
+
+- **A `Product` is a Polar product**, and `Price.checkoutRef` is the **product ID** — Polar checkouts
+  take `products: string[]`, not price IDs.
+- **No item quantities.** A checkout item with `quantity` other than `1` throws `unsupported`; so does a
+  plan change with a quantity.
+- **No `none` proration.** Polar's `next_period` defers the plan change itself and `reset` restarts the
+  billing anchor — neither means "switch now, bill nothing extra", so the SDK refuses rather than pick a
+  lookalike.
+- **Trailing slashes are load-bearing.** Collection routes are `/v1/checkouts/`, `/v1/products/`,
+  `/v1/customers/` — the SDK sends them exactly as Polar requires. Relevant if you pass a custom
+  `baseUrl`.
+- **`external_customer_id`** links your own user IDs to Polar customers; it lives on the raw payload.
+- **No idempotency keys.** Polar's API has none, so retrying a `checkouts.create` may create a second
+  checkout. The client's rate-limit retry never applies to writes that could duplicate a charge.
+- **`Retry-After` on 429**, so the client's bounded rate-limit retry works out of the box.
+- **Trial length** is normalized to `Price.trialDays` only for day- and week-based trials; month- and
+  year-based trials have no exact day count and are left `undefined` — read `raw`.
+
+<CardGroup cols={2}>
+  <Card title="Lemon Squeezy" icon="citrus" href="/docs/providers/lemon-squeezy">
+    The next provider.
+  </Card>
+  <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
+    Compare all five providers.
+  </Card>
+</CardGroup>

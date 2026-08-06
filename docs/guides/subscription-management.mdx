@@ -1,0 +1,245 @@
+---
+title: Subscription management UI
+description: Build an account page — show status and a cancellation banner, cancel, uncancel, change plan, and open the portal.
+sidebar:
+  label: Subscription management
+---
+
+An account page needs to answer three questions — *am I subscribed?*, *what am I paying?*, and *what can
+I change?* — and offer four actions: cancel, uncancel, change plan, and manage billing details.
+
+## Load the state
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { polar } from 'revenue-sdk/polar';
+
+const client = createClient({
+  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
+});
+
+export async function loadBilling(userId: string) {
+  const user = await getUser(userId);
+  if (!user.providerSubscriptionId) {
+    return { subscription: undefined, plans: await loadPlans() };
+  }
+
+  const subscription = await client.subscriptions.get({ id: user.providerSubscriptionId });
+  return { subscription, plans: await loadPlans() };
+}
+```
+
+:::tip
+In production, read the subscription from **your own database** (kept current by
+[webhooks](/docs/guides/webhook-handler)) and treat the provider as the fallback. That keeps the page
+fast and available when the provider is not.
+:::
+
+## Show status honestly
+
+The unified status model makes this a lookup rather than a per-provider branch:
+
+```ts
+import type { Subscription } from 'revenue-sdk';
+
+const LABELS: Record<Subscription['status'], string> = {
+  incomplete: 'Awaiting first payment',
+  trialing: 'Trial',
+  active: 'Active',
+  past_due: 'Payment failed — retrying',
+  unpaid: 'Payment failed',
+  paused: 'Paused',
+  canceled: 'Ended',
+};
+
+const ENTITLED: ReadonlySet<Subscription['status']> = new Set(['active', 'trialing', 'past_due']);
+
+export function statusView(subscription: Subscription) {
+  return {
+    label: LABELS[subscription.status],
+    entitled: ENTITLED.has(subscription.status),
+    renewsAt: subscription.cancelAtPeriodEnd ? undefined : subscription.currentPeriodEnd,
+    endsAt: subscription.cancelAtPeriodEnd ? subscription.endsAt : undefined,
+  };
+}
+```
+
+## The cancellation banner
+
+A scheduled cancellation keeps `status` unchanged, so the banner keys off `cancelAtPeriodEnd`, not the
+status:
+
+```tsx
+export function CancellationBanner({ subscription }: { subscription: Subscription }) {
+  if (!subscription.cancelAtPeriodEnd) return null;
+
+  return (
+    <aside role="status">
+      <p>
+        Your subscription ends on{' '}
+        <strong>{subscription.endsAt?.toLocaleDateString() ?? 'the end of this period'}</strong>. You
+        keep full access until then.
+      </p>
+      <form method="post" action="/api/billing/uncancel">
+        <button type="submit">Resume subscription</button>
+      </form>
+    </aside>
+  );
+}
+```
+
+`status === 'canceled'` is a different, terminal state — show a "start a new subscription" call to
+action there, not a resume button. See
+[Subscription lifecycle](/docs/concepts/subscription-lifecycle).
+
+## Cancel
+
+```ts
+// POST /api/billing/cancel
+import { RevenueError } from 'revenue-sdk';
+
+export async function POST(request: Request): Promise<Response> {
+  const user = await requireUser(request);
+  const form = await request.formData();
+  const reason = form.get('reason');
+
+  try {
+    const subscription = await client.subscriptions.cancel({
+      id: user.providerSubscriptionId!,
+      // Only send the reason where the provider forwards it.
+      reason: client.capabilities.cancellationReason ? toReason(reason) : undefined,
+    });
+    await upsertSubscription(subscription);
+    return Response.redirect('/account/billing', 303);
+  } catch (error) {
+    if (error instanceof RevenueError) {
+      return new Response(error.message, { status: 400 });
+    }
+    throw error;
+  }
+}
+```
+
+`reason` must be one of the unified `CancellationReason` values — `customer_service`, `low_quality`,
+`missing_features`, `other`, `switched_service`, `too_complex`, `too_expensive`, `unused` — and requires
+the `cancellationReason` capability (Lemon Squeezy and Paddle lack it).
+
+To end access **immediately** instead, use `subscriptions.revoke` — gated by the `revoke` capability,
+which Lemon Squeezy lacks:
+
+```ts
+if (client.capabilities.revoke) {
+  await client.subscriptions.revoke({ id: subscriptionId });
+}
+```
+
+## Uncancel
+
+```ts
+// POST /api/billing/uncancel
+const subscription = await client.subscriptions.uncancel({ id: user.providerSubscriptionId! });
+await upsertSubscription(subscription);
+```
+
+All five providers support it. It reverts a *scheduled* cancellation only — once `status` is `canceled`
+the subscription is gone and the customer needs a new checkout.
+
+:::warning
+On **Lemon Squeezy**, `PATCH /subscriptions` silently no-ops for PayPal-paid subscriptions. Re-read the
+subscription and confirm `cancelAtPeriodEnd === false` before telling the customer it worked.
+:::
+
+## Change plan
+
+Offer only the plans the customer isn't already on, and pass `checkoutRef` — never `Product.id`:
+
+```tsx
+export function PlanSwitcher({ subscription, plans }: Props) {
+  const proration = client.capabilities.prorationBehaviors.includes('prorate')
+    ? 'prorate'
+    : 'invoice_now';
+
+  return (
+    <form method="post" action="/api/billing/change-plan">
+      <input type="hidden" name="prorationBehavior" value={proration} />
+      {plans
+        .filter((plan) => plan.checkoutRef !== subscription.priceId)
+        .map((plan) => (
+          <button key={plan.checkoutRef} name="checkoutRef" value={plan.checkoutRef} type="submit">
+            Switch to {plan.name} — {plan.price}
+          </button>
+        ))}
+    </form>
+  );
+}
+```
+
+```ts
+// POST /api/billing/change-plan
+const subscription = await client.subscriptions.changePlan({
+  id: user.providerSubscriptionId!,
+  product: checkoutRef,
+  prorationBehavior,
+});
+await upsertSubscription(subscription);
+```
+
+Pick the proration behavior from `capabilities.prorationBehaviors` rather than hard-coding it — Polar
+has no `none`, Dodo Payments has no `prorate`. The full matrix is in
+[Subscription lifecycle](/docs/concepts/subscription-lifecycle#proration-behaviors).
+
+:::note
+Polar and Lemon Squeezy reject a `quantity` other than `1` on a plan change. Omit it unless you know the
+provider supports seats.
+:::
+
+## The billing portal link
+
+Payment methods, invoices, and tax details belong in the provider's portal — don't rebuild them. Mint
+the session **on click**, because the URLs expire:
+
+```ts
+// GET /api/billing/portal
+export async function GET(request: Request): Promise<Response> {
+  const user = await requireUser(request);
+
+  const session = await client.customerPortal.createSession({
+    customerId: user.providerCustomerId!,
+    returnUrl: client.capabilities.portalReturnUrl
+      ? 'https://example.com/account/billing'
+      : undefined,
+  });
+
+  return Response.redirect(session.url, 302);
+}
+```
+
+```tsx
+<a href="/api/billing/portal">Manage billing details</a>
+```
+
+:::warning
+Never render a portal URL into a cached page, an email, or a server-side-rendered response. They are
+signed links into someone's billing account and they expire (Lemon Squeezy ~24 hours, Polar ~1 hour,
+Stripe/Paddle/Dodo Payments shorter still). Link to your own route and redirect.
+:::
+
+## Refresh state after every mutation
+
+Every mutating call returns the updated `Subscription`. Write it straight back so the page reflects the
+change without waiting for the webhook — the webhook will arrive shortly after and converge on the same
+state, which is exactly why the handler upserts.
+
+```ts
+const subscription = await client.subscriptions.cancel({ id });
+await upsertSubscription(subscription); // same function the webhook uses
+```
+
+<CardGroup cols={2}>
+  <Card title="Next: Cloudflare Workers" icon="cloud" href="/docs/guides/cloudflare-workers">
+    Deploy all of this to the edge.
+  </Card>
+  <Card title="Customers & portal" icon="users" href="/docs/concepts/customers-and-portal">
+    Portal sessions and their expiry rules.
+  </Card>
+</CardGroup>

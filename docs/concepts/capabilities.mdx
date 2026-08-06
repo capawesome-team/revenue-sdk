@@ -1,0 +1,163 @@
+---
+title: Capabilities
+description: RevenueCapabilities field by field, the fail-loud philosophy behind the unsupported error, and how to check capabilities before you call.
+sidebar:
+  label: Capabilities
+---
+
+Billing providers are not interchangeable. Paddle has no API-hosted checkout; Lemon Squeezy can't revoke
+a subscription immediately; Dodo Payments can't end a trial early; Polar has no "switch now, bill
+nothing" proration mode. Rather than hide these differences and silently drop options, `revenue-sdk`
+**advertises** each provider's capabilities and **gates** on them.
+
+## RevenueCapabilities
+
+Every provider exposes a `capabilities` object, also surfaced on `client.capabilities`:
+
+<TypeTable
+  type={{
+    cancellationReason: {
+      type: 'boolean',
+      description: 'Whether subscriptions.cancel forwards reason/comment to the provider. false for Lemon Squeezy and Paddle.',
+    },
+    checkoutStatus: {
+      type: 'boolean',
+      description: 'Whether Checkout.status is populated. false for Lemon Squeezy, whose checkouts carry no lifecycle status.',
+    },
+    checkoutSuccessUrl: {
+      type: 'boolean',
+      description: 'Whether checkouts.create accepts successUrl. false for Paddle — configure the redirect in Paddle.js instead.',
+    },
+    endTrial: {
+      type: 'boolean',
+      description: 'Whether subscriptions.endTrial is supported. false for Dodo Payments.',
+    },
+    hostedCheckout: {
+      type: 'boolean',
+      description: 'Whether checkouts.create returns a ready-to-use provider-hosted URL. false for Paddle, which needs your own Paddle.js page.',
+    },
+    listSubscriptionsByCustomer: {
+      type: 'boolean',
+      description: 'Whether subscriptions.list accepts a customerId filter. false for Lemon Squeezy.',
+    },
+    portalReturnUrl: {
+      type: 'boolean',
+      description: 'Whether customerPortal.createSession accepts returnUrl. false for Lemon Squeezy and Paddle.',
+    },
+    prorationBehaviors: {
+      type: "('prorate' | 'invoice_now' | 'none')[]",
+      description: 'The proration behaviors subscriptions.changePlan accepts on this provider.',
+    },
+    revoke: {
+      type: 'boolean',
+      description: 'Whether subscriptions.revoke (cancel immediately) is supported. false for Lemon Squeezy.',
+    },
+    uncancel: {
+      type: 'boolean',
+      description: 'Whether a scheduled cancellation can be reverted via subscriptions.uncancel. true everywhere today.',
+    },
+  }}
+/>
+
+```ts
+const client = createClient({ provider: paddle({ apiKey: process.env.PADDLE_API_KEY! }) });
+
+client.capabilities.hostedCheckout; // false
+client.capabilities.checkoutSuccessUrl; // false
+client.capabilities.prorationBehaviors; // ['invoice_now', 'none', 'prorate']
+```
+
+The complete five-provider table is in
+[the capability matrix](/docs/reference/capability-matrix).
+
+## Fail loud, never silently drop
+
+When you pass an option the provider can't honor, the client throws a `RevenueError` with code
+`unsupported` **before making a request**:
+
+```ts
+// Paddle configures success redirects in Paddle.js, not in the API.
+await client.checkouts.create({
+  items: [{ product: priceId }],
+  successUrl: 'https://example.com/thanks',
+});
+// → RevenueError { code: 'unsupported', provider: 'paddle' }
+```
+
+The alternative — quietly ignoring `successUrl` — would ship a checkout that strands customers on the
+provider's page with no way back, and you'd find out from a support ticket. A thrown error surfaces the
+difference at integration time, in your own test suite.
+
+The client gates on:
+
+- `checkouts.create({ successUrl })` — requires `checkoutSuccessUrl`
+- `subscriptions.list/listAll({ customerId })` — requires `listSubscriptionsByCustomer`
+- `subscriptions.cancel({ reason | comment })` — requires `cancellationReason`
+- `subscriptions.uncancel` — requires `uncancel`
+- `subscriptions.endTrial` — requires `endTrial`
+- `subscriptions.revoke` — requires `revoke`
+- `subscriptions.changePlan({ prorationBehavior })` — the value must be in `prorationBehaviors`
+- `customerPortal.createSession({ returnUrl })` — requires `portalReturnUrl`
+
+Adapters raise `unsupported` for the finer-grained limits a boolean can't express — a Polar checkout
+with `quantity > 1`, a Lemon Squeezy checkout with more than one item or a `customerId`, a Polar or
+Lemon Squeezy plan change with `quantity > 1`.
+
+## Check before you call
+
+Because capabilities are plain data, you can branch on them to build a UI that adapts to whichever
+provider is configured:
+
+```ts
+// Only offer a "cancel immediately" button where it exists.
+if (client.capabilities.revoke) {
+  showRevokeButton();
+}
+
+// Only render a "why are you leaving?" survey where the reason is forwarded.
+const reason = client.capabilities.cancellationReason ? survey.reason : undefined;
+await client.subscriptions.cancel({ id, reason });
+
+// Pick a proration behavior the provider actually has.
+const proration = client.capabilities.prorationBehaviors.includes('none') ? 'none' : 'prorate';
+await client.subscriptions.changePlan({ id, product, prorationBehavior: proration });
+```
+
+`hostedCheckout` is the one capability that changes your *architecture* rather than an argument: when it
+is `false` you must render your own Paddle.js page instead of redirecting to the returned URL. Decide
+that at build time, not per request.
+
+```ts
+if (client.capabilities.hostedCheckout) {
+  redirect(checkout.url); // Polar, Lemon Squeezy, Stripe, Dodo Payments
+} else {
+  // Paddle: hand checkout.id / the transaction to Paddle.js on your own page.
+  renderPaddleCheckout(checkout.id);
+}
+```
+
+## Simulating capability gaps in tests
+
+The in-memory provider defaults to every capability enabled, and accepts a `Partial<RevenueCapabilities>`
+override so you can assert your fallbacks:
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { createInMemoryProvider } from 'revenue-sdk/testing';
+
+const provider = createInMemoryProvider({}, { name: 'paddle', capabilities: { revoke: false } });
+const client = createClient({ provider });
+
+await expect(client.subscriptions.revoke({ id: 'sub-1' })).rejects.toMatchObject({
+  code: 'unsupported',
+});
+```
+
+<CardGroup cols={2}>
+  <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
+    The complete five-provider reference.
+  </Card>
+  <Card title="Testing provider" icon="flask-conical" href="/docs/providers/testing">
+    Seed state and override capabilities in your tests.
+  </Card>
+</CardGroup>

@@ -1,0 +1,97 @@
+---
+title: Status mapping
+description: The unified subscription status table with per-provider mappings, how cancelAtPeriodEnd is detected, the date fields, and checkout status mapping.
+sidebar:
+  label: Status mapping
+---
+
+A complete reference of how each provider's subscription status maps onto the unified
+`SubscriptionStatus` union, plus how a scheduled cancellation is detected. For the conceptual overview
+see [Subscription lifecycle](/docs/concepts/subscription-lifecycle).
+
+## The unified union
+
+```ts
+type SubscriptionStatus =
+  | 'incomplete'
+  | 'trialing'
+  | 'active'
+  | 'past_due'
+  | 'unpaid'
+  | 'paused'
+  | 'canceled';
+```
+
+`canceled` is **terminal**. A scheduled "cancel at period end" keeps the status unchanged and sets
+`cancelAtPeriodEnd: true` plus `endsAt`.
+
+## Status mapping
+
+| Unified      | Polar        | Lemon Squeezy          | Stripe                           | Paddle     | Dodo Payments                    |
+| ------------ | ------------ | ---------------------- | -------------------------------- | ---------- | -------------------------------- |
+| `incomplete` | `incomplete` | —                      | `incomplete`                     | —          | `pending`                        |
+| `trialing`   | `trialing`   | `on_trial`             | `trialing`                       | `trialing` | —                                |
+| `active`     | `active`     | `active`, `cancelled`¹ | `active`                         | `active`   | `active`                         |
+| `past_due`   | `past_due`   | `past_due`             | `past_due`                       | `past_due` | `on_hold`                        |
+| `unpaid`     | `unpaid`     | `unpaid`               | `unpaid`                         | —          | —                                |
+| `paused`     | `paused`     | `paused`               | `paused`                         | `paused`   | —                                |
+| `canceled`   | `canceled`, `incomplete_expired` | `expired` | `canceled`, `incomplete_expired` | `canceled` | `cancelled`, `failed`, `expired` |
+
+<small>¹ Lemon Squeezy's `cancelled` means "grace period until `ends_at`, still resumable" — it maps to
+`active` with `cancelAtPeriodEnd: true`. The terminal status is `expired`.</small>
+
+A dash means the provider has no equivalent state. **Any unrecognized provider status falls back to
+`active`**, so a newly introduced status can't silently revoke a paying customer's access; inspect
+`raw` if you need the exact provider value.
+
+## `cancelAtPeriodEnd` detection
+
+| Provider          | Rule                                                        | Notes                                                                        |
+| ----------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| **Polar**         | `cancel_at_period_end === true`                             | Set by `PATCH /v1/subscriptions/{id}`.                                       |
+| **Lemon Squeezy** | provider status is `cancelled`                              | The status *is* the flag; the unified status stays `active`.                 |
+| **Stripe**        | `cancel_at_period_end === true \|\| cancel_at !== null`     | Flexible billing mode sets only `cancel_at` for portal cancellations.        |
+| **Paddle**        | `scheduled_change?.action === 'cancel'`                     | Scheduling emits `subscription.updated`, not `subscription.canceled`.        |
+| **Dodo Payments** | `cancel_at_next_billing_date === true`                      | Forced to `false` once the status is terminal.                               |
+
+On Stripe and Dodo Payments, `cancelAtPeriodEnd` is normalized back to `false` when the subscription is
+terminally `canceled` — there is nothing left to schedule.
+
+## Date fields
+
+| Field                | Polar                  | Lemon Squeezy                 | Stripe                              | Paddle                                | Dodo Payments                             |
+| -------------------- | ---------------------- | ----------------------------- | ----------------------------------- | ------------------------------------- | ----------------------------------------- |
+| `currentPeriodStart` | `current_period_start` | —                             | item `current_period_start`         | `current_billing_period.starts_at`    | `previous_billing_date`                   |
+| `currentPeriodEnd`   | `current_period_end`   | `renews_at`                   | item `current_period_end`           | `current_billing_period.ends_at`      | `next_billing_date`                       |
+| `trialEndsAt`        | `trial_end`            | `trial_ends_at`               | `trial_end`                         | item `trial_dates.ends_at`            | —                                         |
+| `startedAt`          | `started_at`           | `created_at`                  | `start_date`                        | `started_at`                          | `created_at`                              |
+| `endsAt`             | `ends_at`              | `ends_at`                     | `cancel_at`, else `current_period_end` when scheduled | `scheduled_change.effective_at` when scheduled | `next_billing_date` when scheduled, else `expires_at` |
+| `endedAt`            | `ended_at`             | `ends_at` when `expired`      | `ended_at`                          | `canceled_at`                         | `cancelled_at`                            |
+
+:::note
+On **Stripe**, `current_period_start` and `current_period_end` live on the subscription **item**, not on
+the subscription. The SDK reads them from the first item.
+:::
+
+`endsAt` answers "when does access end" — a scheduled cancellation date or the end of a grace period.
+`endedAt` answers "when did it actually terminate" and is only set once the subscription is over.
+
+## Checkout status mapping
+
+| Unified    | Polar       | Lemon Squeezy    | Stripe                                            | Paddle              | Dodo Payments               |
+| ---------- | ----------- | ---------------- | ------------------------------------------------- | ------------------- | --------------------------- |
+| `complete` | `succeeded` | — (always `null`) | `complete` **and** `payment_status !== 'unpaid'`  | `paid`, `completed` | `payment_status: succeeded` |
+| `expired`  | `expired`, `failed` | —        | `expired`                                         | `canceled`          | `cancelled`, `failed`       |
+| `open`     | everything else | —            | `open`, plus `complete` while `payment_status === 'unpaid'` | everything else | everything else       |
+
+Lemon Squeezy checkouts carry no lifecycle status, so `Checkout.status` is always `null`
+(`checkoutStatus: false`).
+
+<CardGroup cols={2}>
+  <Card title="Webhook events" icon="webhook" href="/docs/reference/webhook-events">
+    Which provider events produce which normalized event.
+  </Card>
+  <Card title="Subscription lifecycle" icon="activity" href="/docs/concepts/subscription-lifecycle">
+    Entitlement checks and lifecycle operations.
+  </Card>
+</CardGroup>

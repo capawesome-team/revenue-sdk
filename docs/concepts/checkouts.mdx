@@ -1,0 +1,180 @@
+---
+title: Checkouts
+description: Create and read checkouts, the per-provider item and success-URL support matrix, metadata propagation, and status semantics.
+sidebar:
+  label: Checkouts
+---
+
+A checkout is the hand-off from your app to the provider's payment page. `checkouts.create` returns a
+normalized `Checkout` whose `url` you redirect the customer to; `checkouts.get` reads one back.
+
+## Creating a checkout
+
+```ts
+const checkout = await client.checkouts.create({
+  items: [{ product: price.checkoutRef, quantity: 1 }],
+  customerEmail: 'ada@example.com',
+  successUrl: 'https://example.com/thanks',
+  metadata: { userId: 'user_123' },
+});
+
+redirect(checkout.url);
+```
+
+<TypeTable
+  type={{
+    items: {
+      type: 'CheckoutItem[]',
+      description:
+        'At least one { product, quantity? }. product is a Price.checkoutRef, never a Product.id.',
+    },
+    successUrl: { type: 'string', required: false, description: 'Where the customer lands after paying. Requires the checkoutSuccessUrl capability.' },
+    customerId: { type: 'string', required: false, description: 'Attach an existing provider customer.' },
+    customerEmail: { type: 'string', required: false, description: 'Prefill the email for a new customer.' },
+    metadata: { type: 'Record<string, string | number | boolean>', required: false, description: 'Copied onto the resulting order/subscription where the provider supports it.' },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
+  }}
+/>
+
+The client validates `items` before any request is made: an empty array, an empty `product` string, or a
+`quantity` that isn't a positive integer throws `RevenueError` with code `validation`.
+
+## The Checkout model
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Provider checkout identifier.' },
+    url: { type: 'string', description: 'Where to send the customer. Empty string when the provider did not return one.' },
+    status: { type: "'open' | 'complete' | 'expired' | null", description: 'null when the provider exposes no checkout status (Lemon Squeezy).' },
+    customerId: { type: 'string', required: false, description: 'Provider customer, when known.' },
+    customerEmail: { type: 'string', required: false, description: 'Customer email, when known.' },
+    subscriptionId: { type: 'string', required: false, description: 'The subscription the checkout created, when known.' },
+    metadata: { type: 'Record<string, string | number | boolean>', required: false, description: 'Metadata echoed back by the provider.' },
+    expiresAt: { type: 'Date', required: false, description: 'When the checkout link expires, when the provider says so.' },
+    raw: { type: 'unknown', description: 'The untouched provider payload.' },
+  }}
+/>
+
+## Items, quantity, and success URL support
+
+| Provider          | Multiple items | `quantity` > 1 | `successUrl`               | `customerId` on create |
+| ----------------- | -------------- | -------------- | -------------------------- | ---------------------- |
+| **Polar**         | yes            | **no**         | yes                        | yes                    |
+| **Lemon Squeezy** | **no** (one)   | yes            | yes (`redirect_url`)       | **no** (use `customerEmail`) |
+| **Stripe**        | yes            | yes            | yes                        | yes                    |
+| **Paddle**        | yes            | yes            | **no** — see below         | yes (email is resolved to a customer) |
+| **Dodo Payments** | yes            | yes            | yes (`return_url`)         | yes                    |
+
+Unsupported combinations throw `RevenueError` with code `unsupported` rather than silently dropping
+your input:
+
+- Polar rejects any item `quantity` other than `1`.
+- Lemon Squeezy rejects more than one item, and rejects `customerId` (pass `customerEmail` instead).
+- Paddle rejects `successUrl` — the client gates this one *before* the request, via the
+  `checkoutSuccessUrl` capability.
+
+:::warning
+**Paddle has no provider-hosted checkout.** `checkouts.create` creates a *transaction*, and the returned
+`checkout.url` points at the **default payment link** configured in your Paddle dashboard — a page you
+host yourself that runs [Paddle.js](https://developer.paddle.com/paddlejs/overview) on an approved
+domain. Without a configured default payment link and an approved domain, the URL will not work. This
+is why Paddle reports `hostedCheckout: false` and `checkoutSuccessUrl: false`: success redirects are
+configured in Paddle.js, not in the API call.
+:::
+
+Check the capability before offering a success URL in provider-agnostic code:
+
+```ts
+await client.checkouts.create({
+  items: [{ product: price.checkoutRef }],
+  successUrl: client.capabilities.checkoutSuccessUrl
+    ? 'https://example.com/thanks'
+    : undefined,
+});
+```
+
+## Metadata propagation
+
+`metadata` is a flat `Record<string, string | number | boolean>`. Where it ends up differs per provider:
+
+| Provider          | Written as                                                    | Reaches the subscription?                       |
+| ----------------- | ------------------------------------------------------------- | ----------------------------------------------- |
+| **Polar**         | checkout `metadata`                                            | yes — Polar copies it onto the order/subscription |
+| **Lemon Squeezy** | `checkout_data.custom`                                         | only via webhooks, as `meta.custom_data`         |
+| **Stripe**        | session `metadata` **and** `subscription_data[metadata]`        | yes — the SDK writes both                        |
+| **Paddle**        | transaction `custom_data`                                      | yes — carried onto the subscription              |
+| **Dodo Payments** | checkout `metadata`                                            | yes                                              |
+
+Two of these deserve attention:
+
+- **Stripe** does *not* copy session metadata onto the created subscription. `revenue-sdk` writes
+  `subscription_data[metadata]` as well whenever the checkout is in subscription mode, so
+  `subscription.metadata` carries your keys.
+- **Lemon Squeezy** never attaches custom data to the subscription resource. It travels only in the
+  webhook envelope (`meta.custom_data`), which is why `Subscription.metadata` is populated on Lemon
+  Squeezy webhook events but is `undefined` when you fetch the subscription over the API.
+
+:::tip
+Treat metadata as a hint, not a source of truth. Store your own mapping from provider
+`customerId`/`subscriptionId` to your user, and use metadata only to bootstrap that mapping on first
+sight.
+:::
+
+## Checkout status semantics
+
+`Checkout.status` is a three-value union plus `null`:
+
+| `status`   | Meaning                                                    |
+| ---------- | ---------------------------------------------------------- |
+| `open`     | Not paid (yet). The link may still be used.                |
+| `complete` | **Paid.** Safe to fulfill.                                 |
+| `expired`  | The checkout failed, was canceled, or timed out.           |
+| `null`     | The provider exposes no checkout status (Lemon Squeezy).   |
+
+Per-provider mapping:
+
+| Provider          | → `complete`            | → `expired`             | → `open`                                     |
+| ----------------- | ----------------------- | ----------------------- | -------------------------------------------- |
+| **Polar**         | `succeeded`             | `expired`, `failed`     | everything else                              |
+| **Lemon Squeezy** | —                       | —                       | — (`status` is always `null`)                 |
+| **Stripe**        | `complete` **and** `payment_status !== 'unpaid'` | `expired` | `open`, **and** `complete` while `payment_status === 'unpaid'` |
+| **Paddle**        | `paid`, `completed`     | `canceled`              | everything else                               |
+| **Dodo Payments** | `payment_status: succeeded` | `cancelled`, `failed` | everything else                            |
+
+:::warning
+**Stripe: `complete` does not mean paid.** With delayed payment methods (bank debits, vouchers) a
+session reaches `status: complete` with `payment_status: unpaid`. `revenue-sdk` maps that back to
+`open`, so `checkout.status === 'complete'` always means *the money arrived*. Wait for the
+`checkout.session.async_payment_succeeded` webhook before fulfilling those.
+:::
+
+## Reading a checkout back
+
+```ts
+const checkout = await client.checkouts.get({ id: checkoutId });
+
+if (checkout.status === 'complete') {
+  // Paid.
+}
+```
+
+:::note
+On **Dodo Payments** the checkout-status endpoint does not return the checkout URL, so a `Checkout`
+fetched with `checkouts.get` has `url: ''`. Persist the URL from `checkouts.create` if you need it
+later.
+:::
+
+:::warning
+Do not fulfill from the success page alone. The customer may close the tab, and delayed payment methods
+settle minutes or hours later. Treat the redirect as a UX signal and fulfill from
+[webhooks](/docs/concepts/webhooks) — see the [checkout flow guide](/docs/guides/checkout-flow).
+:::
+
+<CardGroup cols={2}>
+  <Card title="Next: Subscription lifecycle" icon="activity" href="/docs/concepts/subscription-lifecycle">
+    Statuses, scheduled cancellations, plan changes, and entitlements.
+  </Card>
+  <Card title="End-to-end checkout flow" icon="shopping-cart" href="/docs/guides/checkout-flow">
+    Create, redirect, and fulfill from a webhook.
+  </Card>
+</CardGroup>

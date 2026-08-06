@@ -1,0 +1,136 @@
+---
+title: Pagination
+description: The Page model, opaque provider-bound cursors, the listAll async iterators, limit clamping per provider, and same-origin cursor safety.
+sidebar:
+  label: Pagination
+---
+
+Every list endpoint in `revenue-sdk` is paginated the same way, regardless of how the underlying
+provider does it. You choose between fetching **one page at a time** with an opaque cursor, or letting
+the client **follow the cursors for you** with an async iterator.
+
+## `list` — one page at a time
+
+`list` returns a `Page<T>`: the current page's `items` plus an optional opaque `cursor`. Pass the cursor
+back to fetch the next page. When `cursor` is `undefined`, you've reached the end.
+
+```ts
+const { items, cursor } = await client.products.list({ limit: 50 });
+
+if (cursor) {
+  const next = await client.products.list({ limit: 50, cursor });
+}
+```
+
+<TypeTable
+  type={{
+    items: { type: 'T[]', description: 'The items on this page.' },
+    cursor: { type: 'string', required: false, description: 'Opaque token for the next page. Absent on the last page.' },
+  }}
+/>
+
+Three resources are paginated: `products`, `customers`, and `subscriptions`.
+
+## `listAll` — an async iterator
+
+`listAll` returns an `AsyncGenerator` that transparently follows cursors, yielding one item at a time
+across all pages. It takes the same parameters as `list` minus `cursor`:
+
+```ts
+for await (const subscription of client.subscriptions.listAll({ customerId })) {
+  console.log(subscription.id, subscription.status);
+}
+```
+
+Because it is lazy, you can `break` out early and no further pages are fetched:
+
+```ts
+for await (const customer of client.customers.listAll()) {
+  if (customer.email === target) {
+    match = customer;
+    break; // no more requests
+  }
+}
+```
+
+The bounded rate-limit retry applies to every page fetch, not just the first.
+
+## Cursors are opaque and provider-bound
+
+A cursor is a base64url-encoded envelope that carries the **provider name** plus whatever that provider
+needs to resume — a page number, a `starting_after` ID, or a next-page URL. Treat it as a black box.
+
+```ts
+// Don't do any of this.
+Number(cursor) + 1;
+JSON.parse(atob(cursor));
+```
+
+Because the provider name is baked in, a cursor **cannot** be moved between providers. Handing a Stripe
+cursor to a Polar client throws `RevenueError` with code `validation` ("cursor from another provider"),
+as does a malformed or truncated cursor.
+
+:::warning
+Only pass a cursor back to the **same list call on the same provider** that produced it. Don't
+hand-craft cursors, don't mix them between `products.list` and `customers.list`, and don't persist them
+across a provider migration.
+:::
+
+### Same-origin cursor safety
+
+Paddle pages by returning a full "next page" URL, which the cursor carries. Before following such a
+cursor, the SDK checks that the URL points at the **same origin** as the configured base URL. A cursor
+that resolves elsewhere is rejected rather than fetched, so a forged cursor can never redirect an
+authenticated request — and your API key with it — to an attacker-controlled host.
+
+This makes cursors safe to round-trip through your own storage or a query string.
+
+## Limits
+
+`limit` is a hint for the page size and is clamped into the provider's supported range. Values below `1`
+are raised to `1`; values above the maximum are lowered to it; fractions are truncated.
+
+| Provider          | Default | Maximum |
+| ----------------- | ------- | ------- |
+| **Polar**         | 10      | 100     |
+| **Lemon Squeezy** | 10      | 100     |
+| **Stripe**        | 10      | 100     |
+| **Paddle**        | 10      | 200     |
+| **Dodo Payments** | 10      | 100     |
+| **Testing**       | fixed 2 | fixed 2 |
+
+```ts
+// Clamped to 100 on Polar; no error is thrown.
+const { items } = await client.products.list({ limit: 1000 });
+```
+
+:::note
+The in-memory testing provider ignores `limit` and always returns **2 items per page**, on purpose — so
+your cursor-following code is exercised by even a small seed. See
+[Testing provider](/docs/providers/testing).
+:::
+
+## How the providers actually page
+
+You never see this, but it explains the differences in page counts:
+
+| Provider          | Native paging                                                                   |
+| ----------------- | --------------------------------------------------------------------------------- |
+| **Polar**         | `page` + `limit`, with `pagination.max_page` in the response                     |
+| **Lemon Squeezy** | JSON:API `page[number]` / `page[size]`, with `meta.page.lastPage`                 |
+| **Stripe**        | keyset paging via `starting_after` + `has_more`                                    |
+| **Paddle**        | a `meta.pagination.next` URL + `has_more`                                          |
+| **Dodo Payments** | zero-based `page_number` + `page_size`, **no** `has_more` — a short page ends it  |
+
+Dodo Payments is the notable one: because it reports no total or "has more" flag, the SDK treats a full
+page as "there may be more" and a short page as the end. A collection whose size is an exact multiple of
+the page size therefore costs one extra empty request.
+
+<CardGroup cols={2}>
+  <Card title="Next: Errors" icon="shield-alert" href="/docs/concepts/errors">
+    The RevenueError code union, retries, and secret redaction.
+  </Card>
+  <Card title="Build a pricing page" icon="tags" href="/docs/guides/pricing-page">
+    Pagination in practice.
+  </Card>
+</CardGroup>

@@ -1,0 +1,175 @@
+---
+title: Paddle
+description: Configure the Paddle provider — API key, sandbox, the Paddle.js checkout requirement, webhooks, capabilities, and quirks.
+sidebar:
+  label: Paddle
+---
+
+Paddle is a merchant of record. Import the factory from `revenue-sdk/paddle`.
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { paddle } from 'revenue-sdk/paddle';
+
+const client = createClient({
+  provider: paddle({ apiKey: process.env.PADDLE_API_KEY! }),
+});
+```
+
+## Factory options
+
+<TypeTable
+  type={{
+    apiKey: { type: 'string', description: 'Paddle API key, sent as a Bearer credential.' },
+    server: {
+      type: "'production' | 'sandbox'",
+      default: 'production',
+      description: 'Selects api.paddle.com or sandbox-api.paddle.com.',
+    },
+    baseUrl: { type: 'string', required: false, description: 'Overrides server; used verbatim.' },
+    fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+  }}
+/>
+
+## Authentication
+
+Create an API key in the Paddle dashboard under **Developer tools → Authentication**. The SDK pins
+`Paddle-Version: 1` on every request.
+
+:::warning
+**Paddle reports authentication failures as HTTP 403**, not 401. The SDK inspects the response's error
+code and re-maps `authentication_malformed`, `authentication_missing`, and `invalid_token` to
+`RevenueError { code: 'unauthorized' }`, so a bad key doesn't masquerade as a permissions problem.
+:::
+
+## Sandbox
+
+Paddle's sandbox is a separate environment with its own dashboard, its own keys, and its own catalog:
+
+```ts
+paddle({ apiKey: process.env.PADDLE_SANDBOX_API_KEY!, server: 'sandbox' });
+```
+
+## Checkout requires Paddle.js on your own domain
+
+:::warning
+**Paddle has no API-hosted checkout.** `checkouts.create` creates a *transaction*, and the returned
+`checkout.url` points at the **default payment link** configured under **Checkout → Checkout settings**
+in your Paddle dashboard — a page **you** host that loads
+[Paddle.js](https://developer.paddle.com/paddlejs/overview) on an **approved domain**.
+
+Without a configured default payment link and an approved domain the URL is unusable. That is why
+Paddle reports `hostedCheckout: false`, and why `successUrl` throws `unsupported`: the post-payment
+redirect is a Paddle.js setting, not an API parameter.
+:::
+
+```ts
+const checkout = await client.checkouts.create({
+  items: [{ product: 'pri_123', quantity: 1 }],
+  customerEmail: 'ada@example.com',
+  metadata: { userId: 'user_123' },
+});
+
+// Do NOT redirect blindly. Open your own Paddle.js page and pass the transaction.
+renderPaddleCheckout(checkout.id);
+```
+
+On your page:
+
+```html
+<script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
+<script>
+  Paddle.Environment.set('sandbox');
+  Paddle.Initialize({ token: 'live_or_test_client_side_token' });
+  Paddle.Checkout.open({
+    transactionId: transactionId,
+    settings: { successUrl: 'https://example.com/thanks' },
+  });
+</script>
+```
+
+Gate on the capability in provider-agnostic code:
+
+```ts
+if (client.capabilities.hostedCheckout) {
+  redirect(checkout.url);
+} else {
+  renderPaddleCheckout(checkout.id);
+}
+```
+
+## Webhooks
+
+Create a notification destination in **Developer tools → Notifications**, choose "Webhook", and copy the
+**secret key** Paddle generates for it.
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/paddle';
+
+const headers = request.headers;
+const body = await request.text();
+
+if (!(await verifyWebhook({ headers, body, secret: env.PADDLE_WEBHOOK_SECRET }))) {
+  return new Response('invalid signature', { status: 401 });
+}
+
+const event = await parseWebhookEvent({ headers, body });
+```
+
+The `Paddle-Signature` header has the form `ts=…;h1=…`, where `h1` is a hex HMAC-SHA256 of
+`` `${ts}:${rawBody}` `` keyed by the secret used verbatim. Multiple `h1` values can appear during
+secret rotation, and any match is accepted. Deliveries older than 300 seconds are rejected — a friendlier
+bound than Paddle's own 5-second default, which is hostile to serverless clock skew and retries.
+
+Events worth subscribing to: `subscription.created`, `subscription.activated`, `subscription.updated`,
+`subscription.trialing`, `subscription.past_due`, `subscription.paused`, `subscription.resumed`,
+`subscription.canceled`, `transaction.completed`.
+
+:::note
+Scheduling a cancellation emits `subscription.updated` (carrying `scheduled_change`), **never**
+`subscription.canceled` — that only fires on the effective date. `transaction.paid` is left unmapped so
+that `transaction.completed` is the single "money received" signal and payments don't fire twice.
+:::
+
+## Capabilities
+
+| Capability                    | Value                                  |
+| ----------------------------- | -------------------------------------- |
+| `cancellationReason`          | `false`                                |
+| `checkoutStatus`              | `true`                                 |
+| `checkoutSuccessUrl`          | `false`                                |
+| `endTrial`                    | `true`                                 |
+| `hostedCheckout`              | `false`                                |
+| `listSubscriptionsByCustomer` | `true`                                 |
+| `portalReturnUrl`             | `false`                                |
+| `prorationBehaviors`          | `['invoice_now', 'none', 'prorate']`   |
+| `revoke`                      | `true`                                 |
+| `uncancel`                    | `true`                                 |
+
+## Quirks
+
+- **`Price.checkoutRef` is the price ID** (`pri_…`), not the product ID. `Product.id` is the `pro_…`.
+- **A unified `Checkout` is a Paddle transaction.** `checkouts.get({ id })` reads
+  `GET /transactions/{id}`.
+- **Amounts are string integers** on the wire (`"2499"`) and are parsed into numbers in minor units.
+- **`customerEmail` resolves to a customer.** Paddle transactions take a `customer_id`, so the SDK looks
+  the email up and creates the customer if it doesn't exist. That costs one or two extra requests.
+- **No cancellation reasons.** Passing `reason` or `comment` throws `unsupported`.
+- **Cancel and revoke are the same endpoint.** `subscriptions.cancel` posts
+  `effective_from: next_billing_period`; `subscriptions.revoke` posts `effective_from: immediately`.
+- **Uncancel clears the schedule** with `PATCH { scheduled_change: null }`.
+- **`PATCH` list fields are full replacements.** `items` is replaced wholesale, so a plan change swaps
+  every item for the new price. The unified model targets single-product subscriptions.
+- **Proration is always sent** on a plan change, because Paddle requires the field whenever `items`
+  changes. Omitting `prorationBehavior` behaves as `prorate` (`prorated_next_billing_period`).
+- **`management_urls` is absent from webhook payloads**, so portal links must come from
+  `customerPortal.createSession` (`POST /customers/{id}/portal-sessions`). `returnUrl` is unsupported.
+
+<CardGroup cols={2}>
+  <Card title="Dodo Payments" icon="bird" href="/docs/providers/dodo-payments">
+    The next provider.
+  </Card>
+  <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
+    Compare all five providers.
+  </Card>
+</CardGroup>

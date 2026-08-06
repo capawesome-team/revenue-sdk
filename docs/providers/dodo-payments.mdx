@@ -1,0 +1,130 @@
+---
+title: Dodo Payments
+description: Configure the Dodo Payments provider — API key, test mode, webhook signing secret, capabilities, and the quirks of its unversioned API.
+sidebar:
+  label: Dodo Payments
+---
+
+Dodo Payments is a merchant of record. Import the factory from `revenue-sdk/dodo-payments`.
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { dodoPayments } from 'revenue-sdk/dodo-payments';
+
+const client = createClient({
+  provider: dodoPayments({ apiKey: process.env.DODO_PAYMENTS_API_KEY! }),
+});
+```
+
+## Factory options
+
+<TypeTable
+  type={{
+    apiKey: { type: 'string', description: 'Dodo Payments API key, sent as a Bearer credential.' },
+    server: {
+      type: "'live' | 'test'",
+      default: 'live',
+      description: 'Selects live.dodopayments.com or test.dodopayments.com.',
+    },
+    baseUrl: { type: 'string', required: false, description: 'Overrides server; used verbatim.' },
+    fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+  }}
+/>
+
+## Authentication
+
+Create an API key in the Dodo Payments dashboard under **Developer → API keys**. Test and live modes are
+**separate hosts** with separate keys and separate catalogs.
+
+## Test mode
+
+```ts
+dodoPayments({ apiKey: process.env.DODO_PAYMENTS_TEST_API_KEY!, server: 'test' });
+```
+
+## Webhooks
+
+Create the endpoint in the dashboard under **Developer → Webhooks** and copy the signing secret
+(`whsec_…`).
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/dodo-payments';
+
+const headers = request.headers;
+const body = await request.text();
+
+if (!(await verifyWebhook({ headers, body, secret: env.DODO_PAYMENTS_WEBHOOK_SECRET }))) {
+  return new Response('invalid signature', { status: 401 });
+}
+
+const event = await parseWebhookEvent({ headers, body });
+```
+
+Dodo Payments uses [Standard Webhooks](https://www.standardwebhooks.com/) headers (`webhook-id`,
+`webhook-timestamp`, `webhook-signature`) with a 300-second tolerance.
+
+:::warning
+Dodo Payments follows the **strict** Standard Webhooks key derivation: the `whsec_` prefix is stripped
+and the remainder **base64-decoded** into the HMAC key bytes. Polar sends the same headers but uses its
+secret **verbatim**. Copying one implementation to the other fails every signature — pass each provider
+its own secret to its own `verifyWebhook`.
+:::
+
+Events worth subscribing to: `subscription.active`, `subscription.updated`, `subscription.renewed`,
+`subscription.plan_changed`, `subscription.on_hold`, `subscription.paused`, `subscription.cancelled`,
+`subscription.expired`, `subscription.failed`, `payment.succeeded`.
+
+:::note
+Dodo Payments has **no `subscription.created` event**. The first signal for a new subscription is
+`subscription.active`, which also fires after recovery from `on_hold`. Every subscription event
+normalizes to `subscription.updated` (or `subscription.canceled`), so **upsert** rather than insert.
+:::
+
+## Capabilities
+
+| Capability                    | Value                       |
+| ----------------------------- | --------------------------- |
+| `cancellationReason`          | `true`                      |
+| `checkoutStatus`              | `true`                      |
+| `checkoutSuccessUrl`          | `true`                      |
+| `endTrial`                    | `false`                     |
+| `hostedCheckout`              | `true`                      |
+| `listSubscriptionsByCustomer` | `true`                      |
+| `portalReturnUrl`             | `true`                      |
+| `prorationBehaviors`          | `['invoice_now', 'none']`   |
+| `revoke`                      | `true`                      |
+| `uncancel`                    | `true`                      |
+
+## Quirks
+
+- **The product is the purchasable unit.** Dodo prices have no identifier of their own, so
+  `Price.id`, `Price.checkoutRef`, and `Product.id` are all the product ID, and each product has at most
+  one price.
+- **No end-trial operation.** `subscriptions.endTrial` throws `unsupported` (`endTrial: false`).
+- **No `prorate` proration.** There is no defer-to-next-invoice mode, only `prorated_immediately` and
+  `do_not_bill`. Omitting `prorationBehavior` behaves as `invoice_now`.
+- **Unversioned, additive API.** There is no version header and fields are added without notice, so the
+  SDK's wire types are tolerant, enums are treated as open, and **ID prefixes are never validated**.
+  Unrecognized subscription statuses fall back to `active`.
+- **`TimeInterval` is capitalized** (`'Month'`, `'Year'`) — the only enum in the SDK that is. It is
+  normalized to the lowercase unified `BillingInterval`.
+- **Pagination has no `has_more`.** Lists use zero-based `page_number` with an `{ items }` envelope; the
+  SDK stops when a page comes back shorter than the requested size. See
+  [Pagination](/docs/concepts/pagination).
+- **`POST /checkouts` is the current endpoint.** The legacy `POST /payments` and `POST /subscriptions`
+  flows are deprecated and unused.
+- **`POST /change-plan` returns 200 with an empty body**, so `subscriptions.changePlan` re-fetches the
+  subscription to return its updated state — one extra request.
+- **Portal session parameters go in the query string** on a POST
+  (`POST /customers/{id}/customer-portal/session?return_url=…`).
+- **`checkouts.get` returns no URL.** The status endpoint omits it, so a `Checkout` read back has
+  `url: ''`. Persist the URL from `checkouts.create`.
+
+<CardGroup cols={2}>
+  <Card title="Testing provider" icon="flask-conical" href="/docs/providers/testing">
+    The in-memory provider for your test suite.
+  </Card>
+  <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
+    Compare all five providers.
+  </Card>
+</CardGroup>

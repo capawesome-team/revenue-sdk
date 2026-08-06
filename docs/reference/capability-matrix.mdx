@@ -1,0 +1,120 @@
+---
+title: Capability matrix
+description: The full per-provider RevenueCapabilities reference for Polar, Lemon Squeezy, Stripe, Paddle, and Dodo Payments.
+sidebar:
+  label: Capability matrix
+---
+
+A complete reference of the `RevenueCapabilities` values each provider reports. Every provider exposes
+this object as `capabilities`, also surfaced on `client.capabilities`. The client gates on these values
+and throws `unsupported` rather than silently dropping an option — see
+[Capabilities](/docs/concepts/capabilities).
+
+## Matrix
+
+| Capability                    | Type                     | Polar                        | Lemon Squeezy                        | Stripe                               | Paddle                               | Dodo Payments             |
+| ----------------------------- | ------------------------ | ---------------------------- | ------------------------------------ | ------------------------------------ | ------------------------------------ | ------------------------- |
+| `cancellationReason`          | `boolean`                | `true`                       | `false`                              | `true`                               | `false`                              | `true`                    |
+| `checkoutStatus`              | `boolean`                | `true`                       | `false`                              | `true`                               | `true`                               | `true`                    |
+| `checkoutSuccessUrl`          | `boolean`                | `true`                       | `true`                               | `true`                               | `false`                              | `true`                    |
+| `endTrial`                    | `boolean`                | `true`                       | `true`                               | `true`                               | `true`                               | `false`                   |
+| `hostedCheckout`              | `boolean`                | `true`                       | `true`                               | `true`                               | `false`                              | `true`                    |
+| `listSubscriptionsByCustomer` | `boolean`                | `true`                       | `false`                              | `true`                               | `true`                               | `true`                    |
+| `portalReturnUrl`             | `boolean`                | `true`                       | `false`                              | `true`                               | `false`                              | `true`                    |
+| `prorationBehaviors`          | `ProrationBehavior[]`    | `invoice_now`, `prorate`     | `invoice_now`, `prorate`, `none`     | `invoice_now`, `none`, `prorate`     | `invoice_now`, `none`, `prorate`     | `invoice_now`, `none`     |
+| `revoke`                      | `boolean`                | `true`                       | `false`                              | `true`                               | `true`                               | `true`                    |
+| `uncancel`                    | `boolean`                | `true`                       | `true`                               | `true`                               | `true`                               | `true`                    |
+
+The in-memory provider from `revenue-sdk/testing` reports **every capability `true`** and all three
+proration behaviors, and accepts a `Partial<RevenueCapabilities>` override — see
+[Testing provider](/docs/providers/testing).
+
+## What each field gates
+
+<TypeTable
+  type={{
+    cancellationReason: {
+      type: 'boolean',
+      description:
+        'Whether subscriptions.cancel forwards reason/comment. Passing either without support throws unsupported.',
+    },
+    checkoutStatus: {
+      type: 'boolean',
+      description:
+        'Whether Checkout.status is populated. When false, status is always null (Lemon Squeezy checkouts carry no lifecycle status).',
+    },
+    checkoutSuccessUrl: {
+      type: 'boolean',
+      description:
+        'Whether checkouts.create accepts successUrl. Passing it without support throws unsupported (Paddle configures redirects in Paddle.js).',
+    },
+    endTrial: {
+      type: 'boolean',
+      description: 'Whether subscriptions.endTrial is supported. Calling it without support throws unsupported.',
+    },
+    hostedCheckout: {
+      type: 'boolean',
+      description:
+        'Whether checkouts.create returns a ready-to-use provider-hosted URL. When false (Paddle), the URL is your own Paddle.js page and needs a configured default payment link plus an approved domain.',
+    },
+    listSubscriptionsByCustomer: {
+      type: 'boolean',
+      description:
+        'Whether subscriptions.list/listAll accept customerId. Passing it without support throws unsupported.',
+    },
+    portalReturnUrl: {
+      type: 'boolean',
+      description:
+        'Whether customerPortal.createSession accepts returnUrl. Passing it without support throws unsupported.',
+    },
+    prorationBehaviors: {
+      type: "('prorate' | 'invoice_now' | 'none')[]",
+      description:
+        'Behaviors subscriptions.changePlan accepts. Any other value throws unsupported before the request.',
+    },
+    revoke: {
+      type: 'boolean',
+      description: 'Whether subscriptions.revoke (cancel immediately) is supported.',
+    },
+    uncancel: {
+      type: 'boolean',
+      description: 'Whether subscriptions.uncancel can revert a scheduled cancellation.',
+    },
+  }}
+/>
+
+## Beyond the capability object
+
+Some limits are too fine-grained for a boolean and are enforced by the adapters, which throw
+`RevenueError { code: 'unsupported' }` at call time:
+
+| Limitation                                             | Providers                     |
+| ------------------------------------------------------ | ----------------------------- |
+| Checkout item `quantity` must be `1`                   | Polar                         |
+| Exactly one checkout item                              | Lemon Squeezy                 |
+| `customerId` not accepted on a checkout (use `customerEmail`) | Lemon Squeezy          |
+| Plan-change `quantity` must be `1`                     | Polar, Lemon Squeezy          |
+| No customer portal until the customer has a subscription | Lemon Squeezy (`not_found`) |
+
+## Reading capabilities at runtime
+
+```ts
+if (client.capabilities.revoke) {
+  showRevokeButton();
+}
+
+const proration = client.capabilities.prorationBehaviors.includes('none') ? 'none' : 'prorate';
+
+if (!client.capabilities.hostedCheckout) {
+  // Paddle: render your own Paddle.js page instead of redirecting.
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Status mapping" icon="activity" href="/docs/reference/status-mapping">
+    Subscription statuses across providers.
+  </Card>
+  <Card title="Capabilities concept" icon="toggle-right" href="/docs/concepts/capabilities">
+    Why the SDK fails loud.
+  </Card>
+</CardGroup>

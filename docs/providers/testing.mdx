@@ -1,0 +1,226 @@
+---
+title: Testing provider
+description: Exercise your billing integration with the seedable in-memory provider from revenue-sdk/testing — seeds, state assertions, and capability overrides.
+sidebar:
+  label: Testing
+---
+
+`revenue-sdk/testing` ships `createInMemoryProvider`, an in-memory `RevenueProvider` you can hand to
+`createClient` to test your integration without hitting a real billing provider — no `fetch` stubs, no
+sandbox accounts, no test cards.
+
+## Basic usage
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { createInMemoryProvider } from 'revenue-sdk/testing';
+
+const provider = createInMemoryProvider({
+  products: [{ id: 'pro', name: 'Pro', prices: [{ amount: 2900, interval: 'month' }] }],
+  customers: [{ id: 'cus-1', email: 'ada@example.com' }],
+  subscriptions: [{ id: 'sub-1', customerId: 'cus-1', productId: 'pro', status: 'active' }],
+});
+
+const client = createClient({ provider });
+
+const subscription = await client.subscriptions.get({ id: 'sub-1' });
+subscription.status; // 'active'
+```
+
+The seed is optional — `createInMemoryProvider()` starts empty.
+
+## The seed shape
+
+`products`, `customers`, and `subscriptions` are arrays; every field is optional and gets a sensible
+default. Missing IDs are generated (`product-1`, `price-2`, `customer-3`, …).
+
+<TypeTable
+  type={{
+    products: {
+      type: 'InMemoryProductSeed[]',
+      required: false,
+      description: '{ id?, name?, description?, prices? }. name defaults to the id.',
+    },
+    customers: {
+      type: 'InMemoryCustomerSeed[]',
+      required: false,
+      description: '{ id?, email?, name?, metadata? }. email defaults to <id>@example.com.',
+    },
+    subscriptions: {
+      type: 'InMemorySubscriptionSeed[]',
+      required: false,
+      description:
+        '{ id?, status?, cancelAtPeriodEnd?, customerId?, productId?, quantity?, currency?, amount?, interval?, currentPeriodEnd?, trialEndsAt?, endsAt?, metadata? }.',
+    },
+  }}
+/>
+
+Price seeds default to a `fixed`, `recurring`, monthly price of `1000` in `usd`, and `checkoutRef`
+defaults to the parent product's ID:
+
+<TypeTable
+  type={{
+    id: { type: 'string', required: false, description: 'Generated when omitted.' },
+    checkoutRef: { type: 'string', required: false, description: "Defaults to the parent product's id." },
+    type: { type: "'one_time' | 'recurring'", required: false, default: 'recurring', description: 'Price type.' },
+    model: { type: 'PriceModel', required: false, default: 'fixed', description: 'Pricing model.' },
+    amount: { type: 'number | null', required: false, default: '1000', description: 'Minor units. Pass null explicitly for non-fixed models.' },
+    currency: { type: 'string', required: false, default: 'usd', description: 'Lowercase ISO 4217 code.' },
+    interval: { type: 'BillingInterval', required: false, default: 'month', description: "Omitted when type is 'one_time'." },
+    intervalCount: { type: 'number', required: false, description: 'Intervals per billing cycle.' },
+    trialDays: { type: 'number', required: false, description: 'Trial length in days.' },
+  }}
+/>
+
+A fuller seed:
+
+```ts
+const provider = createInMemoryProvider({
+  products: [
+    {
+      id: 'pro-monthly',
+      name: 'Pro (monthly)',
+      prices: [{ id: 'price-monthly', amount: 2900, currency: 'usd', interval: 'month' }],
+    },
+    {
+      id: 'pro-yearly',
+      name: 'Pro (yearly)',
+      prices: [{ id: 'price-yearly', amount: 29000, currency: 'usd', interval: 'year' }],
+    },
+  ],
+  customers: [{ id: 'cus-1', email: 'ada@example.com', name: 'Ada Lovelace' }],
+  subscriptions: [
+    {
+      id: 'sub-1',
+      customerId: 'cus-1',
+      productId: 'pro-monthly',
+      status: 'active',
+      amount: 2900,
+      currency: 'usd',
+      interval: 'month',
+      currentPeriodEnd: new Date('2026-09-01'),
+    },
+  ],
+});
+```
+
+## Simulating a provider and its capabilities
+
+By default the provider reports itself as `testing` with **every capability enabled**. A second options
+argument lets you simulate a specific provider's identity and its capability gaps, so code that branches
+on `client.capabilities` is testable:
+
+```ts
+const provider = createInMemoryProvider(
+  {},
+  {
+    name: 'paddle',
+    capabilities: { hostedCheckout: false, checkoutSuccessUrl: false, revoke: false },
+  },
+);
+const client = createClient({ provider });
+
+client.providerName; // 'paddle'
+await client.subscriptions.revoke({ id: 'sub-1' }); // throws RevenueError { code: 'unsupported' }
+```
+
+| Option         | Type                              | Default     | Description                                                                    |
+| -------------- | --------------------------------- | ----------- | ------------------------------------------------------------------------------ |
+| `name`         | `ProviderName`                    | `'testing'` | Simulate a specific provider's identity. Also tags the pagination cursors.     |
+| `capabilities` | `Partial<RevenueCapabilities>`    | —           | Merged over the full-featured defaults — override only what your test needs.   |
+
+Check the [capability matrix](/docs/reference/capability-matrix) for the values each real provider
+reports.
+
+## Asserting against state
+
+The provider exposes its data on `provider.state`, so you can assert on the effects of your code:
+
+```ts
+import { expect, test } from 'vitest';
+import { createClient } from 'revenue-sdk';
+import { createInMemoryProvider } from 'revenue-sdk/testing';
+
+test('cancelling schedules the end of the period', async () => {
+  const provider = createInMemoryProvider({
+    customers: [{ id: 'cus-1', email: 'ada@example.com' }],
+    subscriptions: [
+      { id: 'sub-1', customerId: 'cus-1', currentPeriodEnd: new Date('2026-09-01') },
+    ],
+  });
+  const client = createClient({ provider });
+
+  const subscription = await client.subscriptions.cancel({ id: 'sub-1' });
+
+  expect(subscription.status).toBe('active');
+  expect(subscription.cancelAtPeriodEnd).toBe(true);
+  expect(subscription.endsAt).toEqual(new Date('2026-09-01'));
+  expect(provider.state.subscriptions[0]!.cancelAtPeriodEnd).toBe(true);
+});
+
+test('creating a checkout records it', async () => {
+  const provider = createInMemoryProvider({ products: [{ id: 'pro' }] });
+  const client = createClient({ provider });
+
+  const checkout = await client.checkouts.create({
+    items: [{ product: 'pro' }],
+    customerEmail: 'ada@example.com',
+    metadata: { userId: 'user_123' },
+  });
+
+  expect(checkout.status).toBe('open');
+  expect(provider.state.checkouts).toHaveLength(1);
+  expect(provider.state.checkouts[0]!.metadata).toEqual({ userId: 'user_123' });
+});
+```
+
+`provider.state` is `{ products: Product[], customers: Customer[], subscriptions: Subscription[],
+checkouts: Checkout[] }`. Mutating operations write straight into it, so the seeded objects and the
+returned ones are the same instances.
+
+## Behavior of the mutating operations
+
+| Call                          | Effect on state                                                                  |
+| ----------------------------- | --------------------------------------------------------------------------------- |
+| `checkouts.create`            | Appends a `Checkout` with a generated ID, `status: 'open'`, and a fake URL.        |
+| `subscriptions.cancel`        | Sets `cancelAtPeriodEnd: true` and `endsAt = currentPeriodEnd`. Status unchanged.  |
+| `subscriptions.uncancel`      | Clears `cancelAtPeriodEnd` and `endsAt`.                                          |
+| `subscriptions.changePlan`    | Sets `productId` to `params.product`, and `quantity` when given.                   |
+| `subscriptions.endTrial`      | Sets `status: 'active'` and clears `trialEndsAt`.                                 |
+| `subscriptions.revoke`        | Sets `status: 'canceled'`, clears `cancelAtPeriodEnd`, and sets `endedAt`.         |
+| `customerPortal.createSession`| Returns a fake portal URL, or throws `not_found` for an unknown customer.          |
+
+Anything looked up by an ID that isn't seeded throws `RevenueError` with code `not_found`.
+
+## Pagination is exercised
+
+The in-memory provider uses a deliberately small **page size of 2** and ignores `limit`, so a seed with
+three or more items returns a `cursor` and your cursor-following code runs in tests rather than always
+fitting on one page:
+
+```ts
+const provider = createInMemoryProvider({
+  products: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+});
+const client = createClient({ provider });
+
+const first = await client.products.list();
+first.items.length; // 2
+first.cursor; // defined — there's a third product
+
+let count = 0;
+for await (const _ of client.products.listAll()) count++;
+count; // 3
+```
+
+Cursors are tagged with the simulated provider `name`, so they behave exactly like real ones — including
+rejecting a cursor from a different provider.
+
+<CardGroup cols={2}>
+  <Card title="Capabilities" icon="toggle-right" href="/docs/concepts/capabilities">
+    What the overrides actually gate.
+  </Card>
+  <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
+    The real values to simulate.
+  </Card>
+</CardGroup>

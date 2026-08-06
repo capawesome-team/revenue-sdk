@@ -1,0 +1,82 @@
+---
+title: Installation
+description: Install revenue-sdk with npm, pnpm, yarn, or bun, check the runtime requirements, and learn the ESM subpath exports for each provider.
+sidebar:
+  label: Installation
+  icon: package
+---
+
+Install `revenue-sdk` from npm with your package manager of choice.
+
+```package-install
+revenue-sdk
+```
+
+:::warning
+`revenue-sdk` is in **early development**. Expect breaking changes between releases while the API
+settles. Pin an exact version in production and read the
+[changelog](/changelog) before upgrading. Feedback is welcome via
+[GitHub issues](https://github.com/capawesome-team/revenue-sdk/issues).
+:::
+
+## Requirements
+
+`revenue-sdk` ships as **ESM only** and depends on nothing but the platform's `fetch`, Web Crypto,
+`TextEncoder`, `URL`, and `btoa`/`atob` — all Web standards.
+
+<TypeTable
+  type={{
+    Node: {
+      type: 'string',
+      default: '>= 20',
+      description:
+        'Or any Web-API runtime: Cloudflare Workers (no nodejs_compat needed), Deno, and Bun.',
+    },
+    Module: { type: 'string', default: 'ESM', description: 'Package "type": "module". No CommonJS build.' },
+    Dependencies: { type: 'string', default: '0', description: 'Zero runtime dependencies.' },
+  }}
+/>
+
+There are no `node:*` imports anywhere in the package, so it drops into edge runtimes unchanged.
+
+## Subpath exports
+
+The client lives at the package root; each provider factory lives on its own subpath so a bundler only
+pulls in the provider you actually import. Every provider subpath also exports that provider's
+standalone webhook helpers.
+
+| Import                       | Exports                                                                       |
+| ---------------------------- | ----------------------------------------------------------------------------- |
+| `revenue-sdk`                | `createClient`, `RevenueError`, `detectWebhookProvider`, and all normalized types |
+| `revenue-sdk/polar`          | `polar`, `verifyWebhook`, `parseWebhookEvent`                                 |
+| `revenue-sdk/lemon-squeezy`  | `lemonSqueezy`, `verifyWebhook`, `parseWebhookEvent`                          |
+| `revenue-sdk/stripe`         | `stripe`, `verifyWebhook`, `parseWebhookEvent`                                |
+| `revenue-sdk/paddle`         | `paddle`, `verifyWebhook`, `parseWebhookEvent`                                |
+| `revenue-sdk/dodo-payments`  | `dodoPayments`, `verifyWebhook`, `parseWebhookEvent`                          |
+| `revenue-sdk/testing`        | `createInMemoryProvider`                                                       |
+
+:::note
+`revenue-sdk/testing` is meant for your test suite only — it provides a seedable in-memory provider so
+you don't have to stub `fetch`. See [Testing provider](/docs/providers/testing).
+:::
+
+## Import the client and a provider
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { stripe } from 'revenue-sdk/stripe';
+
+const client = createClient({
+  provider: stripe({ secretKey: process.env.STRIPE_SECRET_KEY! }),
+});
+```
+
+The webhook helpers are imported separately and never need a client:
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/stripe';
+```
+
+<Card title="Continue to the Quickstart" icon="zap" href="/docs/quickstart">
+  Create a client, create a checkout, handle a webhook, and check subscription status.
+</Card>

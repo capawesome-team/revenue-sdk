@@ -1,0 +1,128 @@
+---
+title: Lemon Squeezy
+description: Configure the Lemon Squeezy provider — API key, store ID, test mode, webhooks, capabilities, and the variant-as-product model with its quirks.
+sidebar:
+  label: Lemon Squeezy
+---
+
+Lemon Squeezy is a merchant of record for digital products. Import the factory from
+`revenue-sdk/lemon-squeezy`.
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { lemonSqueezy } from 'revenue-sdk/lemon-squeezy';
+
+const client = createClient({
+  provider: lemonSqueezy({
+    apiKey: process.env.LEMON_SQUEEZY_API_KEY!,
+    storeId: process.env.LEMON_SQUEEZY_STORE_ID!,
+  }),
+});
+```
+
+## Factory options
+
+<TypeTable
+  type={{
+    apiKey: { type: 'string', description: 'API key, sent as a Bearer credential.' },
+    storeId: {
+      type: 'string | number',
+      description: 'The store checkouts are created in and customers/subscriptions are filtered by. Coerced to a string.',
+    },
+    baseUrl: { type: 'string', required: false, description: 'Used verbatim; defaults to https://api.lemonsqueezy.com.' },
+    fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+  }}
+/>
+
+## Authentication
+
+Create an API key in the Lemon Squeezy dashboard under **Settings → API**. `storeId` is required — a
+checkout must name the store it belongs to, and customer/subscription lists are scoped to it. You'll
+find the numeric store ID in **Settings → Stores** or via `GET /v1/stores`.
+
+## Test mode
+
+Test mode is a **property of the API key**, not a flag on the request: a key created while the store is
+in test mode talks to test data, a live key talks to live data. There is no `server` option — swap the
+key (and the matching `storeId`) via environment variables.
+
+## Webhooks
+
+Create the endpoint in **Settings → Webhooks**, pick the events, and copy the **signing secret** you
+entered there.
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/lemon-squeezy';
+
+const headers = request.headers;
+const body = await request.text();
+
+if (!(await verifyWebhook({ headers, body, secret: env.LEMON_SQUEEZY_WEBHOOK_SECRET }))) {
+  return new Response('invalid signature', { status: 401 });
+}
+
+const event = await parseWebhookEvent({ headers, body });
+```
+
+The `X-Signature` header carries a hex HMAC-SHA256 of the raw body, keyed by the secret used verbatim.
+There is **no timestamp**, so there is no replay window to enforce — de-duplicate on your side.
+
+Events worth subscribing to: `subscription_created`, `subscription_updated`, `subscription_cancelled`,
+`subscription_resumed`, `subscription_paused`, `subscription_unpaused`, `subscription_expired`,
+`order_created`, `subscription_payment_success`.
+
+:::note
+Checkout custom data arrives **only** in `meta.custom_data` on the webhook envelope, never on the
+resource. This is the only place `Subscription.metadata` gets populated on Lemon Squeezy.
+:::
+
+## Capabilities
+
+| Capability                    | Value                                  |
+| ----------------------------- | -------------------------------------- |
+| `cancellationReason`          | `false`                                |
+| `checkoutStatus`              | `false`                                |
+| `checkoutSuccessUrl`          | `true`                                 |
+| `endTrial`                    | `true`                                 |
+| `hostedCheckout`              | `true`                                 |
+| `listSubscriptionsByCustomer` | `false`                                |
+| `portalReturnUrl`             | `false`                                |
+| `prorationBehaviors`          | `['invoice_now', 'prorate', 'none']`   |
+| `revoke`                      | `false`                                |
+| `uncancel`                    | `true`                                 |
+
+## Quirks
+
+- **A `Product` is a Lemon Squeezy VARIANT.** The variant is the purchasable unit, so
+  `Product.id` and `Price.checkoutRef` are both the variant ID, and every product has exactly one price.
+- **Numeric IDs coerced to strings.** JSON:API puts `data.id` as a string but foreign keys inside
+  `attributes` as numbers. The SDK coerces everything with `String()`, so `customerId`, `productId`, and
+  `priceId` are always strings.
+- **The current price comes from `price-model`.** `/v1/prices?filter[variant_id]=…` is an append-only
+  price *history*; the SDK reads the variant's `price-model` relationship instead.
+- **JSON:API content type on every request**, including GETs (`application/vnd.api+json`).
+- **Empty objects serialize as `[]`.** Lemon Squeezy returns `[]` where an empty object is expected
+  (`custom`, `billing_address`); the mappers tolerate it.
+- **One item per checkout, and no `customerId`.** More than one item throws `unsupported`; attaching an
+  existing customer throws `unsupported` — pass `customerEmail` instead. Quantities above `1` are
+  supported (via `variant_quantities`).
+- **No cancellation reasons**, and **no immediate revoke** — `subscriptions.cancel` always runs to the
+  end of the period. `subscriptions.revoke` throws `unsupported`.
+- **Cannot filter subscriptions by customer.** `subscriptions.list({ customerId })` throws
+  `unsupported`; Lemon Squeezy filters by store, product, variant, or email.
+- **`cancelled` is not terminal.** It means "grace period until `ends_at`, still resumable", so it maps
+  to `active` + `cancelAtPeriodEnd: true`. The terminal status is `expired`.
+- **Portal and update-payment-method URLs expire after 24 hours**, so the SDK fetches them on demand.
+  A customer without a subscription has no portal and throws `not_found`. `returnUrl` is unsupported.
+- **PayPal subscriptions ignore `PATCH /subscriptions`** — Lemon Squeezy silently no-ops. Plan changes
+  and uncancel therefore do nothing for PayPal-paid subscriptions; re-read the subscription and check
+  before reporting success to the customer.
+
+<CardGroup cols={2}>
+  <Card title="Stripe" icon="credit-card" href="/docs/providers/stripe">
+    The next provider.
+  </Card>
+  <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
+    Compare all five providers.
+  </Card>
+</CardGroup>

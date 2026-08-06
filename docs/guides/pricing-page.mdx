@@ -1,0 +1,173 @@
+---
+title: Build a pricing page
+description: Render a pricing page from products.list — formatting minor units, monthly/yearly toggles, caching the catalog, and linking to checkout.
+sidebar:
+  label: Pricing page
+---
+
+A pricing page needs three things from the billing provider: the plans, their prices, and the
+identifier a checkout accepts. `products.list` returns all three in one call.
+
+## Fetch the catalog
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { polar } from 'revenue-sdk/polar';
+
+const client = createClient({
+  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
+});
+
+// listAll follows cursors for you; a catalog is small enough to walk fully.
+const products = [];
+for await (const product of client.products.listAll({ limit: 100 })) {
+  products.push(product);
+}
+```
+
+## Shape it for the UI
+
+Flatten products into the rows you actually render. `checkoutRef` is the only identifier the checkout
+call accepts — carry it through, never `Product.id`.
+
+```ts
+import type { Price, Product } from 'revenue-sdk';
+
+interface PlanRow {
+  productId: string;
+  name: string;
+  description?: string;
+  checkoutRef: string;
+  price: string;
+  interval?: Price['interval'];
+  trialDays?: number;
+}
+
+function formatMoney(amount: number, currency: string): string {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount / 100);
+}
+
+function toRows(products: Product[]): PlanRow[] {
+  const rows: PlanRow[] = [];
+  for (const product of products) {
+    for (const price of product.prices) {
+      rows.push({
+        productId: product.id,
+        name: product.name,
+        description: product.description,
+        checkoutRef: price.checkoutRef,
+        price:
+          price.model === 'fixed' && price.amount !== null
+            ? formatMoney(price.amount, price.currency)
+            : 'Contact us',
+        interval: price.interval,
+        trialDays: price.trialDays,
+      });
+    }
+  }
+  return rows;
+}
+```
+
+:::note
+`amount` is in the currency's **minor units** — `2900` is `$29.00`. It is `null` for every model other
+than `fixed`; see [Products & prices](/docs/concepts/products-and-prices).
+:::
+
+## Monthly / yearly toggle
+
+Across all five providers a monthly plan and a yearly plan are **separate purchasable units**, so the
+toggle is a filter on `interval`, not a parameter:
+
+```ts
+const monthly = rows.filter((row) => row.interval === 'month');
+const yearly = rows.filter((row) => row.interval === 'year');
+
+const savings = (monthlyAmount: number, yearlyAmount: number): number =>
+  Math.round((1 - yearlyAmount / (monthlyAmount * 12)) * 100);
+```
+
+If your catalog names them ambiguously, group by a metadata key or by a naming convention you control —
+the SDK deliberately doesn't guess which monthly plan pairs with which yearly one.
+
+## Render and link to checkout
+
+```tsx
+export function Pricing({ rows }: { rows: PlanRow[] }) {
+  return (
+    <div className="grid">
+      {rows.map((row) => (
+        <article key={row.checkoutRef}>
+          <h3>{row.name}</h3>
+          <p>{row.description}</p>
+          <p>
+            <strong>{row.price}</strong>
+            {row.interval ? ` / ${row.interval}` : null}
+          </p>
+          {row.trialDays ? <p>{row.trialDays}-day free trial</p> : null}
+          <form method="post" action="/api/checkout">
+            <input type="hidden" name="checkoutRef" value={row.checkoutRef} />
+            <button type="submit">Choose {row.name}</button>
+          </form>
+        </article>
+      ))}
+    </div>
+  );
+}
+```
+
+The form posts to your own route, which creates the checkout server-side — see
+[the checkout flow guide](/docs/guides/checkout-flow). Never create checkouts from the browser: that
+would require shipping your API key.
+
+## Cache the catalog
+
+Prices change rarely and the list costs several round-trips on some providers (Stripe fetches prices per
+product; Lemon Squeezy fetches a price model per variant). Cache it:
+
+```ts
+const CACHE_TTL_SECONDS = 300;
+
+export async function getPricing(cache: KVNamespace): Promise<PlanRow[]> {
+  const cached = await cache.get('pricing', 'json');
+  if (cached) {
+    return cached as PlanRow[];
+  }
+
+  const products = [];
+  for await (const product of client.products.listAll({ limit: 100 })) {
+    products.push(product);
+  }
+  const rows = toRows(products);
+
+  await cache.put('pricing', JSON.stringify(rows), { expirationTtl: CACHE_TTL_SECONDS });
+  return rows;
+}
+```
+
+:::tip
+Invalidate the cache from a webhook or a deploy hook when you change prices, rather than shortening the
+TTL. A stale `checkoutRef` fails loudly with `not_found` at checkout time, so the failure mode is
+visible rather than silent.
+:::
+
+## Handle a partly unsupported catalog
+
+Real catalogs contain archived products, metered prices, and one-off products you don't want on the
+pricing page. Filter deliberately:
+
+```ts
+const sellable = rows.filter((row) => row.interval !== undefined && row.price !== 'Contact us');
+```
+
+Archived products are already excluded by the SDK where the provider supports it (Polar, Stripe, Paddle,
+and Dodo Payments all list only active products).
+
+<CardGroup cols={2}>
+  <Card title="Next: Checkout flow" icon="shopping-cart" href="/docs/guides/checkout-flow">
+    Turn a checkoutRef into a paid subscription.
+  </Card>
+  <Card title="Products & prices" icon="tags" href="/docs/concepts/products-and-prices">
+    The model behind the page.
+  </Card>
+</CardGroup>

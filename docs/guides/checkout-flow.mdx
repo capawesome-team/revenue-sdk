@@ -1,0 +1,220 @@
+---
+title: End-to-end checkout flow
+description: Create a checkout server-side, redirect the customer, and fulfill from a webhook instead of trusting the success page — plus a reconciliation path.
+sidebar:
+  label: Checkout flow
+---
+
+The complete flow has three moving parts: a server route that creates the checkout, a redirect, and a
+webhook that actually grants access. The success page is a *user-experience* step, not a fulfillment
+step.
+
+<Steps>
+  <Step title="Create the checkout server-side">
+    Never call the billing provider from the browser — that would mean shipping your API key. Post the
+    `checkoutRef` to your own route and create the checkout there.
+
+    ```ts
+    // POST /api/checkout
+    import { createClient, RevenueError } from 'revenue-sdk';
+    import { stripe } from 'revenue-sdk/stripe';
+
+    export async function POST(request: Request): Promise<Response> {
+      const user = await requireUser(request);
+      const form = await request.formData();
+      const checkoutRef = String(form.get('checkoutRef') ?? '');
+
+      const client = createClient({
+        provider: stripe({ secretKey: process.env.STRIPE_SECRET_KEY! }),
+      });
+
+      try {
+        const checkout = await client.checkouts.create({
+          items: [{ product: checkoutRef }],
+          customerId: user.billingCustomerId ?? undefined,
+          customerEmail: user.billingCustomerId ? undefined : user.email,
+          successUrl: 'https://example.com/billing/return?session={CHECKOUT_SESSION_ID}',
+          // Bootstraps the mapping from the provider's IDs back to your user.
+          metadata: { userId: user.id },
+        });
+
+        return Response.redirect(checkout.url, 303);
+      } catch (error) {
+        if (error instanceof RevenueError && error.code === 'not_found') {
+          return new Response('That plan is no longer available', { status: 410 });
+        }
+        throw error;
+      }
+    }
+    ```
+
+    :::note
+    Pass `customerId` when you already know the provider customer — it keeps a returning customer's
+    payment methods and invoices on one record. Lemon Squeezy is the exception: it rejects `customerId`
+    on checkouts, so always pass `customerEmail` there.
+    :::
+  </Step>
+  <Step title="Redirect the customer">
+    On Polar, Lemon Squeezy, Stripe, and Dodo Payments, `checkout.url` is a provider-hosted page you can
+    redirect to directly. On Paddle it is not — check the capability:
+
+    ```ts
+    if (client.capabilities.hostedCheckout) {
+      return Response.redirect(checkout.url, 303);
+    }
+    // Paddle: render your own Paddle.js page and open the transaction there.
+    return Response.redirect(`/checkout?transaction=${checkout.id}`, 303);
+    ```
+
+    `successUrl` is likewise gated by `checkoutSuccessUrl` — Paddle configures the post-payment redirect
+    in Paddle.js instead. See [the Paddle page](/docs/providers/paddle).
+  </Step>
+  <Step title="Show a pending state on return">
+    The customer lands back on your success URL. **Do not grant access here.**
+
+    ```ts
+    // GET /billing/return
+    export async function GET(request: Request): Promise<Response> {
+      const sessionId = new URL(request.url).searchParams.get('session');
+      if (!sessionId) return render('pending');
+
+      const checkout = await client.checkouts.get({ id: sessionId });
+
+      // Read-only confirmation for the UI. Access is granted by the webhook.
+      return render(checkout.status === 'complete' ? 'confirmed' : 'pending');
+    }
+    ```
+
+    :::warning
+    The redirect is not proof of payment. The customer can close the tab before it fires, a bot can hit
+    the URL, and delayed payment methods (bank debits, vouchers) settle minutes or hours later — Stripe
+    finishes those sessions with `payment_status: unpaid`. Use the redirect to show "we're setting up
+    your account", and let the webhook do the work.
+    :::
+
+    A page that polls your own API for the entitlement — rather than the provider — gives the customer
+    instant feedback without trusting the redirect:
+
+    ```ts
+    // The webhook writes this; the page polls it.
+    const { entitled } = await fetch('/api/me/entitlement').then((r) => r.json());
+    ```
+  </Step>
+  <Step title="Fulfill from the webhook">
+    The webhook is the authoritative signal. Both `checkout.completed` and the subscription events are
+    useful — the checkout event carries your metadata, the subscription events carry the state you'll
+    keep in sync afterwards.
+
+    ```ts
+    import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/stripe';
+
+    export async function POST(request: Request): Promise<Response> {
+      const headers = request.headers;
+      const body = await request.text();
+
+      if (!(await verifyWebhook({ headers, body, secret: process.env.STRIPE_WEBHOOK_SECRET! }))) {
+        return new Response('invalid signature', { status: 401 });
+      }
+
+      const event = await parseWebhookEvent({ headers, body });
+
+      switch (event.type) {
+        case 'checkout.completed': {
+          const checkout = event.checkout!;
+          const userId = checkout.metadata?.userId;
+          if (typeof userId === 'string' && checkout.customerId) {
+            // Bootstrap the mapping so later events don't need metadata at all.
+            await linkBillingCustomer(userId, checkout.customerId);
+          }
+          break;
+        }
+        case 'subscription.created':
+        case 'subscription.updated':
+        case 'subscription.canceled':
+          await upsertSubscription(event.subscription!);
+          break;
+        case 'order.paid':
+          await recordPayment(event.order!);
+          break;
+      }
+
+      return new Response(null, { status: 204 });
+    }
+    ```
+
+    `checkout.completed` only fires where the provider exposes a checkout event the SDK can confirm as
+    paid (Polar and Stripe). Subscription events fire everywhere — so **make the subscription events the
+    source of entitlement** and treat `checkout.completed` as the moment you learn which of your users a
+    provider customer belongs to.
+  </Step>
+</Steps>
+
+## Persisting the link between your user and the provider
+
+The single most valuable thing to store is the mapping:
+
+```
+your user id  ⇄  provider customer id  ⇄  provider subscription id
+```
+
+Bootstrap it from checkout `metadata` on the first event, then rely on the IDs:
+
+```ts
+async function upsertSubscription(subscription: Subscription): Promise<void> {
+  const userId =
+    (typeof subscription.metadata?.userId === 'string' ? subscription.metadata.userId : undefined) ??
+    (await findUserByBillingCustomerId(subscription.customerId));
+
+  if (!userId) {
+    // Store it as orphaned and reconcile later rather than dropping it.
+    await storeOrphanSubscription(subscription);
+    return;
+  }
+
+  await db.subscriptions.upsert({
+    where: { providerSubscriptionId: subscription.id },
+    data: {
+      userId,
+      status: subscription.status,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      endsAt: subscription.endsAt,
+    },
+  });
+}
+```
+
+:::note
+On **Lemon Squeezy**, checkout custom data reaches you only through `meta.custom_data` on the webhook —
+`Subscription.metadata` is `undefined` when you fetch the subscription over the API. Persist the mapping
+on the first webhook; don't expect to re-read it later.
+:::
+
+## Reconciling a missed webhook
+
+Webhooks fail. Give yourself a manual path that re-reads the truth from the provider:
+
+```ts
+export async function reconcile(userId: string): Promise<void> {
+  const user = await getUser(userId);
+  if (!user.billingCustomerId) return;
+
+  for await (const subscription of client.subscriptions.listAll({
+    customerId: user.billingCustomerId,
+  })) {
+    await upsertSubscription(subscription);
+  }
+}
+```
+
+The `customerId` filter needs the `listSubscriptionsByCustomer` capability — Lemon Squeezy lacks it, so
+there you walk `subscriptions.listAll()` and match on `customerId` yourself.
+
+<CardGroup cols={2}>
+  <Card title="Next: Webhook handler" icon="webhook" href="/docs/guides/webhook-handler">
+    A production-grade, idempotent handler.
+  </Card>
+  <Card title="Checkouts" icon="shopping-cart" href="/docs/concepts/checkouts">
+    Status semantics and metadata propagation.
+  </Card>
+</CardGroup>

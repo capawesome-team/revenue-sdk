@@ -1,0 +1,221 @@
+---
+title: Client & providers
+description: How createClient, the provider factories, and the thin-adapter/fat-client split fit together, plus tree shaking and per-request clients on Workers.
+sidebar:
+  label: Client & providers
+---
+
+`revenue-sdk` is built on a clean split: **thin provider adapters** translate one billing provider's
+REST API into a normalized contract, and a **single fat client** layers all the cross-provider behavior
+on top — validation, capability gating, a bounded rate-limit retry, and the `listAll` iterators.
+
+## createClient
+
+`createClient` takes a provider and returns a `RevenueClient` with grouped namespaces:
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { stripe } from 'revenue-sdk/stripe';
+
+const client = createClient({
+  provider: stripe({ secretKey: process.env.STRIPE_SECRET_KEY! }),
+});
+
+client.products; // list / listAll / get
+client.checkouts; // create / get
+client.customers; // get / list / listAll
+client.subscriptions; // get / list / listAll / cancel / uncancel / changePlan / endTrial / revoke
+client.customerPortal; // createSession
+```
+
+The client also exposes two read-only fields derived from the provider:
+
+<TypeTable
+  type={{
+    providerName: {
+      type: "'polar' | 'lemon-squeezy' | 'stripe' | 'paddle' | 'dodo-payments' | 'testing'",
+      description: 'Which provider backs this client.',
+    },
+    capabilities: {
+      type: 'RevenueCapabilities',
+      description: 'The provider capability object — see Capabilities.',
+    },
+  }}
+/>
+
+## Provider factories
+
+Each provider ships a factory on its own subpath. A factory returns a `RevenueProvider` — the thin
+adapter the client drives. There is no registry and no dynamic import: you name the provider you want,
+and your bundler drops the other four.
+
+<CodeGroup>
+
+```ts Polar
+import { polar } from 'revenue-sdk/polar';
+
+const provider = polar({
+  accessToken: process.env.POLAR_ACCESS_TOKEN!,
+  server: 'sandbox', // 'production' (default) | 'sandbox'
+});
+```
+
+```ts Lemon Squeezy
+import { lemonSqueezy } from 'revenue-sdk/lemon-squeezy';
+
+const provider = lemonSqueezy({
+  apiKey: process.env.LEMON_SQUEEZY_API_KEY!,
+  storeId: process.env.LEMON_SQUEEZY_STORE_ID!,
+});
+```
+
+```ts Stripe
+import { stripe } from 'revenue-sdk/stripe';
+
+const provider = stripe({ secretKey: process.env.STRIPE_SECRET_KEY! });
+```
+
+```ts Paddle
+import { paddle } from 'revenue-sdk/paddle';
+
+const provider = paddle({
+  apiKey: process.env.PADDLE_API_KEY!,
+  server: 'sandbox', // 'production' (default) | 'sandbox'
+});
+```
+
+```ts Dodo Payments
+import { dodoPayments } from 'revenue-sdk/dodo-payments';
+
+const provider = dodoPayments({
+  apiKey: process.env.DODO_PAYMENTS_API_KEY!,
+  server: 'test', // 'live' (default) | 'test'
+});
+```
+
+</CodeGroup>
+
+Every factory also accepts an optional `baseUrl` (used verbatim, overriding `server`) and an injectable
+`fetch`. See the [provider pages](/docs/providers/polar) for the complete option tables.
+
+## Thin adapter, fat client
+
+The `RevenueProvider` contract is deliberately minimal — a flat list of methods like `listProducts`,
+`createCheckout`, and `cancelSubscription`. Everything that should behave identically across providers
+lives in the client, not the adapter:
+
+<CardGroup cols={2}>
+  <Card title="Parameter validation" icon="check-check">
+    Empty `id`s, empty item lists, and non-positive quantities are rejected before a request is made.
+  </Card>
+  <Card title="Capability gating" icon="toggle-right">
+    Unsupported options throw `unsupported` instead of being silently dropped.
+  </Card>
+  <Card title="Bounded retry" icon="refresh-cw">
+    One retry on `rate_limited` when the provider's `Retry-After` is small.
+  </Card>
+  <Card title="Pagination" icon="list">
+    The `listAll` async generators follow cursors for you.
+  </Card>
+</CardGroup>
+
+The payoff: a new provider only has to implement the thin adapter, and it instantly inherits all of the
+client's behavior.
+
+## Tree shaking
+
+Providers are exposed as **factory functions on separate subpaths**, never as a registry keyed by name.
+That is what makes the package tree-shakable — the package is marked `sideEffects: false`, so importing
+`revenue-sdk/polar` leaves the Stripe form encoder, the Lemon Squeezy JSON:API layer, and everything
+else out of your bundle.
+
+:::tip
+If your app must support several providers at runtime, import each factory statically and pick between
+them in a small switch. That keeps the tree-shaking analysis intact for builds that only ever configure
+one.
+:::
+
+## Injectable fetch
+
+Every factory accepts an optional `fetch` implementation. In production you omit it and the platform's
+global `fetch` is used; in tests you inject a stub so no real network call is made:
+
+```ts
+const provider = stripe({
+  secretKey: 'sk_test_123',
+  fetch: async () =>
+    new Response(JSON.stringify({ id: 'prod_1', name: 'Pro' }), {
+      headers: { 'content-type': 'application/json' },
+    }),
+});
+
+const client = createClient({ provider });
+```
+
+The SDK always calls the injected `fetch` **detached from any holder object**, which is what workerd
+requires — passing `someObject.fetch` directly is safe.
+
+:::tip
+For tests that don't target a specific provider's wire format, prefer the in-memory provider from
+`revenue-sdk/testing` — see [Testing provider](/docs/providers/testing).
+:::
+
+## Per-request instantiation on Workers
+
+Provider factories are cheap object literals and hold no module-scope mutable state, so creating a
+client per request is the correct pattern on Cloudflare Workers and similar isolate-based runtimes —
+secrets live on the per-request `env` binding, not in module scope:
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { stripe } from 'revenue-sdk/stripe';
+
+interface Env {
+  STRIPE_SECRET_KEY: string;
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const client = createClient({
+      provider: stripe({ secretKey: env.STRIPE_SECRET_KEY }),
+    });
+
+    const { items } = await client.products.list({ limit: 10 });
+    return Response.json(items.map((product) => product.name));
+  },
+};
+```
+
+See [Cloudflare Workers](/docs/guides/cloudflare-workers) for the full picture.
+
+## Cancellation
+
+Every method accepts an optional `signal` — a standard `AbortSignal` threaded through to `fetch`:
+
+```ts
+const { items } = await client.products.list({
+  signal: AbortSignal.timeout(5_000),
+});
+```
+
+An abort rejects with the original `AbortError` rather than being wrapped, so `error.name === 'AbortError'`
+still distinguishes a timeout from a provider failure.
+
+## Retry configuration
+
+The client performs **one bounded retry** on `rate_limited` when the provider sent a `Retry-After` that
+is at most `maxRetryAfterSeconds` (default `10`). Set it to `0` to disable the retry entirely:
+
+```ts
+const client = createClient({
+  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
+  retry: { maxRetryAfterSeconds: 10 },
+});
+```
+
+Anything beyond that single retry is yours to build — see [Errors](/docs/concepts/errors) for
+`retryable` and `retryAfter`.
+
+<Card title="Next: Products & prices" icon="tags" href="/docs/concepts/products-and-prices">
+  What a "product" means per provider, and which identifier a checkout accepts.
+</Card>

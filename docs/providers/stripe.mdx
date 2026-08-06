@@ -1,0 +1,135 @@
+---
+title: Stripe
+description: Configure the Stripe provider — secret key, pinned API version, test mode, webhooks, capabilities, and quirks.
+sidebar:
+  label: Stripe
+---
+
+Stripe is a payment processor (you remain the merchant of record). Import the factory from
+`revenue-sdk/stripe`.
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { stripe } from 'revenue-sdk/stripe';
+
+const client = createClient({
+  provider: stripe({ secretKey: process.env.STRIPE_SECRET_KEY! }),
+});
+```
+
+## Factory options
+
+<TypeTable
+  type={{
+    secretKey: {
+      type: 'string',
+      description: 'Secret or restricted API key (sk_… / rk_…). Sent as a Bearer credential.',
+    },
+    apiVersion: {
+      type: 'string',
+      required: false,
+      description: 'Overrides the pinned Stripe-Version. Response shapes may no longer match the SDK types.',
+    },
+    baseUrl: { type: 'string', required: false, description: 'Used verbatim; defaults to https://api.stripe.com.' },
+    fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+  }}
+/>
+
+## Authentication
+
+Create a key in the Stripe dashboard under **Developers → API keys**. Either a secret key (`sk_…`) or a
+**restricted key** (`rk_…`) works — a restricted key is the better default. Grant it read/write on
+Products, Prices, Checkout Sessions, Customers, Subscriptions, and the Billing Portal.
+
+## Test mode
+
+Test mode is selected by the **key prefix**: `sk_test_…` / `rk_test_…` talk to test data, `sk_live_…` to
+live data. There is no `server` option — swap the key via environment variables.
+
+## Webhooks
+
+Create the endpoint in **Developers → Webhooks** and copy the signing secret (`whsec_…`).
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/stripe';
+
+const headers = request.headers;
+const body = await request.text();
+
+if (!(await verifyWebhook({ headers, body, secret: env.STRIPE_WEBHOOK_SECRET }))) {
+  return new Response('invalid signature', { status: 401 });
+}
+
+const event = await parseWebhookEvent({ headers, body });
+```
+
+The `Stripe-Signature` header carries a timestamp (`t=`) and one or more signatures. Only `v1=`
+signatures are trusted — `v0=` is a deliberately fake test scheme and is ignored — and deliveries older
+than 300 seconds are rejected. The `whsec_` secret is used **verbatim**; never strip or base64-decode
+it.
+
+Events worth subscribing to: `customer.subscription.created`, `customer.subscription.updated`,
+`customer.subscription.deleted`, `customer.subscription.paused`, `customer.subscription.resumed`,
+`checkout.session.completed`, `checkout.session.async_payment_succeeded`, `invoice.paid`.
+
+:::warning
+`checkout.session.completed` fires with `payment_status: "unpaid"` for delayed payment methods.
+`revenue-sdk` reports those as `unknown` (with the `checkout` attached) rather than
+`checkout.completed`, so you never fulfill an unpaid order. Subscribe to
+`checkout.session.async_payment_succeeded` to catch the settlement.
+:::
+
+## Capabilities
+
+| Capability                    | Value                                  |
+| ----------------------------- | -------------------------------------- |
+| `cancellationReason`          | `true`                                 |
+| `checkoutStatus`              | `true`                                 |
+| `checkoutSuccessUrl`          | `true`                                 |
+| `endTrial`                    | `true`                                 |
+| `hostedCheckout`              | `true`                                 |
+| `listSubscriptionsByCustomer` | `true`                                 |
+| `portalReturnUrl`             | `true`                                 |
+| `prorationBehaviors`          | `['invoice_now', 'none', 'prorate']`   |
+| `revoke`                      | `true`                                 |
+| `uncancel`                    | `true`                                 |
+
+## Quirks
+
+- **`Price.checkoutRef` is the price ID**, not the product ID. Stripe checkout line items take
+  `price_…`. `Product.id` is the `prod_…` — never pass it to `checkouts.create`.
+- **The API version is pinned** to a constant so response shapes match the SDK's types regardless of
+  your account default. Override it with `apiVersion` only if you know the shapes still line up.
+- **Form encoding is invisible to you.** Stripe's API takes
+  `application/x-www-form-urlencoded` with bracket notation, not JSON. The SDK's encoder handles
+  sequential array indices, omitting `undefined`, sending `null` as `''`, booleans as `'true'`/`'false'`,
+  and `Date` as unix seconds. You pass plain objects and never see it.
+- **`status=all` is always sent** on subscription lists. Without it Stripe silently hides canceled
+  subscriptions, so a canceled subscription would simply vanish from your list.
+- **Plan changes send the current item ID.** Omitting `items[0][id]` *adds* the new price instead of
+  replacing the old one — silent double-billing. The SDK fetches the subscription first and sends the
+  item ID, so this can't happen through `subscriptions.changePlan`.
+- **`current_period_start` / `current_period_end` live on subscription items**, not on the
+  subscription. The SDK reads them from the first item and exposes them as
+  `currentPeriodStart`/`currentPeriodEnd`.
+- **`cancelAtPeriodEnd` needs two fields.** In flexible billing mode — Stripe's default for new
+  integrations — a portal cancellation sets only `cancel_at` and leaves `cancel_at_period_end` at
+  `false`. The SDK checks `cancel_at_period_end || cancel_at !== null`, and `uncancel` clears both.
+- **`checkout.status === 'complete'` means paid.** A session that is `complete` but `payment_status:
+  unpaid` is reported as `open`.
+- **The email filter is case-sensitive and emails are not unique** — see
+  [Customers & portal](/docs/concepts/customers-and-portal).
+- **No `Retry-After` on 429.** Stripe signals retryability with `Stripe-Should-Retry`, so
+  `RevenueError.retryAfter` is usually `undefined` and the client's bounded retry does not engage. Use
+  your own back-off.
+- **Timestamps are unix seconds** on the wire and are converted to `Date` everywhere in the normalized
+  models.
+
+<CardGroup cols={2}>
+  <Card title="Paddle" icon="square-stack" href="/docs/providers/paddle">
+    The next provider.
+  </Card>
+  <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
+    Compare all five providers.
+  </Card>
+</CardGroup>

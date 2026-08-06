@@ -1,0 +1,170 @@
+---
+title: Products & prices
+description: The unified Product and Price models, what a product means per provider, and which identifier a checkout accepts.
+sidebar:
+  label: Products & prices
+---
+
+`products.list` and `products.get` return a normalized `Product` with its `prices` already attached, so
+you can render a pricing page from one call without knowing how the provider models its catalog.
+
+## The models
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'The provider identifier of the product, coerced to a string.' },
+    name: { type: 'string', description: 'Display name.' },
+    description: { type: 'string', required: false, description: 'Display description, when the provider has one.' },
+    prices: { type: 'Price[]', description: 'The product\'s prices. May be empty when the provider has no price attached.' },
+    raw: { type: 'unknown', description: 'The untouched provider payload.' },
+  }}
+/>
+
+Each `Price`:
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'The provider identifier of the price.' },
+    checkoutRef: {
+      type: 'string',
+      description:
+        'The identifier checkouts.create accepts for this price. Provider-dependent — see the table below.',
+    },
+    type: { type: "'one_time' | 'recurring'", description: 'Whether buying this price starts a subscription.' },
+    model: {
+      type: "'fixed' | 'custom' | 'metered' | 'seat_based' | 'tiered'",
+      description: 'The pricing model. Only fixed is fully normalized.',
+    },
+    amount: {
+      type: 'number | null',
+      description: 'Amount in the currency\'s minor units (e.g. 2499 = $24.99). null unless model is fixed.',
+    },
+    currency: { type: 'string', description: 'Lowercase ISO 4217 code, e.g. usd.' },
+    interval: { type: "'day' | 'week' | 'month' | 'year'", required: false, description: 'Billing interval for recurring prices.' },
+    intervalCount: { type: 'number', required: false, description: 'How many intervals per billing cycle.' },
+    trialDays: {
+      type: 'number',
+      required: false,
+      description:
+        'Trial length in days. Only set when the provider expresses the trial in days or weeks — month/year trials are left undefined; read raw.',
+    },
+    raw: { type: 'unknown', description: 'The untouched provider payload.' },
+  }}
+/>
+
+## What a "product" is per provider
+
+This is the single most important mapping in the SDK. Providers disagree about which object is the
+*purchasable unit*, and `revenue-sdk` always normalizes to the purchasable one.
+
+| Provider          | Unified `Product` is…            | `Product.id`            | `Price.checkoutRef` is…        |
+| ----------------- | -------------------------------- | ----------------------- | ------------------------------ |
+| **Polar**         | a Polar **product**              | Polar product ID        | the **product ID**             |
+| **Lemon Squeezy** | a Lemon Squeezy **variant**      | variant ID (as a string)| the **variant ID**             |
+| **Stripe**        | a Stripe **product**             | Stripe product ID       | the **price ID** (`price_…`)   |
+| **Paddle**        | a Paddle **product**             | Paddle product ID       | the **price ID** (`pri_…`)     |
+| **Dodo Payments** | a Dodo **product**               | Dodo product ID         | the **product ID**             |
+
+:::warning
+Never hand `Product.id` to `checkouts.create`. Always pass `Price.checkoutRef` — it is the same string
+as `Product.id` on Polar and Dodo Payments, but a *different* object on Stripe and Paddle. Using
+`checkoutRef` everywhere keeps your code provider-agnostic.
+:::
+
+```ts
+const { items: products } = await client.products.list();
+
+for (const product of products) {
+  for (const price of product.prices) {
+    // Correct across all five providers.
+    console.log(product.name, price.checkoutRef, price.amount, price.currency);
+  }
+}
+```
+
+The same rule applies to `subscriptions.changePlan({ product })` — the `product` parameter is a
+`checkoutRef`, not a `Product.id`.
+
+## Lemon Squeezy: products are variants
+
+Lemon Squeezy's own "product" is a container; the thing a checkout can actually sell is a **variant**.
+`revenue-sdk` therefore maps `Product` to a variant and reads the variant's *current* price from its
+`price-model` relationship. (The `/v1/prices` collection is an append-only price history and must not be
+used for the current price.)
+
+The practical consequences:
+
+- One `Product` always has exactly **one** `Price`.
+- All Lemon Squeezy IDs are numeric on the wire and are coerced to strings by the SDK.
+- Prices carry the **store's** currency, since a variant price doesn't carry its own.
+
+## Only `fixed` prices are fully normalized
+
+`Price.model` classifies the pricing model, but only `fixed` gets a normalized `amount`. For every other
+model `amount` is `null` and the details live in `raw`:
+
+| `model`      | Normalized `amount` | Where the detail lives                                          |
+| ------------ | ------------------- | ---------------------------------------------------------------- |
+| `fixed`      | yes                 | `amount` + `currency`                                            |
+| `custom`     | `null`              | `raw` (pay-what-you-want / custom unit amount)                   |
+| `metered`    | `null`              | `raw` (usage aggregation, meter configuration)                   |
+| `seat_based` | `null`              | `raw` (per-seat configuration)                                   |
+| `tiered`     | `null`              | `raw` (tier/graduated/volume/package tables)                     |
+
+```ts
+if (price.model === 'fixed' && price.amount !== null) {
+  render(formatMoney(price.amount, price.currency));
+} else {
+  render('Contact us');
+}
+```
+
+:::note
+Usage-based billing, tier tables, and seat management are deliberately out of scope for now. The models
+are classified so you can detect and route around them, not manage them.
+:::
+
+## Monthly and yearly are separate purchasable units
+
+Across all five providers, a monthly plan and a yearly plan are **different purchasable units** — a
+different Polar product, a different Lemon Squeezy variant, a different Stripe/Paddle price, a different
+Dodo product. There is no "interval" switch on a single reference.
+
+That means a monthly/yearly toggle on your pricing page is a choice between two `checkoutRef` values,
+and upgrading from monthly to yearly is a `subscriptions.changePlan` to the other `checkoutRef`:
+
+```ts
+const yearly = product.prices.find((price) => price.interval === 'year');
+
+await client.subscriptions.changePlan({
+  id: subscription.id,
+  product: yearly!.checkoutRef,
+  prorationBehavior: 'prorate',
+});
+```
+
+## Reading a product
+
+```ts
+const product = await client.products.get({ id: 'PRODUCT_ID' });
+```
+
+`products.get` takes the **provider's product identifier** (`Product.id`). On Lemon Squeezy that is the
+variant ID; on Dodo Payments the product ID doubles as the `checkoutRef`.
+
+Lists are cursor-paginated — see [Pagination](/docs/concepts/pagination):
+
+```ts
+for await (const product of client.products.listAll({ limit: 100 })) {
+  console.log(product.id, product.name);
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Next: Checkouts" icon="shopping-cart" href="/docs/concepts/checkouts">
+    Turn a checkoutRef into a paid order.
+  </Card>
+  <Card title="Build a pricing page" icon="tags" href="/docs/guides/pricing-page">
+    Render products and prices end to end.
+  </Card>
+</CardGroup>

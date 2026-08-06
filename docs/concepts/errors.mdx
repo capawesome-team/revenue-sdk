@@ -1,0 +1,189 @@
+---
+title: Errors
+description: The RevenueError class, its normalized code union, retry semantics, the bounded rate-limit retry, and secret redaction.
+sidebar:
+  label: Errors
+---
+
+Every failure in `revenue-sdk` throws a single error type — **`RevenueError`** — with a normalized
+`code`, so you branch on the failure without parsing provider-specific status codes or message strings.
+
+## RevenueError
+
+```ts
+import { RevenueError } from 'revenue-sdk';
+
+try {
+  await client.subscriptions.get({ id: 'sub_missing' });
+} catch (error) {
+  if (error instanceof RevenueError) {
+    error.code; // normalized failure code
+    error.provider; // 'polar' | 'lemon-squeezy' | 'stripe' | 'paddle' | 'dodo-payments' | 'testing'
+    error.status; // HTTP status, when the failure came from a response
+    error.retryable; // whether retrying may succeed
+    error.retryAfter; // seconds, when the provider sent Retry-After
+    error.cause; // the parsed provider body, or the underlying fetch error
+  }
+}
+```
+
+<TypeTable
+  type={{
+    code: { type: 'RevenueErrorCode', description: 'Normalized failure code — the field to branch on.' },
+    provider: { type: 'ProviderName', required: false, description: 'Which provider produced the error.' },
+    status: { type: 'number', required: false, description: 'HTTP status, when the failure came from a response.' },
+    retryable: { type: 'boolean', description: 'Whether retrying the operation may succeed.' },
+    retryAfter: { type: 'number', required: false, description: 'Seconds to wait, parsed from the provider Retry-After header (numeric or HTTP-date).' },
+    cause: { type: 'unknown', required: false, description: 'The parsed provider response body, or the underlying error.' },
+  }}
+/>
+
+## The code union
+
+`RevenueErrorCode` is a **closed union of ten values**:
+
+| `code`            | Meaning                                                                     | `retryable`     |
+| ----------------- | ---------------------------------------------------------------------------- | --------------- |
+| `unauthorized`    | Missing, invalid, or expired credentials.                                    | no              |
+| `forbidden`       | Authenticated, but not allowed to do this.                                   | no              |
+| `not_found`       | The resource does not exist (or is gone).                                    | no              |
+| `conflict`        | The request conflicts with current state, or a precondition failed.          | no              |
+| `rate_limited`    | The provider's rate limit was hit.                                           | **yes**         |
+| `payment_required`| The provider refused for billing reasons (HTTP 402) — e.g. a declined card.  | no              |
+| `validation`      | Bad parameters, from the provider or from a client-side check.               | no              |
+| `unsupported`     | The active provider can't do what was requested.                             | no              |
+| `provider_error`  | An unclassified provider response.                                           | only when `5xx` |
+| `network_error`   | The request never completed (DNS, TLS, connection, timeout).                 | **yes**         |
+
+The full HTTP-status mapping lives in [the error codes reference](/docs/reference/error-codes).
+
+```ts
+switch (error.code) {
+  case 'rate_limited':
+    // back off using error.retryAfter
+    break;
+  case 'unauthorized':
+    // rotate or refresh the API key
+    break;
+  case 'payment_required':
+    // the customer's payment failed — surface it, don't retry
+    break;
+  case 'unsupported':
+    // this provider lacks the capability — see Capabilities
+    break;
+}
+```
+
+### `unsupported` and `validation` are usually pre-flight
+
+Both are frequently raised **before any HTTP request is made**:
+
+- **`validation`** — an empty `id`, an empty `items` array, an empty `items[].product`, or a `quantity`
+  that isn't a positive integer.
+- **`unsupported`** — capability gating: `successUrl` on Paddle, `returnUrl` on Lemon Squeezy or
+  Paddle, `customerId` on a Lemon Squeezy subscription list, `reason`/`comment` on a provider without
+  `cancellationReason`, `uncancel`/`endTrial`/`revoke` where unsupported, and a `prorationBehavior`
+  outside `capabilities.prorationBehaviors`.
+
+Adapters raise `unsupported` for the finer-grained cases the capability object can't express — a Polar
+checkout with `quantity > 1`, a Lemon Squeezy checkout with more than one item, and so on.
+
+## `retryable` and `retryAfter`
+
+`retryable` is a normalized hint. It is `true` for `rate_limited` and `network_error`, and for any error
+whose HTTP `status` is `5xx`. When the provider sent a `Retry-After` header — numeric seconds or an
+HTTP date — `retryAfter` carries the number of seconds to wait.
+
+```ts
+if (error.retryable) {
+  await sleep((error.retryAfter ?? 1) * 1000);
+  // retry with your own back-off policy
+}
+```
+
+Provider notes:
+
+- **Polar** sends `Retry-After` on 429.
+- **Stripe** does not send `Retry-After`; it signals retryability via `Stripe-Should-Retry`. Expect
+  `retryAfter` to be `undefined` on Stripe rate limits and use your own back-off.
+- **Paddle** reports authentication failures as HTTP **403**. The adapter inspects the error code and
+  re-maps `authentication_malformed`, `authentication_missing`, and `invalid_token` to `unauthorized`,
+  so a bad API key doesn't masquerade as a permissions problem.
+
+## The client's single bounded retry
+
+The client retries **once**, and only when all of these hold:
+
+1. the error is a `RevenueError` with code `rate_limited`,
+2. the provider supplied a `retryAfter`,
+3. `retryAfter <= maxRetryAfterSeconds` (default `10`).
+
+```ts
+const client = createClient({
+  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
+  retry: { maxRetryAfterSeconds: 10 }, // 0 disables the retry entirely
+});
+```
+
+The retry is deliberately conservative: it smooths over a one-second burst limit without turning a
+serverless request into a multi-minute hang, and it never retries anything that could double-charge a
+customer. Everything beyond it — exponential back-off, queues, dead-lettering — is yours to build on top
+of `retryable` and `retryAfter`.
+
+The retry also applies inside `listAll`, so a rate limit hit halfway through an iteration doesn't abort
+the whole walk.
+
+## Secret redaction
+
+`RevenueError` **redacts known secrets** from its message before the error is constructed. The API key
+or access token the failing provider was configured with is replaced with `[redacted]`, so an error that
+bubbles into your logs or error tracker won't leak the credential that produced it.
+
+```ts
+// Even if a provider echoes the key back in an error body:
+error.message; // "… Bearer [redacted] …"
+```
+
+:::warning
+Redaction covers the error **message**. `error.cause` holds the parsed provider response body verbatim —
+attach it to a bug report deliberately, not to every log line. And some values are secrets by design:
+a customer portal URL is a signed, ready-to-use link into someone's billing account. Never log those.
+:::
+
+## Handling errors
+
+```ts
+import { RevenueError } from 'revenue-sdk';
+
+try {
+  await client.checkouts.create({ items: [{ product: checkoutRef }] });
+} catch (error) {
+  if (error instanceof RevenueError) {
+    switch (error.code) {
+      case 'unauthorized':
+        // credentials are wrong or revoked
+        break;
+      case 'not_found':
+        // the product/price no longer exists in the provider
+        break;
+      case 'unsupported':
+        // the active provider lacks this capability
+        break;
+      default:
+        if (error.retryable) {
+          // transient — retry with back-off
+        }
+    }
+  }
+  throw error;
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Next: Capabilities" icon="toggle-right" href="/docs/concepts/capabilities">
+    How providers advertise what they can and can't do.
+  </Card>
+  <Card title="Error codes reference" icon="list" href="/docs/reference/error-codes">
+    The full union with HTTP-status mapping.
+  </Card>
+</CardGroup>

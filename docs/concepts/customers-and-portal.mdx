@@ -1,0 +1,157 @@
+---
+title: Customers & portal
+description: Look up customers, understand the per-provider email-filter caveats, and mint short-lived customer portal sessions that expire quickly.
+sidebar:
+  label: Customers & portal
+---
+
+Customers are the provider-side identity a subscription belongs to. `revenue-sdk` normalizes them into
+one shape and gives you a single call for the provider's self-service billing portal.
+
+## The Customer model
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'Provider customer identifier, coerced to a string.' },
+    email: { type: 'string', description: 'The customer email. Empty string when the provider has none on file.' },
+    name: { type: 'string', required: false, description: 'Display name, when set.' },
+    metadata: { type: 'Record<string, string | number | boolean>', required: false, description: 'Provider metadata, where available.' },
+    createdAt: { type: 'Date', required: false, description: 'When the customer was created.' },
+    raw: { type: 'unknown', description: 'The untouched provider payload.' },
+  }}
+/>
+
+## Reading customers
+
+```ts
+const customer = await client.customers.get({ id: 'CUSTOMER_ID' });
+
+const { items, cursor } = await client.customers.list({ limit: 50 });
+
+for await (const entry of client.customers.listAll()) {
+  console.log(entry.id, entry.email);
+}
+```
+
+## The email filter and its caveats
+
+`customers.list` accepts an **exact-match** `email` filter:
+
+```ts
+const { items } = await client.customers.list({ email: 'ada@example.com' });
+const customer = items[0];
+```
+
+It is supported by all five providers, but it does not behave identically:
+
+| Provider          | Caveat                                                                                       |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| **Polar**         | Exact match on the organization's customers.                                                  |
+| **Lemon Squeezy** | Always **scoped to the store** configured in the factory (`storeId`). Customers in your other stores are invisible. |
+| **Stripe**        | **Case-sensitive**, and emails are **not unique** — several customers can share one address.   |
+| **Paddle**        | Exact match.                                                                                  |
+| **Dodo Payments** | Exact match.                                                                                  |
+
+:::warning
+Never treat "email" as a primary key. On Stripe in particular, `Ada@example.com` and `ada@example.com`
+are different filter inputs *and* may both exist as separate customers. Store the provider
+`Customer.id` against your own user record the first time you see it, and look up by that ID
+afterwards.
+:::
+
+A defensive lookup that survives duplicates:
+
+```ts
+const { items } = await client.customers.list({ email, limit: 100 });
+
+if (items.length > 1) {
+  // Ambiguous — prefer the customer that already has a subscription.
+  logger.warn(`Multiple customers share ${email}`, { ids: items.map((c) => c.id) });
+}
+```
+
+## Customer portal sessions
+
+The customer portal is the provider-hosted page where a customer updates their payment method, views
+invoices, and cancels. `customerPortal.createSession` mints a session and returns its URL:
+
+```ts
+const session = await client.customerPortal.createSession({
+  customerId: customer.id,
+  returnUrl: 'https://example.com/account', // requires the portalReturnUrl capability
+});
+
+redirect(session.url);
+```
+
+<TypeTable
+  type={{
+    customerId: { type: 'string', description: 'The provider customer to open the portal for.' },
+    returnUrl: { type: 'string', required: false, description: 'Where the portal sends the customer back to. Requires the portalReturnUrl capability.' },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
+  }}
+/>
+
+### Mint one per click — the URLs expire
+
+Portal URLs are short-lived, signed links. Generate one **when the customer clicks the button**, never
+at page render and never in a cached response or an email.
+
+| Provider          | Lifetime                                                          |
+| ----------------- | ------------------------------------------------------------------ |
+| **Lemon Squeezy** | ~24 hours (the signed URL on the customer record)                  |
+| **Polar**         | ~1 hour (customer session)                                         |
+| **Stripe**        | Short-lived, single-use billing portal session                     |
+| **Paddle**        | Short-lived portal session                                         |
+| **Dodo Payments** | Short-lived portal session                                         |
+
+```ts
+// A route that redirects straight into a freshly minted portal session.
+export async function GET(request: Request): Promise<Response> {
+  const customerId = await resolveCustomerId(request);
+  const session = await client.customerPortal.createSession({ customerId });
+  return Response.redirect(session.url, 302);
+}
+```
+
+### `returnUrl` support
+
+`returnUrl` is gated by the `portalReturnUrl` capability:
+
+| Provider          | `portalReturnUrl` |
+| ----------------- | ----------------- |
+| **Polar**         | `true`            |
+| **Lemon Squeezy** | `false`           |
+| **Stripe**        | `true`            |
+| **Paddle**        | `false`           |
+| **Dodo Payments** | `true`            |
+
+Passing it to Lemon Squeezy or Paddle throws `RevenueError` with code `unsupported`. In
+provider-agnostic code, gate it:
+
+```ts
+const session = await client.customerPortal.createSession({
+  customerId,
+  returnUrl: client.capabilities.portalReturnUrl ? 'https://example.com/account' : undefined,
+});
+```
+
+:::note
+**Lemon Squeezy** exposes the portal as a pre-signed URL on the customer record rather than as a session
+endpoint, and only once the customer has a subscription. A customer without one throws `RevenueError`
+with code `not_found`.
+:::
+
+:::note
+**Paddle** omits `management_urls` from webhook payloads, so a portal link can only be obtained from the
+API — never from an incoming event.
+:::
+
+<CardGroup cols={2}>
+  <Card title="Next: Webhooks" icon="webhook" href="/docs/concepts/webhooks">
+    Verify, parse, and act on provider events.
+  </Card>
+  <Card title="Subscription management UI" icon="settings" href="/docs/guides/subscription-management">
+    Wire the portal into a real account page.
+  </Card>
+</CardGroup>
