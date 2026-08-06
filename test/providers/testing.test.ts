@@ -82,6 +82,21 @@ describe('createInMemoryProvider', () => {
     expect(provider.state.subscriptions[0]!.pauseAtPeriodEnd).toBe(true);
   });
 
+  it('replaces any earlier pause state when pausing again', async () => {
+    const provider = createInMemoryProvider({ subscriptions: [{ id: 'sub-1' }] });
+    await provider.pauseSubscription({
+      id: 'sub-1',
+      behavior: 'period_end',
+      resumesAt: new Date('2026-10-01T00:00:00Z'),
+    });
+
+    // An immediate pause supersedes the schedule, and omitting `resumesAt` means indefinitely.
+    const paused = await provider.pauseSubscription({ id: 'sub-1' });
+    expect(paused.status).toBe('paused');
+    expect(paused.pauseAtPeriodEnd).toBe(false);
+    expect(paused.resumesAt).toBeUndefined();
+  });
+
   it('throws not_found for unknown resources', async () => {
     const provider = createInMemoryProvider();
     await expect(provider.getSubscription({ id: 'missing' })).rejects.toMatchObject({

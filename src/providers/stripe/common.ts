@@ -210,8 +210,8 @@ export function toSubscription(subscription: StripeSubscription): Subscription {
   // payment method. Both are the unified `paused`, except once the subscription has terminated:
   // `canceled` is terminal and outranks a leftover `pause_collection`.
   const rawStatus = toSubscriptionStatus(subscription.status);
-  const status =
-    subscription.pause_collection != null && rawStatus !== 'canceled' ? 'paused' : rawStatus;
+  const pauseCollection = rawStatus === 'canceled' ? undefined : subscription.pause_collection;
+  const status = pauseCollection != null ? 'paused' : rawStatus;
   const item = subscription.items?.data[0];
   const currentPeriodEnd = fromUnixSeconds(item?.current_period_end);
   // Flexible billing mode (the default) writes portal cancellations to `cancel_at` with
@@ -237,7 +237,7 @@ export function toSubscription(subscription: StripeSubscription): Subscription {
     currentPeriodStart: fromUnixSeconds(item?.current_period_start),
     currentPeriodEnd,
     trialEndsAt: fromUnixSeconds(subscription.trial_end),
-    resumesAt: fromUnixSeconds(subscription.pause_collection?.resumes_at),
+    resumesAt: fromUnixSeconds(pauseCollection?.resumes_at),
     startedAt: fromUnixSeconds(subscription.start_date),
     endsAt:
       fromUnixSeconds(subscription.cancel_at) ?? (cancelAtPeriodEnd ? currentPeriodEnd : undefined),

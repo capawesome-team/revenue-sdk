@@ -289,10 +289,10 @@ export function createInMemoryProvider(
         subscription.pauseAtPeriodEnd = true;
       } else {
         subscription.status = 'paused';
+        subscription.pauseAtPeriodEnd = false;
       }
-      if (params.resumesAt !== undefined) {
-        subscription.resumesAt = params.resumesAt;
-      }
+      // Omitting `resumesAt` means "pause indefinitely", so it always replaces any earlier value.
+      subscription.resumesAt = params.resumesAt;
       return subscription;
     },
 

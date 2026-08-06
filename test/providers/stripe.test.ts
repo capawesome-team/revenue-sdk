@@ -407,6 +407,8 @@ describe('stripe', () => {
       );
       const subscription = await provider.getSubscription({ id: 'sub_1' });
       expect(subscription.status).toBe('canceled');
+      // A terminated subscription never resumes, so the leftover date must not surface either.
+      expect(subscription.resumesAt).toBeUndefined();
     });
 
     it('revokes via DELETE', async () => {
