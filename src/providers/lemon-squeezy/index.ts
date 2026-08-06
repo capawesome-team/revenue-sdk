@@ -23,6 +23,7 @@ const MAX_PAGE_SIZE = 100;
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: false,
   checkoutStatus: false,
+  checkoutSuccessUrl: true,
   endTrial: true,
   hostedCheckout: true,
   // Subscriptions are filterable by store/product/variant/email only, not by customer ID.

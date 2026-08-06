@@ -151,6 +151,8 @@ export interface RevenueCapabilities {
   cancellationReason: boolean;
   /** Whether `Checkout.status` is populated. */
   checkoutStatus: boolean;
+  /** Whether `checkouts.create` supports `successUrl`. Paddle configures redirects in Paddle.js instead. */
+  checkoutSuccessUrl: boolean;
   /** Whether `subscriptions.endTrial` is supported. */
   endTrial: boolean;
   /** Whether `checkouts.create` returns a ready-to-use provider-hosted URL. Paddle requires a merchant-hosted Paddle.js page instead. */

@@ -6,6 +6,7 @@ import type { Page, RevenueCapabilities, RevenueProvider, Subscription } from '.
 const ALL_CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
   checkoutStatus: true,
+  checkoutSuccessUrl: true,
   endTrial: true,
   hostedCheckout: true,
   listSubscriptionsByCustomer: true,

@@ -22,6 +22,7 @@ const MAX_PAGE_LIMIT = 100;
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
   checkoutStatus: true,
+  checkoutSuccessUrl: true,
   endTrial: true,
   hostedCheckout: true,
   listSubscriptionsByCustomer: true,

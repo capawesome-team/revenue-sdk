@@ -154,6 +154,9 @@ export function createClient(options: CreateClientOptions): RevenueClient {
     checkouts: {
       create: async (params) => {
         checkItems(params.items);
+        if (params.successUrl !== undefined && !provider.capabilities.checkoutSuccessUrl) {
+          fail('unsupported', `${provider.name} does not support a checkout success URL`);
+        }
         return withRetry(() => provider.createCheckout(params));
       },
       get: async (params) => {
