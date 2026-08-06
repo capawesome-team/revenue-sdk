@@ -6,7 +6,7 @@ sidebar:
 ---
 
 An account page needs to answer three questions — *am I subscribed?*, *what am I paying?*, and *what can
-I change?* — and offer four actions: cancel, uncancel, change plan, and manage billing details.
+I change?* — and offer five actions: cancel, uncancel, pause, change plan, and manage billing details.
 
 ## Load the state
 
@@ -146,8 +146,48 @@ the subscription is gone and the customer needs a new checkout.
 
 :::warning
 On **Lemon Squeezy**, `PATCH /subscriptions` silently no-ops for PayPal-paid subscriptions. Re-read the
-subscription and confirm `cancelAtPeriodEnd === false` before telling the customer it worked.
+subscription and confirm `cancelAtPeriodEnd === false` before telling the customer it worked. The same
+applies to pause and resume, which go through that endpoint too.
 :::
+
+## Pause and resume
+
+Pausing keeps the subscription alive but stops the billing. Both calls are gated by the `pause`
+capability, which **Dodo Payments** lacks, so render the control conditionally:
+
+```ts
+// POST /api/billing/pause
+const subscription = await client.subscriptions.pause({
+  id: user.providerSubscriptionId!,
+  // Omit behavior to accept the provider's default, or pick one it supports.
+  behavior: client.capabilities.pauseBehaviors.includes('period_end') ? 'period_end' : 'immediately',
+  resumesAt: new Date('2026-10-01'), // omit to pause indefinitely
+});
+await upsertSubscription(subscription);
+```
+
+```ts
+// POST /api/billing/resume
+const subscription = await client.subscriptions.resume({ id: user.providerSubscriptionId! });
+await upsertSubscription(subscription);
+```
+
+A `behavior` outside `capabilities.pauseBehaviors` throws `unsupported` — Polar can only pause at period
+end, Lemon Squeezy and Stripe only immediately, Paddle does both. Resume always takes effect
+immediately; on Polar it starts a new billing period and charges the customer.
+
+An immediate pause reports `status: 'paused'`, which the entitlement check above already treats as no
+access. A period-end pause leaves `status` untouched and sets `pauseAtPeriodEnd`, so the banner for it
+keys off that flag exactly like the cancellation banner:
+
+```ts
+if (subscription.pauseAtPeriodEnd) {
+  banner(`Your subscription pauses on ${subscription.currentPeriodEnd?.toLocaleDateString()}.`);
+}
+```
+
+`resumesAt` is set whenever the pause has an automatic end date — show it so customers know when billing
+restarts.
 
 ## Change plan
 

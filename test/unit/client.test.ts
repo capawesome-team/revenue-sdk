@@ -10,6 +10,8 @@ const ALL_CAPABILITIES: RevenueCapabilities = {
   endTrial: true,
   hostedCheckout: true,
   listSubscriptionsByCustomer: true,
+  pause: true,
+  pauseBehaviors: ['immediately', 'period_end'],
   portalReturnUrl: true,
   prorationBehaviors: ['invoice_now', 'none', 'prorate'],
   revoke: true,
@@ -39,6 +41,8 @@ function fakeProvider(
     uncancelSubscription: notImplemented,
     changeSubscriptionPlan: notImplemented,
     endSubscriptionTrial: notImplemented,
+    pauseSubscription: notImplemented,
+    resumeSubscription: notImplemented,
     revokeSubscription: notImplemented,
     createCustomerPortalSession: notImplemented,
     ...overrides,
@@ -46,7 +50,14 @@ function fakeProvider(
 }
 
 function subscription(id: string): Subscription {
-  return { id, status: 'active', cancelAtPeriodEnd: false, customerId: 'c1', raw: {} };
+  return {
+    id,
+    status: 'active',
+    cancelAtPeriodEnd: false,
+    pauseAtPeriodEnd: false,
+    customerId: 'c1',
+    raw: {},
+  };
 }
 
 async function expectRevenueError(promise: Promise<unknown>, code: string): Promise<void> {
@@ -136,6 +147,40 @@ describe('createClient', () => {
       await expectRevenueError(client.subscriptions.endTrial({ id: 's1' }), 'unsupported');
       await expectRevenueError(client.subscriptions.revoke({ id: 's1' }), 'unsupported');
       await expectRevenueError(client.subscriptions.uncancel({ id: 's1' }), 'unsupported');
+    });
+
+    it('rejects pause and resume when unsupported', async () => {
+      const pauseSubscription = vi.fn();
+      const resumeSubscription = vi.fn();
+      const client = createClient({
+        provider: fakeProvider(
+          { pauseSubscription, resumeSubscription },
+          { pause: false, pauseBehaviors: [] },
+        ),
+      });
+      await expectRevenueError(client.subscriptions.pause({ id: 's1' }), 'unsupported');
+      await expectRevenueError(client.subscriptions.resume({ id: 's1' }), 'unsupported');
+      expect(pauseSubscription).not.toHaveBeenCalled();
+      expect(resumeSubscription).not.toHaveBeenCalled();
+    });
+
+    it('rejects unsupported pause behaviors', async () => {
+      const client = createClient({
+        provider: fakeProvider({}, { pauseBehaviors: ['period_end'] }),
+      });
+      await expectRevenueError(
+        client.subscriptions.pause({ id: 's1', behavior: 'immediately' }),
+        'unsupported',
+      );
+    });
+
+    it('pauses without a behavior even when only one behavior is supported', async () => {
+      const pauseSubscription = vi.fn().mockResolvedValue(subscription('s1'));
+      const client = createClient({
+        provider: fakeProvider({ pauseSubscription }, { pauseBehaviors: ['period_end'] }),
+      });
+      await client.subscriptions.pause({ id: 's1' });
+      expect(pauseSubscription).toHaveBeenCalledOnce();
     });
 
     it('rejects customer-filtered listing when unsupported', async () => {

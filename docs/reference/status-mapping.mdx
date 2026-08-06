@@ -34,11 +34,17 @@ type SubscriptionStatus =
 | `active`     | `active`     | `active`, `cancelled`¹ | `active`                         | `active`   | `active`                         |
 | `past_due`   | `past_due`   | `past_due`             | `past_due`                       | `past_due` | `on_hold`                        |
 | `unpaid`     | `unpaid`     | `unpaid`               | `unpaid`                         | —          | —                                |
-| `paused`     | `paused`     | `paused`               | `paused`                         | `paused`   | —                                |
+| `paused`     | `paused`     | `paused`               | `paused`, `pause_collection`²    | `paused`   | —                                |
 | `canceled`   | `canceled`, `incomplete_expired` | `expired` | `canceled`, `incomplete_expired` | `canceled` | `cancelled`, `failed`, `expired` |
 
 <small>¹ Lemon Squeezy's `cancelled` means "grace period until `ends_at`, still resumable" — it maps to
 `active` with `cancelAtPeriodEnd: true`. The terminal status is `expired`.</small>
+
+<small>² Stripe has two unrelated pause mechanisms. `pause_collection` leaves Stripe's own status alone —
+per Stripe's docs, "the subscription status will be unchanged and will not be updated to `paused`" — while
+Stripe's raw `paused` status only occurs when a trial ends without a payment method. Both map to the
+unified `paused`, except on a terminally `canceled` subscription: `canceled` is terminal and outranks a
+leftover `pause_collection`.</small>
 
 A dash means the provider has no equivalent state. **Any unrecognized provider status falls back to
 `active`**, so a newly introduced status can't silently revoke a paying customer's access; inspect
@@ -61,6 +67,23 @@ Each of these rules exists because a provider encodes the schedule somewhere dif
 [normalizing subscription status across billing providers](/blog/normalize-subscription-status-across-providers)
 covers the entitlement bugs they cause when handled per provider.
 
+## `pauseAtPeriodEnd` detection
+
+A pause scheduled for the end of the period behaves like a scheduled cancellation: the status stays
+unchanged and `pauseAtPeriodEnd` carries the schedule. Only the two providers that can schedule a pause
+ever set it.
+
+| Provider          | Rule                                                        | Notes                                                                        |
+| ----------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| **Polar**         | `pause_at_period_end === true`                              | Polar pauses at period end only; set by `PATCH /v1/subscriptions/{id}`.      |
+| **Lemon Squeezy** | always `false`                                              | Pauses take effect immediately.                                              |
+| **Stripe**        | always `false`                                              | `pause_collection` takes effect immediately.                                 |
+| **Paddle**        | `scheduled_change?.action === 'pause'`                      | Both behaviors are supported; only the scheduled one sets the flag.          |
+| **Dodo Payments** | always `false`                                              | No pause endpoint and no paused status.                                      |
+
+`resumesAt` is the matching date field — when the subscription resumes automatically. It is absent for an
+indefinite pause.
+
 ## Date fields
 
 | Field                | Polar                  | Lemon Squeezy                 | Stripe                              | Paddle                                | Dodo Payments                             |
@@ -68,6 +91,7 @@ covers the entitlement bugs they cause when handled per provider.
 | `currentPeriodStart` | `current_period_start` | —                             | item `current_period_start`         | `current_billing_period.starts_at`    | `previous_billing_date`                   |
 | `currentPeriodEnd`   | `current_period_end`   | `renews_at`                   | item `current_period_end`           | `current_billing_period.ends_at`      | `next_billing_date`                       |
 | `trialEndsAt`        | `trial_end`            | `trial_ends_at`               | `trial_end`                         | item `trial_dates.ends_at`            | —                                         |
+| `resumesAt`          | `resumes_at`           | `pause.resumes_at`            | `pause_collection.resumes_at`       | `scheduled_change.resume_at` while scheduled, else the `resume` change's `effective_at` | —                    |
 | `startedAt`          | `started_at`           | `created_at`                  | `start_date`                        | `started_at`                          | `created_at`                              |
 | `endsAt`             | `ends_at`              | `ends_at`                     | `cancel_at`, else `current_period_end` when scheduled | `scheduled_change.effective_at` when scheduled | `next_billing_date` when scheduled, else `expires_at` |
 | `endedAt`            | `ended_at`             | `ends_at` when `expired`      | `ended_at`                          | `canceled_at`                         | `cancelled_at`                            |

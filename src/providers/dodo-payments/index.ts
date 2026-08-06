@@ -29,6 +29,9 @@ const CAPABILITIES: RevenueCapabilities = {
   endTrial: false,
   hostedCheckout: true,
   listSubscriptionsByCustomer: true,
+  // Dodo has no pause/resume endpoint and no paused subscription status.
+  pause: false,
+  pauseBehaviors: [],
   portalReturnUrl: true,
   // `prorated_immediately` and `do_not_bill`; there is no defer-to-next-invoice mode.
   prorationBehaviors: ['invoice_now', 'none'],
@@ -238,6 +241,20 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
 
     async endSubscriptionTrial() {
       throw new RevenueError('Dodo Payments does not support ending a trial early', {
+        code: 'unsupported',
+        provider: 'dodo-payments',
+      });
+    },
+
+    async pauseSubscription() {
+      throw new RevenueError('Dodo Payments does not support pausing a subscription', {
+        code: 'unsupported',
+        provider: 'dodo-payments',
+      });
+    },
+
+    async resumeSubscription() {
+      throw new RevenueError('Dodo Payments does not support resuming a subscription', {
         code: 'unsupported',
         provider: 'dodo-payments',
       });

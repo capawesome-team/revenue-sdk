@@ -57,6 +57,15 @@ const SUBSCRIPTION = {
   },
 };
 
+const PAUSED_SUBSCRIPTION = {
+  ...SUBSCRIPTION,
+  attributes: {
+    ...SUBSCRIPTION.attributes,
+    status: 'paused',
+    pause: { mode: 'void', resumes_at: '2026-10-01T00:00:00.000000Z' },
+  },
+};
+
 function routes(handlers: Record<string, unknown>): StubHandler {
   return (request) => {
     const path = new URL(request.url).pathname;
@@ -86,6 +95,8 @@ describe('lemonSqueezy', () => {
     expect(provider.capabilities.checkoutStatus).toBe(false);
     expect(provider.capabilities.revoke).toBe(false);
     expect(provider.capabilities.listSubscriptionsByCustomer).toBe(false);
+    expect(provider.capabilities.pause).toBe(true);
+    expect(provider.capabilities.pauseBehaviors).toEqual(['immediately']);
   });
 
   describe('listProducts', () => {
@@ -346,6 +357,56 @@ describe('lemonSqueezy', () => {
       expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
         data: { type: 'subscriptions', id: '42', attributes: { billing_anchor: null } },
       });
+    });
+
+    it('pauses immediately in void mode without a resume date', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: PAUSED_SUBSCRIPTION } }));
+      const subscription = await provider.pauseSubscription({ id: '42' });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('PATCH');
+      expect(request.url).toBe('https://api.lemonsqueezy.com/v1/subscriptions/42');
+      expect(request.headers['content-type']).toBe('application/vnd.api+json');
+      expect(JSON.parse(request.body!)).toEqual({
+        data: {
+          type: 'subscriptions',
+          id: '42',
+          attributes: { pause: { mode: 'void' } },
+        },
+      });
+      expect(subscription.status).toBe('paused');
+    });
+
+    it('sends resumes_at as an ISO string when a resume date is given', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: PAUSED_SUBSCRIPTION } }));
+      await provider.pauseSubscription({ id: '42', resumesAt: new Date('2026-10-01T00:00:00Z') });
+      expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
+        data: {
+          type: 'subscriptions',
+          id: '42',
+          attributes: { pause: { mode: 'void', resumes_at: '2026-10-01T00:00:00.000Z' } },
+        },
+      });
+    });
+
+    it('resumes by sending a literal null pause', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: SUBSCRIPTION } }));
+      const subscription = await provider.resumeSubscription({ id: '42' });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('PATCH');
+      expect(request.headers['content-type']).toBe('application/vnd.api+json');
+      const attributes = JSON.parse(request.body!).data.attributes;
+      // `null` must reach the API — a dropped key would leave the subscription paused.
+      expect('pause' in attributes).toBe(true);
+      expect(attributes.pause).toBeNull();
+      expect(subscription.status).toBe('active');
+    });
+
+    it('maps a paused subscription with its resume date', async () => {
+      const { provider } = setup(() => ({ json: { data: PAUSED_SUBSCRIPTION } }));
+      const subscription = await provider.getSubscription({ id: '42' });
+      expect(subscription.status).toBe('paused');
+      expect(subscription.pauseAtPeriodEnd).toBe(false);
+      expect(subscription.resumesAt).toEqual(new Date('2026-10-01T00:00:00.000000Z'));
     });
 
     it('rejects revoke and customer-filtered listing', async () => {

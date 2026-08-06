@@ -17,8 +17,10 @@ import type {
   ListProductsParams,
   ListSubscriptionsParams,
   Page,
+  PauseSubscriptionParams,
   Product,
   ProviderName,
+  ResumeSubscriptionParams,
   RevenueCapabilities,
   RevenueProvider,
   RevokeSubscriptionParams,
@@ -66,6 +68,8 @@ export interface RevenueClient {
     uncancel(params: UncancelSubscriptionParams): Promise<Subscription>;
     changePlan(params: ChangeSubscriptionPlanParams): Promise<Subscription>;
     endTrial(params: EndSubscriptionTrialParams): Promise<Subscription>;
+    pause(params: PauseSubscriptionParams): Promise<Subscription>;
+    resume(params: ResumeSubscriptionParams): Promise<Subscription>;
     revoke(params: RevokeSubscriptionParams): Promise<Subscription>;
   };
   customerPortal: {
@@ -229,6 +233,29 @@ export function createClient(options: CreateClientOptions): RevenueClient {
           fail('unsupported', `${provider.name} cannot end a trial early`);
         }
         return withRetry(() => provider.endSubscriptionTrial(params));
+      },
+      pause: async (params) => {
+        requireNonEmpty(params.id, 'id');
+        if (!provider.capabilities.pause) {
+          fail('unsupported', `${provider.name} cannot pause a subscription`);
+        }
+        if (
+          params.behavior !== undefined &&
+          !provider.capabilities.pauseBehaviors.includes(params.behavior)
+        ) {
+          fail(
+            'unsupported',
+            `${provider.name} does not support the ${params.behavior} pause behavior`,
+          );
+        }
+        return withRetry(() => provider.pauseSubscription(params));
+      },
+      resume: async (params) => {
+        requireNonEmpty(params.id, 'id');
+        if (!provider.capabilities.pause) {
+          fail('unsupported', `${provider.name} cannot resume a subscription`);
+        }
+        return withRetry(() => provider.resumeSubscription(params));
       },
       revoke: async (params) => {
         requireNonEmpty(params.id, 'id');

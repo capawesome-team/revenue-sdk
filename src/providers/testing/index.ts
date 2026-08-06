@@ -26,6 +26,8 @@ const DEFAULT_CAPABILITIES: RevenueCapabilities = {
   endTrial: true,
   hostedCheckout: true,
   listSubscriptionsByCustomer: true,
+  pause: true,
+  pauseBehaviors: ['immediately', 'period_end'],
   portalReturnUrl: true,
   prorationBehaviors: ['invoice_now', 'none', 'prorate'],
   revoke: true,
@@ -62,6 +64,7 @@ export interface InMemorySubscriptionSeed {
   id?: string;
   status?: SubscriptionStatus;
   cancelAtPeriodEnd?: boolean;
+  pauseAtPeriodEnd?: boolean;
   customerId?: string;
   productId?: string;
   quantity?: number;
@@ -70,6 +73,7 @@ export interface InMemorySubscriptionSeed {
   interval?: BillingInterval;
   currentPeriodEnd?: Date;
   trialEndsAt?: Date;
+  resumesAt?: Date;
   endsAt?: Date;
   metadata?: Metadata;
 }
@@ -142,6 +146,7 @@ export function createInMemoryProvider(
       id: subscription.id ?? nextId('subscription'),
       status: subscription.status ?? 'active',
       cancelAtPeriodEnd: subscription.cancelAtPeriodEnd ?? false,
+      pauseAtPeriodEnd: subscription.pauseAtPeriodEnd ?? false,
       customerId: subscription.customerId ?? 'customer-1',
       productId: subscription.productId,
       quantity: subscription.quantity,
@@ -150,6 +155,7 @@ export function createInMemoryProvider(
       interval: subscription.interval,
       currentPeriodEnd: subscription.currentPeriodEnd,
       trialEndsAt: subscription.trialEndsAt,
+      resumesAt: subscription.resumesAt,
       endsAt: subscription.endsAt,
       metadata: subscription.metadata,
       raw: subscription,
@@ -274,6 +280,27 @@ export function createInMemoryProvider(
       const subscription = getSubscriptionById(params.id);
       subscription.status = 'active';
       subscription.trialEndsAt = undefined;
+      return subscription;
+    },
+
+    async pauseSubscription(params) {
+      const subscription = getSubscriptionById(params.id);
+      if (params.behavior === 'period_end') {
+        subscription.pauseAtPeriodEnd = true;
+      } else {
+        subscription.status = 'paused';
+        subscription.pauseAtPeriodEnd = false;
+      }
+      // Omitting `resumesAt` means "pause indefinitely", so it always replaces any earlier value.
+      subscription.resumesAt = params.resumesAt;
+      return subscription;
+    },
+
+    async resumeSubscription(params) {
+      const subscription = getSubscriptionById(params.id);
+      subscription.status = 'active';
+      subscription.pauseAtPeriodEnd = false;
+      subscription.resumesAt = undefined;
       return subscription;
     },
 

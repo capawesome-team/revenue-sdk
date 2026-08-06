@@ -62,6 +62,41 @@ describe('createInMemoryProvider', () => {
     expect(provider.state.subscriptions[0]!.status).toBe('canceled');
   });
 
+  it('pauses immediately or at period end and resumes', async () => {
+    const provider = createInMemoryProvider({ subscriptions: [{ id: 'sub-1' }] });
+    const resumesAt = new Date('2026-10-01T00:00:00Z');
+    const paused = await provider.pauseSubscription({ id: 'sub-1', resumesAt });
+    expect(paused.status).toBe('paused');
+    expect(paused.pauseAtPeriodEnd).toBe(false);
+    expect(paused.resumesAt).toEqual(resumesAt);
+    expect(provider.state.subscriptions[0]!.status).toBe('paused');
+
+    const resumed = await provider.resumeSubscription({ id: 'sub-1' });
+    expect(resumed.status).toBe('active');
+    expect(resumed.pauseAtPeriodEnd).toBe(false);
+    expect(resumed.resumesAt).toBeUndefined();
+
+    const scheduled = await provider.pauseSubscription({ id: 'sub-1', behavior: 'period_end' });
+    expect(scheduled.status).toBe('active');
+    expect(scheduled.pauseAtPeriodEnd).toBe(true);
+    expect(provider.state.subscriptions[0]!.pauseAtPeriodEnd).toBe(true);
+  });
+
+  it('replaces any earlier pause state when pausing again', async () => {
+    const provider = createInMemoryProvider({ subscriptions: [{ id: 'sub-1' }] });
+    await provider.pauseSubscription({
+      id: 'sub-1',
+      behavior: 'period_end',
+      resumesAt: new Date('2026-10-01T00:00:00Z'),
+    });
+
+    // An immediate pause supersedes the schedule, and omitting `resumesAt` means indefinitely.
+    const paused = await provider.pauseSubscription({ id: 'sub-1' });
+    expect(paused.status).toBe('paused');
+    expect(paused.pauseAtPeriodEnd).toBe(false);
+    expect(paused.resumesAt).toBeUndefined();
+  });
+
   it('throws not_found for unknown resources', async () => {
     const provider = createInMemoryProvider();
     await expect(provider.getSubscription({ id: 'missing' })).rejects.toMatchObject({

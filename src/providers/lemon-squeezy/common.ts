@@ -74,6 +74,10 @@ export interface LsSubscriptionAttributes {
   product_id?: number | null;
   variant_id?: number | null;
   status: string;
+  pause?: {
+    mode: string;
+    resumes_at: string | null;
+  } | null;
   cancelled?: boolean | null;
   trial_ends_at?: string | null;
   renews_at?: string | null;
@@ -230,6 +234,8 @@ export function toSubscription(
     id: String(resource.id),
     status: toSubscriptionStatus(attributes.status),
     cancelAtPeriodEnd: scheduledToCancel,
+    // Lemon Squeezy pauses always take effect immediately; they cannot be scheduled.
+    pauseAtPeriodEnd: false,
     customerId: String(attributes.customer_id),
     productId:
       attributes.variant_id === null || attributes.variant_id === undefined
@@ -241,6 +247,7 @@ export function toSubscription(
     quantity: attributes.first_subscription_item?.quantity,
     currentPeriodEnd: toDate(attributes.renews_at),
     trialEndsAt: toDate(attributes.trial_ends_at),
+    resumesAt: toDate(attributes.pause?.resumes_at),
     startedAt: toDate(attributes.created_at),
     endsAt: toDate(attributes.ends_at),
     endedAt: attributes.status === 'expired' ? toDate(attributes.ends_at) : undefined,

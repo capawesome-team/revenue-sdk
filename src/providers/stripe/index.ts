@@ -35,6 +35,10 @@ const CAPABILITIES: RevenueCapabilities = {
   endTrial: true,
   hostedCheckout: true,
   listSubscriptionsByCustomer: true,
+  pause: true,
+  // `pause_collection` takes effect immediately; a period-end pause would require Subscription
+  // Schedules.
+  pauseBehaviors: ['immediately'],
   portalReturnUrl: true,
   prorationBehaviors: ['invoice_now', 'none', 'prorate'],
   revoke: true,
@@ -111,6 +115,11 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
 
   async function getPrice(priceId: string, signal: AbortSignal | undefined) {
     const { data } = await http.json<StripePrice>(`/v1/prices/${priceId}`, { signal });
+    return data;
+  }
+
+  async function fetchSubscription(id: string, signal: AbortSignal | undefined) {
+    const { data } = await http.json<StripeSubscription>(`/v1/subscriptions/${id}`, { signal });
     return data;
   }
 
@@ -210,10 +219,7 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
     },
 
     async getSubscription(params) {
-      const { data } = await http.json<StripeSubscription>(`/v1/subscriptions/${params.id}`, {
-        signal: params.signal,
-      });
-      return toSubscription(data);
+      return toSubscription(await fetchSubscription(params.id, params.signal));
     },
 
     async listSubscriptions(params) {
@@ -255,10 +261,7 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
     async changeSubscriptionPlan(params) {
       // The current item ID must be sent — omitting it ADDS the new price instead of
       // replacing the old one (silent double-billing).
-      const { data: current } = await http.json<StripeSubscription>(
-        `/v1/subscriptions/${params.id}`,
-        { signal: params.signal },
-      );
+      const current = await fetchSubscription(params.id, params.signal);
       const itemId = current.items?.data[0]?.id;
       return postSubscription(
         params.id,
@@ -278,6 +281,34 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
 
     async endSubscriptionTrial(params) {
       return postSubscription(params.id, { trial_end: 'now' }, params.signal);
+    },
+
+    async pauseSubscription(params) {
+      // `void` voids the invoices generated while paused — the only behavior this SDK exposes.
+      return postSubscription(
+        params.id,
+        { pause_collection: { behavior: 'void', resumes_at: params.resumesAt } },
+        params.signal,
+      );
+    },
+
+    async resumeSubscription(params) {
+      // Stripe's two pause mechanisms resume through different endpoints and the ID alone does
+      // not tell them apart, so the current status has to be read first.
+      const current = await fetchSubscription(params.id, params.signal);
+      if (current.status === 'paused') {
+        // A trial that ended without a payment method — only the dedicated endpoint resumes it.
+        const { data } = await http.json<StripeSubscription>(
+          `/v1/subscriptions/${params.id}/resume`,
+          {
+            method: 'POST',
+            form: encodeForm({ billing_cycle_anchor: 'now' }),
+            signal: params.signal,
+          },
+        );
+        return toSubscription(data);
+      }
+      return postSubscription(params.id, { pause_collection: null }, params.signal);
     },
 
     async revokeSubscription(params) {

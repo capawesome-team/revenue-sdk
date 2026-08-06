@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RevenueError } from '../../src/errors.ts';
 import { stripe } from '../../src/providers/stripe/index.ts';
-import { createFetchStub, type StubHandler } from '../helpers/fetch-stub.ts';
+import { createFetchStub, type StubHandler, type StubRequest } from '../helpers/fetch-stub.ts';
 
 const SECRET_KEY = 'sk_test_secret_key';
 
@@ -12,7 +12,7 @@ function setup(handler: StubHandler) {
 }
 
 function routes(
-  handlers: Record<string, unknown | ((request: { body?: string }) => unknown)>,
+  handlers: Record<string, unknown | ((request: StubRequest) => unknown)>,
 ): StubHandler {
   return (request) => {
     const path = new URL(request.url).pathname;
@@ -34,11 +34,16 @@ const RECURRING_PRICE = {
   recurring: { interval: 'month', interval_count: 1, usage_type: 'licensed' },
 };
 
+const RESUMES_AT = 1790899200;
+
+const PAUSE_COLLECTION = { behavior: 'void', resumes_at: RESUMES_AT };
+
 const SUBSCRIPTION = {
   id: 'sub_1',
   status: 'active',
   cancel_at_period_end: false,
   cancel_at: null,
+  pause_collection: null,
   canceled_at: null,
   ended_at: null,
   customer: 'cus_1',
@@ -312,6 +317,98 @@ describe('stripe', () => {
       expect(form.get('items[0][price]')).toBe('price_2');
       expect(form.get('items[0][quantity]')).toBe('3');
       expect(form.get('proration_behavior')).toBe('always_invoice');
+    });
+
+    it('pauses by voiding collection without a resume date', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/subscriptions/sub_1': { ...SUBSCRIPTION, pause_collection: PAUSE_COLLECTION },
+        }),
+      );
+      const subscription = await provider.pauseSubscription({ id: 'sub_1' });
+      expect(stub.requests[0]!.method).toBe('POST');
+      const form = new URLSearchParams(stub.requests[0]!.body);
+      expect(form.get('pause_collection[behavior]')).toBe('void');
+      expect(form.get('pause_collection[resumes_at]')).toBeNull();
+      expect(subscription.status).toBe('paused');
+    });
+
+    it('sends resumes_at as unix seconds', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/subscriptions/sub_1': { ...SUBSCRIPTION, pause_collection: PAUSE_COLLECTION },
+        }),
+      );
+      await provider.pauseSubscription({ id: 'sub_1', resumesAt: new Date(RESUMES_AT * 1000) });
+      const form = new URLSearchParams(stub.requests[0]!.body);
+      expect(form.get('pause_collection[behavior]')).toBe('void');
+      expect(form.get('pause_collection[resumes_at]')).toBe(String(RESUMES_AT));
+    });
+
+    it('resumes a pause_collection pause by clearing the field', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/subscriptions/sub_1': (request: StubRequest) =>
+            request.method === 'GET'
+              ? { ...SUBSCRIPTION, pause_collection: PAUSE_COLLECTION }
+              : SUBSCRIPTION,
+        }),
+      );
+      const subscription = await provider.resumeSubscription({ id: 'sub_1' });
+      expect(stub.requests).toHaveLength(2);
+      expect(stub.requests[0]!.method).toBe('GET');
+      expect(new URL(stub.requests[1]!.url).pathname).toBe('/v1/subscriptions/sub_1');
+      expect(stub.requests[1]!.method).toBe('POST');
+      expect(new URLSearchParams(stub.requests[1]!.body).get('pause_collection')).toBe('');
+      expect(subscription.status).toBe('active');
+    });
+
+    it('resumes a trial-end pause via the dedicated endpoint', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/subscriptions/sub_1': { ...SUBSCRIPTION, status: 'paused' },
+          '/v1/subscriptions/sub_1/resume': SUBSCRIPTION,
+        }),
+      );
+      const subscription = await provider.resumeSubscription({ id: 'sub_1' });
+      expect(stub.requests).toHaveLength(2);
+      expect(stub.requests[0]!.method).toBe('GET');
+      expect(new URL(stub.requests[1]!.url).pathname).toBe('/v1/subscriptions/sub_1/resume');
+      expect(stub.requests[1]!.method).toBe('POST');
+      expect(new URLSearchParams(stub.requests[1]!.body).get('billing_cycle_anchor')).toBe('now');
+      expect(subscription.status).toBe('active');
+    });
+
+    it('maps an active subscription with pause_collection to paused', async () => {
+      const { provider } = setup(
+        routes({
+          '/v1/subscriptions/sub_1': {
+            ...SUBSCRIPTION,
+            status: 'active',
+            pause_collection: PAUSE_COLLECTION,
+          },
+        }),
+      );
+      const subscription = await provider.getSubscription({ id: 'sub_1' });
+      expect(subscription.status).toBe('paused');
+      expect(subscription.pauseAtPeriodEnd).toBe(false);
+      expect(subscription.resumesAt).toEqual(new Date(RESUMES_AT * 1000));
+    });
+
+    it('keeps a canceled subscription canceled despite a leftover pause_collection', async () => {
+      const { provider } = setup(
+        routes({
+          '/v1/subscriptions/sub_1': {
+            ...SUBSCRIPTION,
+            status: 'canceled',
+            pause_collection: PAUSE_COLLECTION,
+          },
+        }),
+      );
+      const subscription = await provider.getSubscription({ id: 'sub_1' });
+      expect(subscription.status).toBe('canceled');
+      // A terminated subscription never resumes, so the leftover date must not surface either.
+      expect(subscription.resumesAt).toBeUndefined();
     });
 
     it('revokes via DELETE', async () => {

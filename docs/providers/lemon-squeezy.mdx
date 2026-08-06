@@ -86,6 +86,8 @@ resource. This is the only place `Subscription.metadata` gets populated on Lemon
 | `endTrial`                    | `true`                                 |
 | `hostedCheckout`              | `true`                                 |
 | `listSubscriptionsByCustomer` | `false`                                |
+| `pause`                       | `true`                                 |
+| `pauseBehaviors`              | `['immediately']`                      |
 | `portalReturnUrl`             | `false`                                |
 | `prorationBehaviors`          | `['invoice_now', 'prorate', 'none']`   |
 | `revoke`                      | `false`                                |
@@ -114,9 +116,13 @@ resource. This is the only place `Subscription.metadata` gets populated on Lemon
   to `active` + `cancelAtPeriodEnd: true`. The terminal status is `expired`.
 - **Portal and update-payment-method URLs expire after 24 hours**, so the SDK fetches them on demand.
   A customer without a subscription has no portal and throws `not_found`. `returnUrl` is unsupported.
-- **PayPal subscriptions ignore `PATCH /subscriptions`** — Lemon Squeezy silently no-ops. Plan changes
-  and uncancel therefore do nothing for PayPal-paid subscriptions; re-read the subscription and check
-  before reporting success to the customer.
+- **Pause is immediate and voids invoices.** Lemon Squeezy cannot schedule a pause, so
+  `subscriptions.pause({ behavior: 'period_end' })` throws `unsupported` and `pauseAtPeriodEnd` is always
+  `false`. The SDK fixes Lemon Squeezy's pause `mode` to `void`, which voids the invoices raised while
+  the subscription is paused; the alternative `free` mode is not exposed.
+- **PayPal subscriptions ignore `PATCH /subscriptions`** — Lemon Squeezy silently no-ops. Plan changes,
+  uncancel, pause, and resume therefore do nothing for PayPal-paid subscriptions; re-read the
+  subscription and check before reporting success to the customer.
 
 <CardGroup cols={2}>
   <Card title="Stripe" icon="credit-card" href="/docs/providers/stripe">

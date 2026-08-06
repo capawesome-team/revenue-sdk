@@ -26,6 +26,8 @@ const CAPABILITIES: RevenueCapabilities = {
   endTrial: true,
   hostedCheckout: true,
   listSubscriptionsByCustomer: true,
+  pause: true,
+  pauseBehaviors: ['period_end'],
   portalReturnUrl: true,
   // Polar's `next_period` defers the plan change itself and `reset` restarts the billing
   // anchor — neither matches the unified `none` ("switch now, bill nothing extra").
@@ -239,6 +241,21 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
 
     async endSubscriptionTrial(params) {
       return patchSubscription(params.id, { trial_end: 'now' }, params.signal);
+    },
+
+    async pauseSubscription(params) {
+      // Polar only pauses at the end of the current period; `resumes_at` must fall after it.
+      // `SubscriptionUpdate` is an exclusive union, so the pause fields must be sent on their own.
+      return patchSubscription(
+        params.id,
+        { pause_at_period_end: true, resumes_at: params.resumesAt?.toISOString() },
+        params.signal,
+      );
+    },
+
+    async resumeSubscription(params) {
+      // Resuming takes effect immediately: it starts a new billing period and charges the customer.
+      return patchSubscription(params.id, { resume: true }, params.signal);
     },
 
     async revokeSubscription(params) {

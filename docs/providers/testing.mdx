@@ -50,7 +50,7 @@ default. Missing IDs are generated (`product-1`, `price-2`, `customer-3`, …).
       type: 'InMemorySubscriptionSeed[]',
       required: false,
       description:
-        '{ id?, status?, cancelAtPeriodEnd?, customerId?, productId?, quantity?, currency?, amount?, interval?, currentPeriodEnd?, trialEndsAt?, endsAt?, metadata? }.',
+        '{ id?, status?, cancelAtPeriodEnd?, pauseAtPeriodEnd?, customerId?, productId?, quantity?, currency?, amount?, interval?, currentPeriodEnd?, trialEndsAt?, resumesAt?, endsAt?, metadata? }.',
     },
   }}
 />
@@ -187,6 +187,8 @@ returned ones are the same instances.
 | `subscriptions.uncancel`      | Clears `cancelAtPeriodEnd` and `endsAt`.                                          |
 | `subscriptions.changePlan`    | Sets `productId` to `params.product`, and `quantity` when given.                   |
 | `subscriptions.endTrial`      | Sets `status: 'active'` and clears `trialEndsAt`.                                 |
+| `subscriptions.pause`         | With `behavior: 'period_end'` sets `pauseAtPeriodEnd: true` and leaves the status alone; otherwise sets `status: 'paused'`. Stores `resumesAt` when given. |
+| `subscriptions.resume`        | Sets `status: 'active'`, clears `pauseAtPeriodEnd` and `resumesAt`.                |
 | `subscriptions.revoke`        | Sets `status: 'canceled'`, clears `cancelAtPeriodEnd`, and sets `endedAt`.         |
 | `customerPortal.createSession`| Returns a fake portal URL, or throws `not_found` for an unknown customer.          |
 

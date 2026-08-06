@@ -82,8 +82,9 @@ Both are frequently raised **before any HTTP request is made**:
   that isn't a positive integer.
 - **`unsupported`** — capability gating: `successUrl` on Paddle, `returnUrl` on Lemon Squeezy or
   Paddle, `customerId` on a Lemon Squeezy subscription list, `reason`/`comment` on a provider without
-  `cancellationReason`, `uncancel`/`endTrial`/`revoke` where unsupported, and a `prorationBehavior`
-  outside `capabilities.prorationBehaviors`.
+  `cancellationReason`, `uncancel`/`endTrial`/`pause`/`resume`/`revoke` where unsupported, a `behavior`
+  outside `capabilities.pauseBehaviors`, and a `prorationBehavior` outside
+  `capabilities.prorationBehaviors`.
 
 Adapters raise `unsupported` for the finer-grained cases the capability object can't express — a Polar
 checkout with `quantity > 1`, a Lemon Squeezy checkout with more than one item, and so on.

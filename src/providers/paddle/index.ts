@@ -1,7 +1,12 @@
 import { RevenueError } from '../../errors.ts';
 import { HttpClient, type ProviderErrorInfo } from '../../http.ts';
 import { assertSameOriginUrl, clampLimit, decodeCursor, encodeCursor } from '../../pagination.ts';
-import type { ProrationBehavior, RevenueCapabilities, RevenueProvider } from '../../types.ts';
+import type {
+  PauseBehavior,
+  ProrationBehavior,
+  RevenueCapabilities,
+  RevenueProvider,
+} from '../../types.ts';
 import {
   toCheckout,
   toCustomer,
@@ -30,6 +35,8 @@ const CAPABILITIES: RevenueCapabilities = {
   // link) — there is no Paddle-hosted checkout via the API.
   hostedCheckout: false,
   listSubscriptionsByCustomer: true,
+  pause: true,
+  pauseBehaviors: ['immediately', 'period_end'],
   portalReturnUrl: false,
   prorationBehaviors: ['invoice_now', 'none', 'prorate'],
   revoke: true,
@@ -87,6 +94,18 @@ function toProrationBillingMode(behavior: ProrationBehavior | undefined): string
     // difference to the next invoice) is the unified default.
     default:
       return 'prorated_next_billing_period';
+  }
+}
+
+function toPauseEffectiveFrom(behavior: PauseBehavior | undefined): string | undefined {
+  switch (behavior) {
+    case 'immediately':
+      return 'immediately';
+    case 'period_end':
+      return 'next_billing_period';
+    // Omitting the field lets Paddle apply its own default (`next_billing_period`).
+    default:
+      return undefined;
   }
 }
 
@@ -299,6 +318,26 @@ export function paddle(options: PaddleProviderOptions): RevenueProvider {
     async endSubscriptionTrial(params) {
       // Activates a trialing subscription: bills immediately and starts the billing cycle.
       return postSubscription(`/subscriptions/${params.id}/activate`, undefined, params.signal);
+    },
+
+    async pauseSubscription(params) {
+      return postSubscription(
+        `/subscriptions/${params.id}/pause`,
+        {
+          effective_from: toPauseEffectiveFrom(params.behavior),
+          resume_at: params.resumesAt?.toISOString(),
+        },
+        params.signal,
+      );
+    },
+
+    async resumeSubscription(params) {
+      // `effective_from` is required by Paddle; the unified resume is always immediate.
+      return postSubscription(
+        `/subscriptions/${params.id}/resume`,
+        { effective_from: 'immediately' },
+        params.signal,
+      );
     },
 
     async revokeSubscription(params) {

@@ -254,6 +254,14 @@ describe('dodoPayments', () => {
       await expectRevenueError(provider.endSubscriptionTrial({ id: 'sub_abc' }), 'unsupported');
     });
 
+    it('rejects pause and resume', async () => {
+      const { provider } = setup(() => ({ json: SUBSCRIPTION }));
+      expect(provider.capabilities.pause).toBe(false);
+      expect(provider.capabilities.pauseBehaviors).toEqual([]);
+      await expectRevenueError(provider.pauseSubscription({ id: 'sub_abc' }), 'unsupported');
+      await expectRevenueError(provider.resumeSubscription({ id: 'sub_abc' }), 'unsupported');
+    });
+
     it('revokes by setting the status to cancelled', async () => {
       const { provider, stub } = setup(() => ({
         json: { ...SUBSCRIPTION, status: 'cancelled', cancelled_at: '2026-08-06T00:00:00Z' },
