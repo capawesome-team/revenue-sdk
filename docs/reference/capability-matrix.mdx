@@ -26,6 +26,7 @@ and throws `unsupported` rather than silently dropping an option — see
 | `prorationBehaviors`          | `ProrationBehavior[]`    | `invoice_now`, `prorate`     | `invoice_now`, `prorate`, `none`     | `invoice_now`, `none`, `prorate`     | `invoice_now`, `none`, `prorate`     | `invoice_now`, `none`     |
 | `revoke`                      | `boolean`                | `true`                       | `false`                              | `true`                               | `true`                               | `true`                    |
 | `uncancel`                    | `boolean`                | `true`                       | `true`                               | `true`                               | `true`                               | `true`                    |
+| `usageReporting`              | `boolean`                | `true`                       | `false`                              | `true`                               | `false`                              | `true`                    |
 
 The in-memory provider from `revenue-sdk/testing` reports **every capability `true`**, all three
 proration behaviors and both pause behaviors, and accepts a `Partial<RevenueCapabilities>` override —
@@ -91,6 +92,11 @@ see [Testing provider](/docs/providers/testing).
     uncancel: {
       type: 'boolean',
       description: 'Whether subscriptions.uncancel can revert a scheduled cancellation.',
+    },
+    usageReporting: {
+      type: 'boolean',
+      description:
+        'Whether usage.report is supported. Calling it without support throws unsupported (Lemon Squeezy keys usage on a subscription item and has no idempotency; Paddle has no usage API).',
     },
   }}
 />

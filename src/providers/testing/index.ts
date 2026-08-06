@@ -15,6 +15,7 @@ import type {
   Subscription,
   SubscriptionStatus,
 } from '../../types.ts';
+import { toUsagePayload } from '../shared.ts';
 
 // Deliberately tiny so consumers exercise cursor handling in their tests.
 const PAGE_SIZE = 2;
@@ -32,6 +33,7 @@ const DEFAULT_CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['invoice_now', 'none', 'prorate'],
   revoke: true,
   uncancel: true,
+  usageReporting: true,
 };
 
 export interface InMemoryPriceSeed {
@@ -84,11 +86,21 @@ export interface InMemorySeed {
   subscriptions?: InMemorySubscriptionSeed[];
 }
 
+export interface InMemoryUsageEvent {
+  customerId: string;
+  eventName: string;
+  /** `metadata` with `value` merged in, exactly as a real provider would receive it. */
+  payload: Metadata;
+  idempotencyKey?: string;
+  timestamp?: Date;
+}
+
 export interface InMemoryState {
   products: Product[];
   customers: Customer[];
   subscriptions: Subscription[];
   checkouts: Checkout[];
+  usageEvents: InMemoryUsageEvent[];
 }
 
 export interface InMemoryProviderOptions {
@@ -161,6 +173,7 @@ export function createInMemoryProvider(
       raw: subscription,
     })),
     checkouts: [],
+    usageEvents: [],
   };
 
   function notFound(resource: string, id: string): RevenueError {
@@ -318,6 +331,16 @@ export function createInMemoryProvider(
         throw notFound('customer', params.customerId);
       }
       return { url: `https://portal.example.com/${params.customerId}`, raw: customer };
+    },
+
+    async reportUsage(params) {
+      state.usageEvents.push({
+        customerId: params.customerId,
+        eventName: params.eventName,
+        payload: toUsagePayload(params) ?? {},
+        idempotencyKey: params.idempotencyKey,
+        timestamp: params.timestamp,
+      });
     },
   };
 }

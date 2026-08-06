@@ -347,6 +347,7 @@ if (client.capabilities.prorationBehaviors.includes('none')) {
     startedAt: { type: 'Date', required: false, description: 'When the subscription began.' },
     endsAt: { type: 'Date', required: false, description: 'When access ends — a scheduled cancellation date or the end of a grace period.' },
     endedAt: { type: 'Date', required: false, description: 'When the subscription actually terminated.' },
+    meters: { type: 'SubscriptionMeter[]', required: false, description: 'Per-meter usage for the current period. Only Polar reports it inline — absent everywhere else.' },
     metadata: { type: 'Record<string, string | number | boolean>', required: false, description: 'Provider metadata, where available.' },
     raw: { type: 'unknown', description: 'The untouched provider payload.' },
   }}
@@ -357,6 +358,9 @@ On **Stripe**, `currentPeriodStart`/`currentPeriodEnd` live on the subscription 
 subscription. `revenue-sdk` reads them from the first item, so the normalized fields are populated as
 you'd expect.
 :::
+
+`meters` carries the current period's metered usage and is populated on **Polar only** — see
+[Usage-based billing](/docs/concepts/usage-based-billing).
 
 ## Listing subscriptions
 
@@ -374,8 +378,8 @@ provider.
 :::
 
 <CardGroup cols={2}>
-  <Card title="Next: Customers & portal" icon="users" href="/docs/concepts/customers-and-portal">
-    Look up customers and mint portal sessions.
+  <Card title="Next: Usage-based billing" icon="gauge" href="/docs/concepts/usage-based-billing">
+    Report metered usage and read it back.
   </Card>
   <Card title="Status mapping reference" icon="table" href="/docs/reference/status-mapping">
     The status table and cancelAtPeriodEnd detection, side by side.

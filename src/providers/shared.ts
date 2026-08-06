@@ -1,4 +1,4 @@
-import type { Metadata } from '../types.ts';
+import type { Metadata, ReportUsageParams } from '../types.ts';
 
 export function toDate(value: string | null | undefined): Date | undefined {
   if (!value) {
@@ -6,6 +6,14 @@ export function toDate(value: string | null | undefined): Date | undefined {
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+/** Folds the `value` shorthand into the event properties; an explicit `value` wins over `metadata.value`. */
+export function toUsagePayload(params: ReportUsageParams): Metadata | undefined {
+  if (params.value === undefined) {
+    return params.metadata;
+  }
+  return { ...params.metadata, value: params.value };
 }
 
 export function toMetadata(value: unknown): Metadata | undefined {

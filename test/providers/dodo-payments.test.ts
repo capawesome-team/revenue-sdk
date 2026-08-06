@@ -87,6 +87,33 @@ describe('dodoPayments', () => {
       });
     });
 
+    it('maps a usage-based price to the metered model', async () => {
+      const { provider } = setup(() => ({
+        json: {
+          product_id: 'pdt_metered',
+          name: 'Metered API',
+          is_recurring: true,
+          price: {
+            type: 'usage_based_price',
+            currency: 'USD',
+            fixed_price: 1000,
+            payment_frequency_count: 1,
+            payment_frequency_interval: 'Month',
+          },
+        },
+      }));
+      const product = await provider.getProduct({ id: 'pdt_metered' });
+      expect(product.prices[0]).toMatchObject({
+        id: 'pdt_metered',
+        checkoutRef: 'pdt_metered',
+        type: 'recurring',
+        model: 'metered',
+        amount: null,
+        currency: 'usd',
+        interval: 'month',
+      });
+    });
+
     it('terminates pagination when a page is not full', async () => {
       const fullPage = Array.from({ length: 10 }, (_, index) => ({
         product_id: `pdt_${index}`,
@@ -270,6 +297,54 @@ describe('dodoPayments', () => {
       expect(JSON.parse(stub.requests[0]!.body!)).toEqual({ status: 'cancelled' });
       expect(subscription.status).toBe('canceled');
       expect(subscription.cancelAtPeriodEnd).toBe(false);
+    });
+  });
+
+  describe('usage', () => {
+    it('advertises usage reporting', () => {
+      const { provider } = setup(() => ({ json: {} }));
+      expect(provider.capabilities.usageReporting).toBe(true);
+    });
+
+    it('ingests a one-event batch and generates an event id when none is given', async () => {
+      const { provider, stub } = setup(() => ({ json: { ingested_count: 1 } }));
+      const result = await provider.reportUsage({ customerId: 'cus_1', eventName: 'api_request' });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('POST');
+      expect(request.url).toBe('https://live.dodopayments.com/events/ingest');
+      const { events } = JSON.parse(request.body!);
+      expect(events).toHaveLength(1);
+      expect(typeof events[0].event_id).toBe('string');
+      expect(events[0].event_id.length).toBeGreaterThan(0);
+      expect(events[0]).toEqual({
+        event_id: events[0].event_id,
+        customer_id: 'cus_1',
+        event_name: 'api_request',
+      });
+      expect(result).toBeUndefined();
+    });
+
+    it('uses the idempotency key as the event id and lets value win over metadata.value', async () => {
+      const { provider, stub } = setup(() => ({ json: { ingested_count: 1 } }));
+      await provider.reportUsage({
+        customerId: 'cus_1',
+        eventName: 'api_request',
+        value: 150,
+        metadata: { value: 1, region: 'eu', billable: true },
+        idempotencyKey: 'api_call_12345',
+        timestamp: new Date('2026-08-06T10:30:00Z'),
+      });
+      expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
+        events: [
+          {
+            event_id: 'api_call_12345',
+            customer_id: 'cus_1',
+            event_name: 'api_request',
+            timestamp: '2026-08-06T10:30:00.000Z',
+            metadata: { value: 150, region: 'eu', billable: true },
+          },
+        ],
+      });
     });
   });
 

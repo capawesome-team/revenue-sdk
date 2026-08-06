@@ -92,6 +92,7 @@ resource. This is the only place `Subscription.metadata` gets populated on Lemon
 | `prorationBehaviors`          | `['invoice_now', 'prorate', 'none']`   |
 | `revoke`                      | `false`                                |
 | `uncancel`                    | `true`                                 |
+| `usageReporting`              | `false`                                |
 
 ## Quirks
 
@@ -120,6 +121,10 @@ resource. This is the only place `Subscription.metadata` gets populated on Lemon
   `subscriptions.pause({ behavior: 'period_end' })` throws `unsupported` and `pauseAtPeriodEnd` is always
   `false`. The SDK fixes Lemon Squeezy's pause `mode` to `void`, which voids the invoices raised while
   the subscription is paused; the alternative `free` mode is not exposed.
+- **No usage reporting.** `usage.report` throws `unsupported`. `POST /v1/usage-records` exists, but it
+  keys on a **subscription-item ID** rather than a customer — an extra lookup that is ambiguous as soon
+  as a customer has several subscriptions — and it has no idempotency at all with `increment` semantics,
+  so a single replay double-bills. See [Usage-based billing](/docs/concepts/usage-based-billing).
 - **PayPal subscriptions ignore `PATCH /subscriptions`** — Lemon Squeezy silently no-ops. Plan changes,
   uncancel, pause, and resume therefore do nothing for PayPal-paid subscriptions; re-read the
   subscription and check before reporting success to the customer.

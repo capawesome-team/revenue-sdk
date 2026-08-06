@@ -20,6 +20,7 @@ import type {
   PauseSubscriptionParams,
   Product,
   ProviderName,
+  ReportUsageParams,
   ResumeSubscriptionParams,
   RevenueCapabilities,
   RevenueProvider,
@@ -75,6 +76,9 @@ export interface RevenueClient {
   customerPortal: {
     createSession(params: CreateCustomerPortalSessionParams): Promise<CustomerPortalSession>;
   };
+  usage: {
+    report(params: ReportUsageParams): Promise<void>;
+  };
 }
 
 function sleep(seconds: number): Promise<void> {
@@ -109,6 +113,12 @@ export function createClient(options: CreateClientOptions): RevenueClient {
   function checkQuantity(quantity: number | undefined): void {
     if (quantity !== undefined && (!Number.isInteger(quantity) || quantity < 1)) {
       fail('validation', 'The quantity parameter must be a positive integer');
+    }
+  }
+
+  function checkUsageValue(value: number | undefined): void {
+    if (value !== undefined && !Number.isFinite(value)) {
+      fail('validation', 'The value parameter must be a finite number');
     }
   }
 
@@ -273,6 +283,20 @@ export function createClient(options: CreateClientOptions): RevenueClient {
           fail('unsupported', `${provider.name} does not support a portal return URL`);
         }
         return withRetry(() => provider.createCustomerPortalSession(params));
+      },
+    },
+
+    usage: {
+      report: async (params) => {
+        requireNonEmpty(params.customerId, 'customerId');
+        requireNonEmpty(params.eventName, 'eventName');
+        checkUsageValue(params.value);
+        if (!provider.capabilities.usageReporting) {
+          fail('unsupported', `${provider.name} does not support usage reporting`);
+        }
+        // Deliberately not wrapped in `withRetry`: a replayed usage event is only deduplicated
+        // when `idempotencyKey` is set, so an automatic retry would over-bill the customer.
+        return provider.reportUsage(params);
       },
     },
   };

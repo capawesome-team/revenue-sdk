@@ -16,6 +16,7 @@ const ALL_CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['invoice_now', 'none', 'prorate'],
   revoke: true,
   uncancel: true,
+  usageReporting: true,
 };
 
 function notImplemented(): never {
@@ -45,6 +46,7 @@ function fakeProvider(
     resumeSubscription: notImplemented,
     revokeSubscription: notImplemented,
     createCustomerPortalSession: notImplemented,
+    reportUsage: notImplemented,
     ...overrides,
   };
 }
@@ -97,6 +99,24 @@ describe('createClient', () => {
         client.checkouts.create({ items: [{ product: 'p1', quantity: 1.5 }] }),
         'validation',
       );
+    });
+
+    it('rejects an empty usage customer, event name, or non-finite value', async () => {
+      const reportUsage = vi.fn();
+      const client = createClient({ provider: fakeProvider({ reportUsage }) });
+      await expectRevenueError(
+        client.usage.report({ customerId: ' ', eventName: 'api_call' }),
+        'validation',
+      );
+      await expectRevenueError(
+        client.usage.report({ customerId: 'c1', eventName: '' }),
+        'validation',
+      );
+      await expectRevenueError(
+        client.usage.report({ customerId: 'c1', eventName: 'api_call', value: Number.NaN }),
+        'validation',
+      );
+      expect(reportUsage).not.toHaveBeenCalled();
     });
 
     it('rejects an empty plan-change product', async () => {
@@ -190,6 +210,18 @@ describe('createClient', () => {
       await expectRevenueError(client.subscriptions.list({ customerId: 'c1' }), 'unsupported');
     });
 
+    it('rejects usage reporting when unsupported', async () => {
+      const reportUsage = vi.fn();
+      const client = createClient({
+        provider: fakeProvider({ reportUsage }, { usageReporting: false }),
+      });
+      await expectRevenueError(
+        client.usage.report({ customerId: 'c1', eventName: 'api_call' }),
+        'unsupported',
+      );
+      expect(reportUsage).not.toHaveBeenCalled();
+    });
+
     it('rejects a portal return URL when unsupported', async () => {
       const client = createClient({ provider: fakeProvider({}, { portalReturnUrl: false }) });
       await expectRevenueError(
@@ -233,6 +265,22 @@ describe('createClient', () => {
       const client = createClient({ provider: fakeProvider({ getSubscription }) });
       await expectRevenueError(client.subscriptions.get({ id: 's1' }), 'rate_limited');
       expect(getSubscription).toHaveBeenCalledTimes(2);
+    });
+
+    it('never retries usage reports', async () => {
+      // A replayed usage event is only deduplicated when the caller passes an idempotency key,
+      // so an automatic retry would over-bill the customer.
+      const reportUsage = vi
+        .fn()
+        .mockRejectedValue(
+          new RevenueError('rate limited', { code: 'rate_limited', retryAfter: 0 }),
+        );
+      const client = createClient({ provider: fakeProvider({ reportUsage }) });
+      await expectRevenueError(
+        client.usage.report({ customerId: 'c1', eventName: 'api_call' }),
+        'rate_limited',
+      );
+      expect(reportUsage).toHaveBeenCalledTimes(1);
     });
 
     it('does not retry other errors', async () => {

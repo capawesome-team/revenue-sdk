@@ -65,8 +65,9 @@ These never touch the network:
 | Code          | Raised by                                                                                                     |
 | ------------- | -------------------------------------------------------------------------------------------------------------- |
 | `validation`  | An empty `id`, `customerId`, `product`, or `items[].product`; an empty `items` array; a `quantity` that isn't a positive integer |
+| `validation`  | An empty `customerId` or `eventName` on `usage.report`, or a usage `value` that isn't a finite number          |
 | `validation`  | A malformed pagination cursor, a cursor from another provider, or a cursor URL on a different origin           |
-| `unsupported` | Capability gating — `successUrl`, `returnUrl`, `customerId` on a subscription list, `reason`/`comment`, `uncancel`, `endTrial`, `pause`, `resume`, `revoke`, a `behavior` outside `capabilities.pauseBehaviors`, and a `prorationBehavior` outside `capabilities.prorationBehaviors` |
+| `unsupported` | Capability gating — `successUrl`, `returnUrl`, `customerId` on a subscription list, `reason`/`comment`, `uncancel`, `endTrial`, `pause`, `resume`, `revoke`, `usage.report`, a `behavior` outside `capabilities.pauseBehaviors`, and a `prorationBehavior` outside `capabilities.prorationBehaviors` |
 
 Adapters raise `unsupported` at call time for the finer-grained limits a capability boolean can't
 express — see [the capability matrix](/docs/reference/capability-matrix#beyond-the-capability-object).
@@ -105,7 +106,9 @@ const client = createClient({
 });
 ```
 
-It applies to every call, including each page fetched inside `listAll`.
+It applies to every call, including each page fetched inside `listAll` — except `usage.report`, which is
+never retried because a replay is deduplicated only when you passed an `idempotencyKey`. See
+[Usage-based billing](/docs/concepts/usage-based-billing).
 
 ## Secret redaction
 

@@ -97,6 +97,7 @@ describe('lemonSqueezy', () => {
     expect(provider.capabilities.listSubscriptionsByCustomer).toBe(false);
     expect(provider.capabilities.pause).toBe(true);
     expect(provider.capabilities.pauseBehaviors).toEqual(['immediately']);
+    expect(provider.capabilities.usageReporting).toBe(false);
   });
 
   describe('listProducts', () => {
@@ -142,6 +143,53 @@ describe('lemonSqueezy', () => {
       await provider.listProducts({});
       const storeRequests = stub.requests.filter((request) => request.url.includes('/v1/stores/'));
       expect(storeRequests).toHaveLength(1);
+    });
+  });
+
+  describe('price models', () => {
+    async function getPrice(attributes: Record<string, unknown>) {
+      const { provider } = setup(
+        routes({
+          '/v1/variants/1615641': { data: VARIANT },
+          '/v1/variants/1615641/price-model': {
+            data: {
+              ...PRICE_MODEL.data,
+              attributes: { ...PRICE_MODEL.data.attributes, ...attributes },
+            },
+          },
+          '/v1/stores/76833': STORE_RESPONSE,
+        }),
+      );
+      const product = await provider.getProduct({ id: '1615641' });
+      return product.prices[0]!;
+    }
+
+    it('maps a usage-aggregated price to metered without an amount', async () => {
+      expect(await getPrice({ usage_aggregation: 'sum' })).toMatchObject({
+        model: 'metered',
+        amount: null,
+      });
+    });
+
+    it.each(['graduated', 'volume', 'package'])(
+      'maps the %s scheme to tiered without an amount',
+      async (scheme) => {
+        expect(await getPrice({ scheme })).toMatchObject({ model: 'tiered', amount: null });
+      },
+    );
+
+    it('maps a pay-what-you-want price to custom without an amount', async () => {
+      expect(await getPrice({ category: 'pwyw' })).toMatchObject({
+        model: 'custom',
+        amount: null,
+      });
+    });
+
+    it('prefers metered over tiered when a metered price also has a tiered scheme', async () => {
+      expect(await getPrice({ usage_aggregation: 'sum', scheme: 'graduated' })).toMatchObject({
+        model: 'metered',
+        amount: null,
+      });
     });
   });
 
@@ -458,6 +506,14 @@ describe('lemonSqueezy', () => {
         'unsupported',
       );
     });
+  });
+
+  it('rejects usage reporting', async () => {
+    const { provider } = setup(() => ({ json: {} }));
+    await expectRevenueError(
+      provider.reportUsage({ customerId: 'c1', eventName: 'api' }),
+      'unsupported',
+    );
   });
 
   it('maps JSON:API error bodies onto RevenueError', async () => {

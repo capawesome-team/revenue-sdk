@@ -95,6 +95,7 @@ Events worth subscribing to: `customer.subscription.created`, `customer.subscrip
 | `prorationBehaviors`          | `['invoice_now', 'none', 'prorate']`   |
 | `revoke`                      | `true`                                 |
 | `uncancel`                    | `true`                                 |
+| `usageReporting`              | `true`                                 |
 
 ## Quirks
 
@@ -130,6 +131,17 @@ Events worth subscribing to: `customer.subscription.created`, `customer.subscrip
   unpaid` is reported as `open`.
 - **The email filter is case-sensitive and emails are not unique** — see
   [Customers & portal](/docs/concepts/customers-and-portal).
+- **A `2xx` on `usage.report` is not a confirmation.** Meter events are validated synchronously but
+  processed asynchronously: an unknown customer, or an `eventName` with no matching meter, is dropped
+  **silently**. The only signals are the `v1.billing.meter.error_report_triggered` and
+  `v1.billing.meter.no_meter_found` thin webhooks, which the SDK does not parse — subscribe to them in
+  the dashboard if silent revenue loss matters. See
+  [Usage-based billing](/docs/concepts/usage-based-billing).
+- **Meter payload keys are configurable.** `stripe_customer_id` and `value` are only the meter's
+  *default* keys (`customer_mapping.event_payload_key` / `value_settings.event_payload_key`); a meter
+  with custom keys needs them passed through `metadata`. A usage `timestamp` may be at most 35 calendar
+  days old and 5 minutes ahead. The endpoint allows 1,000 events per second, but only **one concurrent
+  call per customer per meter** — parallelize across customers, not within one.
 - **No `Retry-After` on 429.** Stripe signals retryability with `Stripe-Should-Retry`, so
   `RevenueError.retryAfter` is usually `undefined` and the client's bounded retry does not engage. Use
   your own back-off.

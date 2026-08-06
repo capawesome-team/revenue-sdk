@@ -64,6 +64,10 @@ Every provider exposes a `capabilities` object, also surfaced on `client.capabil
       type: 'boolean',
       description: 'Whether a scheduled cancellation can be reverted via subscriptions.uncancel. true everywhere today.',
     },
+    usageReporting: {
+      type: 'boolean',
+      description: 'Whether usage.report is supported. false for Lemon Squeezy and Paddle.',
+    },
   }}
 />
 
@@ -108,6 +112,7 @@ The client gates on:
 - `subscriptions.revoke` — requires `revoke`
 - `subscriptions.changePlan({ prorationBehavior })` — the value must be in `prorationBehaviors`
 - `customerPortal.createSession({ returnUrl })` — requires `portalReturnUrl`
+- `usage.report` — requires `usageReporting`
 
 Adapters raise `unsupported` for the finer-grained limits a boolean can't express — a Polar checkout
 with `quantity > 1`, a Lemon Squeezy checkout with more than one item or a `customerId`, a Polar or
