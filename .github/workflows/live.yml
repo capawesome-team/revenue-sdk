@@ -1,0 +1,33 @@
+name: Live Tests
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  live:
+    if: github.repository == 'capawesome-team/revenue-sdk'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run live tests
+        run: npm run test:live
+        env:
+          REVENUE_SDK_LIVE_POLAR_ACCESS_TOKEN: ${{ secrets.REVENUE_SDK_LIVE_POLAR_ACCESS_TOKEN }}
+          REVENUE_SDK_LIVE_POLAR_SERVER: ${{ vars.REVENUE_SDK_LIVE_POLAR_SERVER }}
+          REVENUE_SDK_LIVE_LEMON_SQUEEZY_API_KEY: ${{ secrets.REVENUE_SDK_LIVE_LEMON_SQUEEZY_API_KEY }}
+          REVENUE_SDK_LIVE_LEMON_SQUEEZY_STORE_ID: ${{ vars.REVENUE_SDK_LIVE_LEMON_SQUEEZY_STORE_ID }}
+          REVENUE_SDK_LIVE_STRIPE_SECRET_KEY: ${{ secrets.REVENUE_SDK_LIVE_STRIPE_SECRET_KEY }}
+          REVENUE_SDK_LIVE_PADDLE_API_KEY: ${{ secrets.REVENUE_SDK_LIVE_PADDLE_API_KEY }}
+          REVENUE_SDK_LIVE_PADDLE_SERVER: ${{ vars.REVENUE_SDK_LIVE_PADDLE_SERVER }}
+          REVENUE_SDK_LIVE_DODO_PAYMENTS_API_KEY: ${{ secrets.REVENUE_SDK_LIVE_DODO_PAYMENTS_API_KEY }}
+          REVENUE_SDK_LIVE_DODO_PAYMENTS_SERVER: ${{ vars.REVENUE_SDK_LIVE_DODO_PAYMENTS_SERVER }}

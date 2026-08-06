@@ -6,8 +6,9 @@ revenue-sdk — unified TypeScript SDK for billing providers (Polar, Lemon Squee
 
 - `npm run build` — tsdown (ESM only, platform neutral, bundled d.ts)
 - `npm test` — vitest (unit + provider contract tests; excludes `test/live/**`)
-- `npm run test:live` — env-gated live tests (`REVENUE_SDK_LIVE_<PROVIDER>_*`)
+- `npm run test:live` — env-gated live tests (`REVENUE_SDK_LIVE_<PROVIDER>_*`; tests read env via `test/helpers/env.ts` because the tsconfig deliberately has no Node types)
 - `npm run typecheck` / `lint` / `fmt` / `fmt:check`
+- `npm run docs:dev` / `docs:build` / `docs:check` — Blume docs site. GOTCHA: `docs:build` writes Astro output into `dist/` (clobbering the SDK bundle) and copies it to `.blume-dist` for Cloudflare Pages deploys; `prepack` rebuilds the bundle, but re-run `npm run build` manually after building docs.
 
 ## Hard constraints
 
@@ -79,6 +80,16 @@ Polar vs Dodo key handling differs even though both are "Standard Webhooks" — 
 - `test/live/` — read-only, `describe.skipIf(!env)`, prefix `REVENUE_SDK_LIVE_<PROVIDER>_*`. Only providers with accounts.
 - `revenue-sdk/testing` — in-memory provider, `PAGE_SIZE = 2` on purpose.
 
+## Docs drift checklist
+
+When changing any of the following, update the matching docs in the same PR:
+
+- A provider's `CAPABILITIES` const → `docs/reference/capability-matrix.mdx` + that provider's page + this file's tables
+- Status or `cancelAtPeriodEnd` mapping → `docs/reference/status-mapping.mdx` + `docs/concepts/subscription-lifecycle.mdx` + the table above
+- Webhook event mapping in `providers/*/webhooks.ts` → `docs/reference/webhook-events.mdx` + `docs/concepts/webhooks.mdx`
+- `RevenueErrorCode` union or `codeFromStatus` → `docs/reference/error-codes.mdx`
+- Provider factory options → that provider's page + `docs/quickstart.mdx` code tabs + `pages/index.astro` code tabs
+
 ## Status
 
-Phased build (see task list / PRs): 1 scaffold ✅ → 2 core → 3 polar → 4 lemon-squeezy → 5 client → 6 stripe → 7 paddle → 8 dodo-payments → 9 testing provider → 10 docs (Blume → Cloudflare Pages, revenue-sdk.dev) → 11 polish/v0.1.0. Deferred post-v1: orders resource, usage-based billing, pause/resume, discounts, license keys, webhook-endpoint management.
+v0.1.0 feature-complete: all five providers, client, testing provider, docs site, CI/release/live workflows. Published as in-development (0.x) — APIs may change. Deferred post-v1: orders resource, usage-based billing, pause/resume, discounts, license keys, webhook-endpoint management, `tokenProvider`-style auth.
