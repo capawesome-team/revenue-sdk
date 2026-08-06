@@ -8,7 +8,7 @@ Unified TypeScript SDK for billing providers — [Polar](https://polar.sh), [Lem
 ## Features
 
 - **One API, five providers** — products, checkouts, customers, subscriptions, customer portal, and webhooks behind a single interface.
-- **Zero dependencies** — built entirely on Web-standard APIs (`fetch`, Web Crypto). Runs on Cloudflare Workers, Deno, Bun, and Node.js 20+ without polyfills.
+- **Zero dependencies** — built entirely on Web-standard APIs (`fetch`, Web Crypto). Runs on Cloudflare Workers, Deno, Bun, and Node.js 22+ without polyfills.
 - **Webhook verification included** — per-provider signature verification and normalized event parsing, implementable-anywhere via Web Crypto.
 - **Tree-shakable by design** — each provider ships on its own subpath (`revenue-sdk/polar`), so unused providers never reach your bundle.
 - **Typed, normalized models** — a unified subscription status model across all providers, with the raw provider payload always available via `raw`.
