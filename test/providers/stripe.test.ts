@@ -1,0 +1,374 @@
+import { describe, expect, it } from 'vitest';
+import { RevenueError } from '../../src/errors.ts';
+import { stripe } from '../../src/providers/stripe/index.ts';
+import { createFetchStub, type StubHandler } from '../helpers/fetch-stub.ts';
+
+const SECRET_KEY = 'sk_test_secret_key';
+
+function setup(handler: StubHandler) {
+  const stub = createFetchStub(handler);
+  const provider = stripe({ secretKey: SECRET_KEY, fetch: stub.fetch });
+  return { provider, stub };
+}
+
+function routes(
+  handlers: Record<string, unknown | ((request: { body?: string }) => unknown)>,
+): StubHandler {
+  return (request) => {
+    const path = new URL(request.url).pathname;
+    const handler = handlers[path];
+    if (handler === undefined) {
+      throw new Error(`Unhandled route: ${request.method} ${path}`);
+    }
+    return { json: typeof handler === 'function' ? handler(request) : handler };
+  };
+}
+
+const RECURRING_PRICE = {
+  id: 'price_1',
+  product: 'prod_1',
+  currency: 'usd',
+  unit_amount: 2900,
+  type: 'recurring',
+  billing_scheme: 'per_unit',
+  recurring: { interval: 'month', interval_count: 1, usage_type: 'licensed' },
+};
+
+const SUBSCRIPTION = {
+  id: 'sub_1',
+  status: 'active',
+  cancel_at_period_end: false,
+  cancel_at: null,
+  canceled_at: null,
+  ended_at: null,
+  customer: 'cus_1',
+  currency: 'usd',
+  trial_end: null,
+  start_date: 1754006400,
+  metadata: { org_id: 'org_1' },
+  items: {
+    data: [
+      {
+        id: 'si_1',
+        quantity: 1,
+        current_period_start: 1754006400,
+        current_period_end: 1756684800,
+        price: RECURRING_PRICE,
+      },
+    ],
+    has_more: false,
+  },
+};
+
+async function expectRevenueError(promise: Promise<unknown>, code: string): Promise<void> {
+  try {
+    await promise;
+    expect.unreachable('expected RevenueError');
+  } catch (error) {
+    expect(error).toBeInstanceOf(RevenueError);
+    expect((error as RevenueError).code).toBe(code);
+  }
+}
+
+describe('stripe', () => {
+  it('sends the pinned Stripe-Version and bearer auth', async () => {
+    const { provider, stub } = setup(routes({ '/v1/products': { data: [], has_more: false } }));
+    await provider.listProducts({});
+    const request = stub.requests[0]!;
+    expect(request.headers['authorization']).toBe(`Bearer ${SECRET_KEY}`);
+    expect(request.headers['stripe-version']).toBe('2026-07-29.dahlia');
+  });
+
+  describe('products', () => {
+    it('lists products with their active prices', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/products': {
+            data: [{ id: 'prod_1', name: 'Pro', description: 'Pro plan' }],
+            has_more: false,
+          },
+          '/v1/prices': { data: [RECURRING_PRICE], has_more: false },
+        }),
+      );
+      const page = await provider.listProducts({});
+      expect(stub.requests[0]!.url).toContain('/v1/products?active=true&limit=10');
+      expect(stub.requests[1]!.url).toContain('/v1/prices?product=prod_1&active=true&limit=100');
+      const product = page.items[0]!;
+      expect(product.name).toBe('Pro');
+      expect(product.prices[0]).toMatchObject({
+        id: 'price_1',
+        checkoutRef: 'price_1',
+        type: 'recurring',
+        model: 'fixed',
+        amount: 2900,
+        currency: 'usd',
+        interval: 'month',
+      });
+    });
+
+    it('pages with starting_after cursors', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/products': { data: [{ id: 'prod_1', name: 'Pro' }], has_more: true },
+          '/v1/prices': { data: [], has_more: false },
+        }),
+      );
+      const page = await provider.listProducts({});
+      expect(page.cursor).toBeDefined();
+      await provider.listProducts({ cursor: page.cursor });
+      const secondListRequest = stub.requests.filter((request) =>
+        request.url.includes('/v1/products?'),
+      )[1]!;
+      expect(secondListRequest.url).toContain('starting_after=prod_1');
+    });
+  });
+
+  describe('createCheckout', () => {
+    it('derives subscription mode and form-encodes the session', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/prices/price_1': RECURRING_PRICE,
+          '/v1/checkout/sessions': {
+            id: 'cs_test_1',
+            url: 'https://checkout.stripe.com/c/pay/cs_test_1',
+            status: 'open',
+            payment_status: 'unpaid',
+            metadata: { org_id: 'org_1' },
+          },
+        }),
+      );
+      const checkout = await provider.createCheckout({
+        items: [{ product: 'price_1', quantity: 2 }],
+        successUrl: 'https://app.example.com/thanks?session_id={CHECKOUT_SESSION_ID}',
+        customerEmail: 'user@example.com',
+        metadata: { org_id: 'org_1' },
+      });
+      const request = stub.requests[1]!;
+      expect(request.headers['content-type']).toBe('application/x-www-form-urlencoded');
+      const form = new URLSearchParams(request.body);
+      expect(form.get('mode')).toBe('subscription');
+      expect(form.get('line_items[0][price]')).toBe('price_1');
+      expect(form.get('line_items[0][quantity]')).toBe('2');
+      expect(form.get('success_url')).toBe(
+        'https://app.example.com/thanks?session_id={CHECKOUT_SESSION_ID}',
+      );
+      expect(form.get('customer_email')).toBe('user@example.com');
+      expect(form.get('metadata[org_id]')).toBe('org_1');
+      expect(form.get('subscription_data[metadata][org_id]')).toBe('org_1');
+      expect(checkout).toMatchObject({ id: 'cs_test_1', status: 'open' });
+    });
+
+    it('uses payment mode for one-time prices and skips subscription_data', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/prices/price_onetime': { ...RECURRING_PRICE, id: 'price_onetime', recurring: null },
+          '/v1/checkout/sessions': { id: 'cs_test_2', url: 'https://x', status: 'open' },
+        }),
+      );
+      await provider.createCheckout({
+        items: [{ product: 'price_onetime' }],
+        metadata: { org_id: 'org_1' },
+      });
+      const form = new URLSearchParams(stub.requests[1]!.body);
+      expect(form.get('mode')).toBe('payment');
+      expect(form.get('subscription_data[metadata][org_id]')).toBeNull();
+    });
+
+    it('prefers an existing customer over customer_email', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/prices/price_1': RECURRING_PRICE,
+          '/v1/checkout/sessions': { id: 'cs_test_3', url: 'https://x', status: 'open' },
+        }),
+      );
+      await provider.createCheckout({
+        items: [{ product: 'price_1' }],
+        customerId: 'cus_1',
+        customerEmail: 'user@example.com',
+      });
+      const form = new URLSearchParams(stub.requests[1]!.body);
+      expect(form.get('customer')).toBe('cus_1');
+      expect(form.get('customer_email')).toBeNull();
+    });
+  });
+
+  it('maps a complete-but-unpaid session to open', async () => {
+    const { provider } = setup(
+      routes({
+        '/v1/checkout/sessions/cs_1': {
+          id: 'cs_1',
+          url: null,
+          status: 'complete',
+          payment_status: 'unpaid',
+        },
+      }),
+    );
+    const checkout = await provider.getCheckout({ id: 'cs_1' });
+    expect(checkout.status).toBe('open');
+  });
+
+  it('maps a paid complete session to complete', async () => {
+    const { provider } = setup(
+      routes({
+        '/v1/checkout/sessions/cs_1': {
+          id: 'cs_1',
+          url: null,
+          status: 'complete',
+          payment_status: 'paid',
+          subscription: 'sub_1',
+        },
+      }),
+    );
+    const checkout = await provider.getCheckout({ id: 'cs_1' });
+    expect(checkout.status).toBe('complete');
+    expect(checkout.subscriptionId).toBe('sub_1');
+  });
+
+  describe('subscriptions', () => {
+    it('maps item-level billing periods and price fields', async () => {
+      const { provider } = setup(routes({ '/v1/subscriptions/sub_1': SUBSCRIPTION }));
+      const subscription = await provider.getSubscription({ id: 'sub_1' });
+      expect(subscription).toMatchObject({
+        id: 'sub_1',
+        status: 'active',
+        cancelAtPeriodEnd: false,
+        customerId: 'cus_1',
+        productId: 'prod_1',
+        priceId: 'price_1',
+        quantity: 1,
+        amount: 2900,
+        currency: 'usd',
+        interval: 'month',
+        metadata: { org_id: 'org_1' },
+      });
+      expect(subscription.currentPeriodEnd).toEqual(new Date(1756684800 * 1000));
+    });
+
+    it('detects flexible-mode cancellations via cancel_at', async () => {
+      const { provider } = setup(
+        routes({
+          '/v1/subscriptions/sub_1': {
+            ...SUBSCRIPTION,
+            cancel_at_period_end: false,
+            cancel_at: 1756684800,
+          },
+        }),
+      );
+      const subscription = await provider.getSubscription({ id: 'sub_1' });
+      expect(subscription.status).toBe('active');
+      expect(subscription.cancelAtPeriodEnd).toBe(true);
+      expect(subscription.endsAt).toEqual(new Date(1756684800 * 1000));
+    });
+
+    it('requests status=all when listing', async () => {
+      const { provider, stub } = setup(
+        routes({ '/v1/subscriptions': { data: [], has_more: false } }),
+      );
+      await provider.listSubscriptions({ customerId: 'cus_1' });
+      expect(stub.requests[0]!.url).toContain('customer=cus_1');
+      expect(stub.requests[0]!.url).toContain('status=all');
+    });
+
+    it('cancels with cancellation_details', async () => {
+      const { provider, stub } = setup(
+        routes({ '/v1/subscriptions/sub_1': { ...SUBSCRIPTION, cancel_at_period_end: true } }),
+      );
+      await provider.cancelSubscription({
+        id: 'sub_1',
+        reason: 'too_expensive',
+        comment: 'Too pricey',
+      });
+      const form = new URLSearchParams(stub.requests[0]!.body);
+      expect(form.get('cancel_at_period_end')).toBe('true');
+      expect(form.get('cancellation_details[feedback]')).toBe('too_expensive');
+      expect(form.get('cancellation_details[comment]')).toBe('Too pricey');
+    });
+
+    it('uncancels by clearing both cancel fields', async () => {
+      const { provider, stub } = setup(routes({ '/v1/subscriptions/sub_1': SUBSCRIPTION }));
+      await provider.uncancelSubscription({ id: 'sub_1' });
+      const form = new URLSearchParams(stub.requests[0]!.body);
+      expect(form.get('cancel_at_period_end')).toBe('false');
+      expect(form.get('cancel_at')).toBe('');
+    });
+
+    it('changes plans by replacing the existing item', async () => {
+      let patched = false;
+      const { provider, stub } = setup((request) => {
+        if (request.method === 'POST') {
+          patched = true;
+        }
+        return { json: SUBSCRIPTION };
+      });
+      await provider.changeSubscriptionPlan({
+        id: 'sub_1',
+        product: 'price_2',
+        quantity: 3,
+        prorationBehavior: 'invoice_now',
+      });
+      expect(patched).toBe(true);
+      const form = new URLSearchParams(stub.requests[1]!.body);
+      expect(form.get('items[0][id]')).toBe('si_1');
+      expect(form.get('items[0][price]')).toBe('price_2');
+      expect(form.get('items[0][quantity]')).toBe('3');
+      expect(form.get('proration_behavior')).toBe('always_invoice');
+    });
+
+    it('revokes via DELETE', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/subscriptions/sub_1': { ...SUBSCRIPTION, status: 'canceled', ended_at: 1754438400 },
+        }),
+      );
+      const subscription = await provider.revokeSubscription({ id: 'sub_1' });
+      expect(stub.requests[0]!.method).toBe('DELETE');
+      expect(subscription.status).toBe('canceled');
+      expect(subscription.cancelAtPeriodEnd).toBe(false);
+    });
+  });
+
+  it('creates billing portal sessions', async () => {
+    const { provider, stub } = setup(
+      routes({
+        '/v1/billing_portal/sessions': {
+          id: 'bps_1',
+          url: 'https://billing.stripe.com/p/session/test_x',
+        },
+      }),
+    );
+    const session = await provider.createCustomerPortalSession({
+      customerId: 'cus_1',
+      returnUrl: 'https://app.example.com/billing',
+    });
+    const form = new URLSearchParams(stub.requests[0]!.body);
+    expect(form.get('customer')).toBe('cus_1');
+    expect(form.get('return_url')).toBe('https://app.example.com/billing');
+    expect(session.url).toBe('https://billing.stripe.com/p/session/test_x');
+  });
+
+  it('maps Stripe error bodies onto RevenueError', async () => {
+    const { provider } = setup(() => ({
+      status: 404,
+      json: {
+        error: {
+          type: 'invalid_request_error',
+          code: 'resource_missing',
+          message: 'No such subscription: sub_missing',
+        },
+      },
+    }));
+    try {
+      await provider.getSubscription({ id: 'sub_missing' });
+      expect.unreachable('expected RevenueError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(RevenueError);
+      expect((error as RevenueError).code).toBe('not_found');
+      expect((error as RevenueError).message).toBe('No such subscription: sub_missing');
+    }
+  });
+
+  it('rejects empty checkout items', async () => {
+    const { provider } = setup(() => ({ json: {} }));
+    await expectRevenueError(provider.createCheckout({ items: [] }), 'validation');
+  });
+});
