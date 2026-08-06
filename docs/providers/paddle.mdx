@@ -141,6 +141,8 @@ that `transaction.completed` is the single "money received" signal and payments 
 | `endTrial`                    | `true`                                 |
 | `hostedCheckout`              | `false`                                |
 | `listSubscriptionsByCustomer` | `true`                                 |
+| `pause`                       | `true`                                 |
+| `pauseBehaviors`              | `['immediately', 'period_end']`        |
 | `portalReturnUrl`             | `false`                                |
 | `prorationBehaviors`          | `['invoice_now', 'none', 'prorate']`   |
 | `revoke`                      | `true`                                 |
@@ -158,6 +160,11 @@ that `transaction.completed` is the single "money received" signal and payments 
 - **Cancel and revoke are the same endpoint.** `subscriptions.cancel` posts
   `effective_from: next_billing_period`; `subscriptions.revoke` posts `effective_from: immediately`.
 - **Uncancel clears the schedule** with `PATCH { scheduled_change: null }`.
+- **Both pause behaviors are supported.** `period_end` maps to `effective_from: next_billing_period`,
+  which Paddle also uses when `behavior` is omitted. A scheduled pause is a `scheduled_change` with
+  `action: 'pause'`, so `status` stays `active` and `pauseAtPeriodEnd` is `true` until it takes effect.
+  `subscriptions.resume` always posts `effective_from: immediately`; Paddle's `on_resume` option is not
+  exposed.
 - **`PATCH` list fields are full replacements.** `items` is replaced wholesale, so a plan change swaps
   every item for the new price. The unified model targets single-product subscriptions.
 - **Proration is always sent** on a plan change, because Paddle requires the field whenever `items`

@@ -102,6 +102,8 @@ Polar emits `subscription.canceled` when a cancellation is merely **scheduled**;
 | `endTrial`                    | `true`                       |
 | `hostedCheckout`              | `true`                       |
 | `listSubscriptionsByCustomer` | `true`                       |
+| `pause`                       | `true`                       |
+| `pauseBehaviors`              | `['period_end']`             |
 | `portalReturnUrl`             | `true`                       |
 | `prorationBehaviors`          | `['invoice_now', 'prorate']` |
 | `revoke`                      | `true`                       |
@@ -116,6 +118,11 @@ Polar emits `subscription.canceled` when a cancellation is merely **scheduled**;
 - **No `none` proration.** Polar's `next_period` defers the plan change itself and `reset` restarts the
   billing anchor — neither means "switch now, bill nothing extra", so the SDK refuses rather than pick a
   lookalike.
+- **Pause is period-end only.** `subscriptions.pause({ behavior: 'immediately' })` throws `unsupported`;
+  the pause is scheduled, so `status` stays unchanged and `pauseAtPeriodEnd` becomes `true` until it
+  takes effect. A `resumesAt` must fall **after** the current period end.
+- **Resume takes effect immediately.** `subscriptions.resume` starts a new billing period and charges
+  the customer — it is not a "continue where we left off" operation.
 - **Trailing slashes are load-bearing.** Collection routes are `/v1/checkouts/`, `/v1/products/`,
   `/v1/customers/` — the SDK sends them exactly as Polar requires. Relevant if you pass a custom
   `baseUrl`.

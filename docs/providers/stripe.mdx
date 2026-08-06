@@ -89,6 +89,8 @@ Events worth subscribing to: `customer.subscription.created`, `customer.subscrip
 | `endTrial`                    | `true`                                 |
 | `hostedCheckout`              | `true`                                 |
 | `listSubscriptionsByCustomer` | `true`                                 |
+| `pause`                       | `true`                                 |
+| `pauseBehaviors`              | `['immediately']`                      |
 | `portalReturnUrl`             | `true`                                 |
 | `prorationBehaviors`          | `['invoice_now', 'none', 'prorate']`   |
 | `revoke`                      | `true`                                 |
@@ -115,6 +117,15 @@ Events worth subscribing to: `customer.subscription.created`, `customer.subscrip
 - **`cancelAtPeriodEnd` needs two fields.** In flexible billing mode — Stripe's default for new
   integrations — a portal cancellation sets only `cancel_at` and leaves `cancel_at_period_end` at
   `false`. The SDK checks `cancel_at_period_end || cancel_at !== null`, and `uncancel` clears both.
+- **A paused subscription keeps its Stripe status.** `subscriptions.pause` sets `pause_collection` with
+  `behavior: 'void'`, and Stripe documents that "the subscription status will be unchanged and will not be
+  updated to `paused`". The SDK reports `status: 'paused'` whenever `pause_collection` is set — except on
+  a terminally `canceled` subscription, where `canceled` wins. `pauseAtPeriodEnd` is always `false`:
+  `pause_collection` is immediate, and scheduling a pause would require Subscription Schedules.
+- **Two unrelated pause mechanisms.** Besides `pause_collection`, Stripe has a raw `paused` status that
+  only occurs when a trial ends without a payment method, and it resumes through a different endpoint
+  (`POST /v1/subscriptions/{id}/resume`). `subscriptions.resume` reads the subscription first and picks
+  the right one — one extra request.
 - **`checkout.status === 'complete'` means paid.** A session that is `complete` but `payment_status:
   unpaid` is reported as `open`.
 - **The email filter is case-sensitive and emails are not unique** — see

@@ -28,6 +28,8 @@ const CAPABILITIES: RevenueCapabilities = {
   hostedCheckout: true,
   // Subscriptions are filterable by store/product/variant/email only, not by customer ID.
   listSubscriptionsByCustomer: false,
+  pause: true,
+  pauseBehaviors: ['immediately'],
   portalReturnUrl: false,
   prorationBehaviors: ['invoice_now', 'prorate', 'none'],
   revoke: false,
@@ -296,6 +298,20 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     async endSubscriptionTrial(params) {
       // `billing_anchor: null` resets the anchor to today and removes an active trial.
       return patchSubscription(params.id, { billing_anchor: null }, params.signal);
+    },
+
+    async pauseSubscription(params) {
+      return patchSubscription(
+        params.id,
+        // `void` voids the invoices raised while paused; the alternative `free` keeps serving the
+        // subscription for free. The mode is not part of the unified API, so it is fixed here.
+        { pause: { mode: 'void', resumes_at: params.resumesAt?.toISOString() } },
+        params.signal,
+      );
+    },
+
+    async resumeSubscription(params) {
+      return patchSubscription(params.id, { pause: null }, params.signal);
     },
 
     async revokeSubscription() {

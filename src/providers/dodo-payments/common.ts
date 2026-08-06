@@ -202,6 +202,8 @@ export function toSubscription(subscription: DodoSubscription): Subscription {
     id: subscription.subscription_id,
     status,
     cancelAtPeriodEnd: scheduledToCancel,
+    // Dodo has no pause concept — neither an endpoint nor a paused status.
+    pauseAtPeriodEnd: false,
     customerId: subscription.customer?.customer_id ?? '',
     productId: subscription.product_id,
     quantity: subscription.quantity ?? undefined,

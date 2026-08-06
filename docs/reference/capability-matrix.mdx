@@ -20,14 +20,16 @@ and throws `unsupported` rather than silently dropping an option — see
 | `endTrial`                    | `boolean`                | `true`                       | `true`                               | `true`                               | `true`                               | `false`                   |
 | `hostedCheckout`              | `boolean`                | `true`                       | `true`                               | `true`                               | `false`                              | `true`                    |
 | `listSubscriptionsByCustomer` | `boolean`                | `true`                       | `false`                              | `true`                               | `true`                               | `true`                    |
+| `pause`                       | `boolean`                | `true`                       | `true`                               | `true`                               | `true`                               | `false`                   |
+| `pauseBehaviors`              | `PauseBehavior[]`        | `period_end`                 | `immediately`                        | `immediately`                        | `immediately`, `period_end`          | —                         |
 | `portalReturnUrl`             | `boolean`                | `true`                       | `false`                              | `true`                               | `false`                              | `true`                    |
 | `prorationBehaviors`          | `ProrationBehavior[]`    | `invoice_now`, `prorate`     | `invoice_now`, `prorate`, `none`     | `invoice_now`, `none`, `prorate`     | `invoice_now`, `none`, `prorate`     | `invoice_now`, `none`     |
 | `revoke`                      | `boolean`                | `true`                       | `false`                              | `true`                               | `true`                               | `true`                    |
 | `uncancel`                    | `boolean`                | `true`                       | `true`                               | `true`                               | `true`                               | `true`                    |
 
-The in-memory provider from `revenue-sdk/testing` reports **every capability `true`** and all three
-proration behaviors, and accepts a `Partial<RevenueCapabilities>` override — see
-[Testing provider](/docs/providers/testing).
+The in-memory provider from `revenue-sdk/testing` reports **every capability `true`**, all three
+proration behaviors and both pause behaviors, and accepts a `Partial<RevenueCapabilities>` override —
+see [Testing provider](/docs/providers/testing).
 
 ## What each field gates
 
@@ -61,6 +63,16 @@ proration behaviors, and accepts a `Partial<RevenueCapabilities>` override — s
       type: 'boolean',
       description:
         'Whether subscriptions.list/listAll accept customerId. Passing it without support throws unsupported.',
+    },
+    pause: {
+      type: 'boolean',
+      description:
+        'Whether subscriptions.pause and subscriptions.resume are supported. Calling either without support throws unsupported.',
+    },
+    pauseBehaviors: {
+      type: "('immediately' | 'period_end')[]",
+      description:
+        'Behaviors subscriptions.pause accepts. Any other value throws unsupported before the request; omitting behavior uses the provider default. Empty when pause is false.',
     },
     portalReturnUrl: {
       type: 'boolean',

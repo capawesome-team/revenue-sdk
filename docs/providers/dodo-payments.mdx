@@ -90,6 +90,8 @@ normalizes to `subscription.updated` (or `subscription.canceled`), so **upsert**
 | `endTrial`                    | `false`                     |
 | `hostedCheckout`              | `true`                      |
 | `listSubscriptionsByCustomer` | `true`                      |
+| `pause`                       | `false`                     |
+| `pauseBehaviors`              | `[]`                        |
 | `portalReturnUrl`             | `true`                      |
 | `prorationBehaviors`          | `['invoice_now', 'none']`   |
 | `revoke`                      | `true`                      |
@@ -101,6 +103,9 @@ normalizes to `subscription.updated` (or `subscription.canceled`), so **upsert**
   `Price.id`, `Price.checkoutRef`, and `Product.id` are all the product ID, and each product has at most
   one price.
 - **No end-trial operation.** `subscriptions.endTrial` throws `unsupported` (`endTrial: false`).
+- **No pause or resume.** Dodo has neither an endpoint nor a paused subscription status, so
+  `subscriptions.pause` and `subscriptions.resume` throw `unsupported` (`pause: false`) and
+  `pauseAtPeriodEnd` is always `false`.
 - **No `prorate` proration.** There is no defer-to-next-invoice mode, only `prorated_immediately` and
   `do_not_bill`. Omitting `prorationBehavior` behaves as `invoice_now`.
 - **Unversioned, additive API.** There is no version header and fields are added without notice, so the

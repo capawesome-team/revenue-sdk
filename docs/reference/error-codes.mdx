@@ -66,7 +66,7 @@ These never touch the network:
 | ------------- | -------------------------------------------------------------------------------------------------------------- |
 | `validation`  | An empty `id`, `customerId`, `product`, or `items[].product`; an empty `items` array; a `quantity` that isn't a positive integer |
 | `validation`  | A malformed pagination cursor, a cursor from another provider, or a cursor URL on a different origin           |
-| `unsupported` | Capability gating — `successUrl`, `returnUrl`, `customerId` on a subscription list, `reason`/`comment`, `uncancel`, `endTrial`, `revoke`, and a `prorationBehavior` outside `capabilities.prorationBehaviors` |
+| `unsupported` | Capability gating — `successUrl`, `returnUrl`, `customerId` on a subscription list, `reason`/`comment`, `uncancel`, `endTrial`, `pause`, `resume`, `revoke`, a `behavior` outside `capabilities.pauseBehaviors`, and a `prorationBehavior` outside `capabilities.prorationBehaviors` |
 
 Adapters raise `unsupported` at call time for the finer-grained limits a capability boolean can't
 express — see [the capability matrix](/docs/reference/capability-matrix#beyond-the-capability-object).

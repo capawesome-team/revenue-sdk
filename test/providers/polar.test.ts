@@ -30,6 +30,7 @@ const SUBSCRIPTION = {
   id: 'sub-uuid-1',
   status: 'active',
   cancel_at_period_end: false,
+  pause_at_period_end: false,
   customer_id: 'cus-uuid-1',
   product_id: 'prod-uuid-1',
   amount: 2900,
@@ -39,6 +40,8 @@ const SUBSCRIPTION = {
   current_period_end: '2026-09-01T00:00:00Z',
   started_at: '2026-08-01T00:00:00Z',
   trial_end: null,
+  paused_at: null,
+  resumes_at: null,
   ends_at: null,
   ended_at: null,
   metadata: { organization_id: 'org_1' },
@@ -60,6 +63,8 @@ describe('polar', () => {
     expect(provider.name).toBe('polar');
     expect(provider.capabilities.hostedCheckout).toBe(true);
     expect(provider.capabilities.prorationBehaviors).toEqual(['invoice_now', 'prorate']);
+    expect(provider.capabilities.pause).toBe(true);
+    expect(provider.capabilities.pauseBehaviors).toEqual(['period_end']);
   });
 
   it('uses the sandbox base URL when configured', async () => {
@@ -188,6 +193,7 @@ describe('polar', () => {
         id: 'sub-uuid-1',
         status: 'active',
         cancelAtPeriodEnd: false,
+        pauseAtPeriodEnd: false,
         customerId: 'cus-uuid-1',
         productId: 'prod-uuid-1',
         amount: 2900,
@@ -210,6 +216,22 @@ describe('polar', () => {
       expect(subscription.status).toBe('active');
       expect(subscription.cancelAtPeriodEnd).toBe(true);
       expect(subscription.endsAt).toEqual(new Date('2026-09-01T00:00:00Z'));
+    });
+
+    it('maps a paused subscription with its resume date', async () => {
+      const { provider } = setup(() => ({
+        json: {
+          ...SUBSCRIPTION,
+          status: 'paused',
+          pause_at_period_end: true,
+          paused_at: '2026-09-01T00:00:00Z',
+          resumes_at: '2026-10-01T00:00:00Z',
+        },
+      }));
+      const subscription = await provider.getSubscription({ id: 'sub-uuid-1' });
+      expect(subscription.status).toBe('paused');
+      expect(subscription.pauseAtPeriodEnd).toBe(true);
+      expect(subscription.resumesAt).toEqual(new Date('2026-10-01T00:00:00Z'));
     });
 
     it('maps terminal and edge statuses', async () => {
@@ -290,6 +312,41 @@ describe('polar', () => {
       const { provider, stub } = setup(() => ({ json: SUBSCRIPTION }));
       await provider.endSubscriptionTrial({ id: 'sub-uuid-1' });
       expect(JSON.parse(stub.requests[0]!.body!)).toEqual({ trial_end: 'now' });
+    });
+
+    it('pauses at period end without a resume date', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { ...SUBSCRIPTION, pause_at_period_end: true },
+      }));
+      const subscription = await provider.pauseSubscription({ id: 'sub-uuid-1' });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('PATCH');
+      expect(request.url).toBe('https://api.polar.sh/v1/subscriptions/sub-uuid-1');
+      expect(JSON.parse(request.body!)).toEqual({ pause_at_period_end: true });
+      expect(subscription.pauseAtPeriodEnd).toBe(true);
+    });
+
+    it('sends the resume date as an ISO string when pausing', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { ...SUBSCRIPTION, pause_at_period_end: true, resumes_at: '2026-10-01T00:00:00Z' },
+      }));
+      await provider.pauseSubscription({
+        id: 'sub-uuid-1',
+        resumesAt: new Date('2026-10-01T00:00:00Z'),
+      });
+      expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
+        pause_at_period_end: true,
+        resumes_at: '2026-10-01T00:00:00.000Z',
+      });
+    });
+
+    it('resumes immediately', async () => {
+      const { provider, stub } = setup(() => ({ json: SUBSCRIPTION }));
+      const subscription = await provider.resumeSubscription({ id: 'sub-uuid-1' });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('PATCH');
+      expect(JSON.parse(request.body!)).toEqual({ resume: true });
+      expect(subscription.status).toBe('active');
     });
 
     it('revokes via DELETE', async () => {

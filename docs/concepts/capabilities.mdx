@@ -40,6 +40,14 @@ Every provider exposes a `capabilities` object, also surfaced on `client.capabil
       type: 'boolean',
       description: 'Whether subscriptions.list accepts a customerId filter. false for Lemon Squeezy.',
     },
+    pause: {
+      type: 'boolean',
+      description: 'Whether subscriptions.pause and subscriptions.resume are supported. false for Dodo Payments.',
+    },
+    pauseBehaviors: {
+      type: "('immediately' | 'period_end')[]",
+      description: 'The pause behaviors subscriptions.pause accepts on this provider. Empty when pause is false.',
+    },
     portalReturnUrl: {
       type: 'boolean',
       description: 'Whether customerPortal.createSession accepts returnUrl. false for Lemon Squeezy and Paddle.',
@@ -95,6 +103,8 @@ The client gates on:
 - `subscriptions.cancel({ reason | comment })` — requires `cancellationReason`
 - `subscriptions.uncancel` — requires `uncancel`
 - `subscriptions.endTrial` — requires `endTrial`
+- `subscriptions.pause` and `subscriptions.resume` — require `pause`
+- `subscriptions.pause({ behavior })` — the value must be in `pauseBehaviors`
 - `subscriptions.revoke` — requires `revoke`
 - `subscriptions.changePlan({ prorationBehavior })` — the value must be in `prorationBehaviors`
 - `customerPortal.createSession({ returnUrl })` — requires `portalReturnUrl`

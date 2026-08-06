@@ -76,6 +76,8 @@ export interface Subscription {
   /** `canceled` is terminal. A pending "cancel at period end" keeps the status unchanged and sets `cancelAtPeriodEnd`. */
   status: SubscriptionStatus;
   cancelAtPeriodEnd: boolean;
+  /** Whether a pause is scheduled for the end of the current period. The status stays unchanged until it takes effect. */
+  pauseAtPeriodEnd: boolean;
   customerId: string;
   productId?: string;
   priceId?: string;
@@ -89,6 +91,8 @@ export interface Subscription {
   currentPeriodStart?: Date;
   currentPeriodEnd?: Date;
   trialEndsAt?: Date;
+  /** When a paused — or pause-scheduled — subscription resumes automatically; absent for an indefinite pause. */
+  resumesAt?: Date;
   startedAt?: Date;
   /** When access ends: the effective date of a scheduled cancellation, or the end of a grace period. */
   endsAt?: Date;
@@ -125,6 +129,8 @@ export type CancellationReason =
   | 'too_expensive'
   | 'unused';
 
+export type PauseBehavior = 'immediately' | 'period_end';
+
 export type ProrationBehavior = 'invoice_now' | 'none' | 'prorate';
 
 export type WebhookEventType =
@@ -159,6 +165,10 @@ export interface RevenueCapabilities {
   hostedCheckout: boolean;
   /** Whether `subscriptions.list` supports the `customerId` filter. */
   listSubscriptionsByCustomer: boolean;
+  /** Whether `subscriptions.pause` and `subscriptions.resume` are supported. */
+  pause: boolean;
+  /** Pause behaviors supported by `subscriptions.pause`. */
+  pauseBehaviors: PauseBehavior[];
   /** Whether `customerPortal.createSession` supports `returnUrl`. */
   portalReturnUrl: boolean;
   /** Proration behaviors supported by `subscriptions.changePlan`. */
@@ -241,6 +251,18 @@ export interface EndSubscriptionTrialParams extends BaseParams {
   id: string;
 }
 
+export interface PauseSubscriptionParams extends BaseParams {
+  id: string;
+  /** Defaults to the provider's native behavior — see `RevenueCapabilities.pauseBehaviors`. */
+  behavior?: PauseBehavior;
+  /** When the subscription resumes automatically; omit to pause indefinitely. */
+  resumesAt?: Date;
+}
+
+export interface ResumeSubscriptionParams extends BaseParams {
+  id: string;
+}
+
 export interface RevokeSubscriptionParams extends BaseParams {
   id: string;
 }
@@ -265,6 +287,8 @@ export interface RevenueProvider {
   uncancelSubscription(params: UncancelSubscriptionParams): Promise<Subscription>;
   changeSubscriptionPlan(params: ChangeSubscriptionPlanParams): Promise<Subscription>;
   endSubscriptionTrial(params: EndSubscriptionTrialParams): Promise<Subscription>;
+  pauseSubscription(params: PauseSubscriptionParams): Promise<Subscription>;
+  resumeSubscription(params: ResumeSubscriptionParams): Promise<Subscription>;
   revokeSubscription(params: RevokeSubscriptionParams): Promise<Subscription>;
   createCustomerPortalSession(
     params: CreateCustomerPortalSessionParams,

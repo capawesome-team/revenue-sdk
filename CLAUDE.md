@@ -29,7 +29,7 @@ revenue-sdk — unified TypeScript SDK for billing providers (Polar, Lemon Squee
 
 ## Unified subscription status model (decided — do not relitigate)
 
-`status: 'incomplete' | 'trialing' | 'active' | 'past_due' | 'unpaid' | 'paused' | 'canceled'` — `canceled` is TERMINAL only. A scheduled "cancel at period end" is `cancelAtPeriodEnd: true` with `status` unchanged (+ `endsAt`).
+`status: 'incomplete' | 'trialing' | 'active' | 'past_due' | 'unpaid' | 'paused' | 'canceled'` — `canceled` is TERMINAL only. A scheduled "cancel at period end" is `cancelAtPeriodEnd: true` with `status` unchanged (+ `endsAt`). A scheduled "pause at period end" works the same way: `pauseAtPeriodEnd: true` with `status` unchanged (+ `resumesAt`); `status` only becomes `paused` once the pause takes effect.
 
 | Unified    | Polar      | Lemon Squeezy      | Stripe                       | Paddle   | Dodo                       |
 | ---------- | ---------- | ------------------ | ---------------------------- | -------- | -------------------------- |
@@ -38,12 +38,18 @@ revenue-sdk — unified TypeScript SDK for billing providers (Polar, Lemon Squee
 | active     | active     | active, cancelled¹ | active                       | active   | active                     |
 | past_due   | past_due   | past_due           | past_due                     | past_due | on_hold                    |
 | unpaid     | unpaid     | unpaid             | unpaid                       | —        | —                          |
-| paused     | paused     | paused             | paused                       | paused   | —                          |
+| paused     | paused     | paused             | paused, pause_collection²    | paused   | —                          |
 | canceled   | canceled   | expired            | canceled, incomplete_expired | canceled | cancelled, failed, expired |
 
 ¹ LS `cancelled` → `active` + `cancelAtPeriodEnd: true`.
 
+² Stripe's `pause_collection` leaves the raw status untouched ("the subscription status will be unchanged and will not be updated to `paused`") → mapped to `paused` anyway, EXCEPT when the raw status is `canceled` (terminal outranks a leftover `pause_collection`). Stripe's raw `paused` status is a different mechanism: a trial that ended without a payment method. `resumeSubscription` reads the subscription first to pick the right endpoint (`pause_collection: null` vs `POST /v1/subscriptions/{id}/resume`).
+
 `cancelAtPeriodEnd` detection: Polar `cancel_at_period_end`; LS status `cancelled`; **Stripe `cancel_at_period_end || cancel_at !== null`** (flexible billing mode portal cancellations set only `cancel_at`); Paddle `scheduled_change?.action === 'cancel'`; Dodo `cancel_at_next_billing_date`.
+
+`pauseAtPeriodEnd` detection: Polar `pause_at_period_end`; Paddle `scheduled_change?.action === 'pause'`; always `false` for LS, Stripe and Dodo (none can schedule a pause).
+
+Pause support (`pause` / `pauseBehaviors`): Polar `true` / `['period_end']` (`resumes_at` must fall after the current period end; resume is immediate — new billing period + charge); LS `true` / `['immediately']` (`mode` fixed to `void`); Stripe `true` / `['immediately']` (`pause_collection`, period-end would need Subscription Schedules); Paddle `true` / `['immediately', 'period_end']` (`on_resume` not exposed); Dodo `false` / `[]`. The client throws `unsupported` when `pause` is false or an explicitly passed `behavior` is not in `pauseBehaviors`; omitting `behavior` uses the provider default.
 
 ## Webhook signature schemes (verified against official SDK sources — exact, do not guess)
 
@@ -59,11 +65,11 @@ Polar vs Dodo key handling differs even though both are "Standard Webhooks" — 
 
 ## Provider quirks cheat sheet
 
-- **Polar**: trailing slashes in collection paths are load-bearing (`/v1/checkouts/`). Sandbox = separate host (`sandbox-api.polar.sh`). `Retry-After` on 429. Checkout takes `products: string[]`; `external_customer_id` links your user IDs. No idempotency keys.
-- **Lemon Squeezy**: JSON:API (`application/vnd.api+json` on ALL requests incl. GET). `data.id` is string but FKs in `attributes` are numbers → coerce with `String()`. Empty objects serialize as `[]` (`custom`, `billing_address`). Unified `Product` = LS **variant**; current price via variant `price-model` relationship (NOT `/v1/prices?filter[variant_id]` — that's append-only history). Portal/update URLs expire in 24h — fetch on demand. PayPal subscriptions: `PATCH /subscriptions` silently no-ops. Test mode is a property of the API key. `storeId` required in factory (checkout `store` relationship).
-- **Stripe**: bodies are `application/x-www-form-urlencoded` with bracket notation — the form encoder (`providers/stripe/form-encoder.ts`) is load-bearing: sequential explicit array indices, `undefined` → omit key, `null` → `''`, booleans `'true'/'false'`, `Date` → unix seconds. Pin `Stripe-Version` (const). Unix-second timestamps everywhere. `GET /v1/subscriptions` hides canceled subs by default → pass `status=all`. Plan change MUST send `items[0][id]` (else double-billing). No `Retry-After`; use `Stripe-Should-Retry`. `current_period_*` lives on subscription items, not the subscription.
-- **Paddle**: NO API-hosted checkout — `POST /transactions` → `checkout.url` points at the merchant's own default-payment-link page (requires Paddle.js + approved domain); capability `hostedCheckout: false`. Amounts are string integers. Auth failures are **403**. `PATCH` list fields (`items`) are full replacement → GET-merge-PATCH. Cancel = `POST /subscriptions/{id}/cancel`; undo = `PATCH { scheduled_change: null }`. Portal path is `POST /customers/{id}/portal-sessions`. `management_urls` absent from webhook payloads.
-- **Dodo**: unversioned, additive API → tolerant types, open enums, never validate ID prefixes. `POST /checkouts` (legacy `POST /payments`/`POST /subscriptions` are deprecated). Pagination: zero-based `page_number`, envelope `{ items }`, NO has_more → terminate when `items.length < page_size`. `TimeInterval` is capitalized (`'Month'`). `POST /change-plan` returns 200 with EMPTY body. Portal session params go in the QUERY string. No end-trial operation (capability `endTrial: false`).
+- **Polar**: trailing slashes in collection paths are load-bearing (`/v1/checkouts/`). Sandbox = separate host (`sandbox-api.polar.sh`). `Retry-After` on 429. Checkout takes `products: string[]`; `external_customer_id` links your user IDs. No idempotency keys. Pause is period-end only and the pause fields must be PATCHed alone (`SubscriptionUpdate` is an exclusive union); resume = `{ resume: true }`.
+- **Lemon Squeezy**: JSON:API (`application/vnd.api+json` on ALL requests incl. GET). `data.id` is string but FKs in `attributes` are numbers → coerce with `String()`. Empty objects serialize as `[]` (`custom`, `billing_address`). Unified `Product` = LS **variant**; current price via variant `price-model` relationship (NOT `/v1/prices?filter[variant_id]` — that's append-only history). Portal/update URLs expire in 24h — fetch on demand. PayPal subscriptions: `PATCH /subscriptions` silently no-ops (hits plan change, uncancel, pause and resume alike). Pause is `{ pause: { mode: 'void', resumes_at } }`, resume is `{ pause: null }`. Test mode is a property of the API key. `storeId` required in factory (checkout `store` relationship).
+- **Stripe**: bodies are `application/x-www-form-urlencoded` with bracket notation — the form encoder (`providers/stripe/form-encoder.ts`) is load-bearing: sequential explicit array indices, `undefined` → omit key, `null` → `''`, booleans `'true'/'false'`, `Date` → unix seconds. Pin `Stripe-Version` (const). Unix-second timestamps everywhere. `GET /v1/subscriptions` hides canceled subs by default → pass `status=all`. Plan change MUST send `items[0][id]` (else double-billing). No `Retry-After`; use `Stripe-Should-Retry`. `current_period_*` lives on subscription items, not the subscription. Two unrelated pause mechanisms — see footnote ² above.
+- **Paddle**: NO API-hosted checkout — `POST /transactions` → `checkout.url` points at the merchant's own default-payment-link page (requires Paddle.js + approved domain); capability `hostedCheckout: false`. Amounts are string integers. Auth failures are **403**. `PATCH` list fields (`items`) are full replacement → GET-merge-PATCH. Cancel = `POST /subscriptions/{id}/cancel`; undo = `PATCH { scheduled_change: null }`. Pause/resume = `POST /subscriptions/{id}/pause|resume` with `effective_from` (`period_end` → `next_billing_period`; resume always `immediately`). Portal path is `POST /customers/{id}/portal-sessions`. `management_urls` absent from webhook payloads.
+- **Dodo**: unversioned, additive API → tolerant types, open enums, never validate ID prefixes. `POST /checkouts` (legacy `POST /payments`/`POST /subscriptions` are deprecated). Pagination: zero-based `page_number`, envelope `{ items }`, NO has_more → terminate when `items.length < page_size`. `TimeInterval` is capitalized (`'Month'`). `POST /change-plan` returns 200 with EMPTY body. Portal session params go in the QUERY string. No end-trial operation (capability `endTrial: false`). No pause/resume endpoint and no paused status (capability `pause: false`).
 
 ## Conventions
 
@@ -85,7 +91,7 @@ Polar vs Dodo key handling differs even though both are "Standard Webhooks" — 
 When changing any of the following, update the matching docs in the same PR:
 
 - A provider's `CAPABILITIES` const → `docs/reference/capability-matrix.mdx` + that provider's page + this file's tables
-- Status or `cancelAtPeriodEnd` mapping → `docs/reference/status-mapping.mdx` + `docs/concepts/subscription-lifecycle.mdx` + the table above
+- Status, `cancelAtPeriodEnd` or `pauseAtPeriodEnd` mapping → `docs/reference/status-mapping.mdx` + `docs/concepts/subscription-lifecycle.mdx` + the table above
 - Webhook event mapping in `providers/*/webhooks.ts` → `docs/reference/webhook-events.mdx` + `docs/concepts/webhooks.mdx`
 - `RevenueErrorCode` union or `codeFromStatus` → `docs/reference/error-codes.mdx`
 - Provider factory options → that provider's page + `docs/quickstart.mdx` code tabs + `pages/index.astro` code tabs
@@ -105,4 +111,4 @@ JSON-LD, so both blog pages build their own schema.org graph. Verify with `npx b
 
 ## Status
 
-v0.1.0 feature-complete: all five providers, client, testing provider, docs site, CI/release/live workflows. Published as in-development (0.x) — APIs may change. Deferred post-v1: orders resource, usage-based billing, pause/resume, discounts, license keys, webhook-endpoint management, `tokenProvider`-style auth.
+v0.1.0 feature-complete: all five providers, client, testing provider, docs site, CI/release/live workflows. Published as in-development (0.x) — APIs may change. Deferred post-v1: orders resource, usage-based billing, discounts, license keys, webhook-endpoint management, `tokenProvider`-style auth.

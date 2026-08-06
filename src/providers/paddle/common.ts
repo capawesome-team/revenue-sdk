@@ -76,6 +76,13 @@ export interface PaddleCustomer {
   created_at?: string | null;
 }
 
+interface PaddleScheduledChange {
+  action: string;
+  effective_at?: string | null;
+  /** Only set on `pause` changes; a `resume` change carries the date on `effective_at`. */
+  resume_at?: string | null;
+}
+
 export interface PaddleSubscription {
   id: string;
   status: string;
@@ -86,10 +93,7 @@ export interface PaddleSubscription {
   trial_dates?: { starts_at?: string | null; ends_at?: string | null } | null;
   current_billing_period?: { starts_at?: string | null; ends_at?: string | null } | null;
   billing_cycle?: PaddleBillingCycle | null;
-  scheduled_change?: {
-    action: string;
-    effective_at?: string | null;
-  } | null;
+  scheduled_change?: PaddleScheduledChange | null;
   custom_data?: Record<string, unknown> | null;
   items?: Array<{
     quantity?: number | null;
@@ -195,6 +199,18 @@ function toSubscriptionStatus(status: string): SubscriptionStatus {
   }
 }
 
+function toResumesAt(change: PaddleScheduledChange | null | undefined): Date | undefined {
+  // A scheduled pause carries its automatic resume date on `resume_at`. Once the pause takes
+  // effect, Paddle replaces it with a `resume` change whose `effective_at` is that date.
+  if (change?.action === 'pause') {
+    return toDate(change.resume_at);
+  }
+  if (change?.action === 'resume') {
+    return toDate(change.effective_at);
+  }
+  return undefined;
+}
+
 export function toSubscription(subscription: PaddleSubscription): Subscription {
   const item = subscription.items?.[0];
   const scheduledToCancel = subscription.scheduled_change?.action === 'cancel';
@@ -202,6 +218,7 @@ export function toSubscription(subscription: PaddleSubscription): Subscription {
     id: subscription.id,
     status: toSubscriptionStatus(subscription.status),
     cancelAtPeriodEnd: scheduledToCancel,
+    pauseAtPeriodEnd: subscription.scheduled_change?.action === 'pause',
     customerId: subscription.customer_id,
     productId: item?.price?.product_id,
     priceId: item?.price?.id,
@@ -213,6 +230,7 @@ export function toSubscription(subscription: PaddleSubscription): Subscription {
     currentPeriodStart: toDate(subscription.current_billing_period?.starts_at),
     currentPeriodEnd: toDate(subscription.current_billing_period?.ends_at),
     trialEndsAt: toDate(item?.trial_dates?.ends_at),
+    resumesAt: toResumesAt(subscription.scheduled_change),
     startedAt: toDate(subscription.started_at),
     endsAt: scheduledToCancel ? toDate(subscription.scheduled_change?.effective_at) : undefined,
     // `canceled_at` is only set once the cancellation actually takes effect.

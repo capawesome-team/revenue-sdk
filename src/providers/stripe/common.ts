@@ -79,6 +79,7 @@ export interface StripeSubscription {
   start_date?: number | null;
   metadata?: Record<string, unknown> | null;
   items?: StripeList<StripeSubscriptionItem> | null;
+  pause_collection?: { behavior?: string | null; resumes_at?: number | null } | null;
 }
 
 export interface StripeInvoice {
@@ -203,7 +204,14 @@ function toSubscriptionStatus(status: string): SubscriptionStatus {
 }
 
 export function toSubscription(subscription: StripeSubscription): Subscription {
-  const status = toSubscriptionStatus(subscription.status);
+  // Stripe has two unrelated pause mechanisms. `pause_collection` leaves the raw status alone
+  // — per Stripe's docs: "Note that the subscription status will be unchanged and will not be
+  // updated to `paused`." The raw `paused` status only happens when a trial ends without a
+  // payment method. Both are the unified `paused`, except once the subscription has terminated:
+  // `canceled` is terminal and outranks a leftover `pause_collection`.
+  const rawStatus = toSubscriptionStatus(subscription.status);
+  const status =
+    subscription.pause_collection != null && rawStatus !== 'canceled' ? 'paused' : rawStatus;
   const item = subscription.items?.data[0];
   const currentPeriodEnd = fromUnixSeconds(item?.current_period_end);
   // Flexible billing mode (the default) writes portal cancellations to `cancel_at` with
@@ -215,6 +223,9 @@ export function toSubscription(subscription: StripeSubscription): Subscription {
     id: subscription.id,
     status,
     cancelAtPeriodEnd,
+    // `pause_collection` always takes effect immediately; scheduling a pause would require
+    // Subscription Schedules.
+    pauseAtPeriodEnd: false,
     customerId: idOf(subscription.customer) ?? '',
     productId: item?.price ? idOf(item.price.product) : undefined,
     priceId: item?.price?.id,
@@ -226,6 +237,7 @@ export function toSubscription(subscription: StripeSubscription): Subscription {
     currentPeriodStart: fromUnixSeconds(item?.current_period_start),
     currentPeriodEnd,
     trialEndsAt: fromUnixSeconds(subscription.trial_end),
+    resumesAt: fromUnixSeconds(subscription.pause_collection?.resumes_at),
     startedAt: fromUnixSeconds(subscription.start_date),
     endsAt:
       fromUnixSeconds(subscription.cancel_at) ?? (cancelAtPeriodEnd ? currentPeriodEnd : undefined),

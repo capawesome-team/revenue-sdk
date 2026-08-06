@@ -202,6 +202,7 @@ describe('paddle', () => {
         id: 'sub_1',
         status: 'active',
         cancelAtPeriodEnd: false,
+        pauseAtPeriodEnd: false,
         customerId: 'ctm_1',
         productId: 'pro_1',
         priceId: 'pri_1',
@@ -229,18 +230,82 @@ describe('paddle', () => {
       expect(subscription.endsAt).toEqual(new Date('2026-09-01T00:00:00Z'));
     });
 
-    it('does not treat a scheduled pause as a cancellation', async () => {
+    it('maps a scheduled pause without treating it as a cancellation', async () => {
       const { provider } = setup(() => ({
         json: {
           data: {
             ...SUBSCRIPTION,
-            scheduled_change: { action: 'pause', effective_at: '2026-09-01T00:00:00Z' },
+            scheduled_change: {
+              action: 'pause',
+              effective_at: '2026-09-01T00:00:00Z',
+              resume_at: '2026-10-01T00:00:00Z',
+            },
           },
         },
       }));
       const subscription = await provider.getSubscription({ id: 'sub_1' });
+      expect(subscription.status).toBe('active');
+      expect(subscription.pauseAtPeriodEnd).toBe(true);
+      expect(subscription.resumesAt).toEqual(new Date('2026-10-01T00:00:00Z'));
       expect(subscription.cancelAtPeriodEnd).toBe(false);
       expect(subscription.endsAt).toBeUndefined();
+    });
+
+    it('reads resumesAt from the resume change once the pause took effect', async () => {
+      const { provider } = setup(() => ({
+        json: {
+          data: {
+            ...SUBSCRIPTION,
+            status: 'paused',
+            scheduled_change: { action: 'resume', effective_at: '2026-10-01T00:00:00Z' },
+          },
+        },
+      }));
+      const subscription = await provider.getSubscription({ id: 'sub_1' });
+      expect(subscription.status).toBe('paused');
+      expect(subscription.pauseAtPeriodEnd).toBe(false);
+      expect(subscription.resumesAt).toEqual(new Date('2026-10-01T00:00:00Z'));
+    });
+
+    it('pauses without effective_from when no behavior is given', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: SUBSCRIPTION } }));
+      await provider.pauseSubscription({ id: 'sub_1' });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('POST');
+      expect(request.url).toBe('https://api.paddle.com/subscriptions/sub_1/pause');
+      expect(JSON.parse(request.body!)).toEqual({});
+    });
+
+    it('maps the pause behavior to Paddle effective_from values', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: SUBSCRIPTION } }));
+      await provider.pauseSubscription({ id: 'sub_1', behavior: 'immediately' });
+      expect(JSON.parse(stub.requests[0]!.body!)).toEqual({ effective_from: 'immediately' });
+      await provider.pauseSubscription({ id: 'sub_1', behavior: 'period_end' });
+      expect(JSON.parse(stub.requests[1]!.body!)).toEqual({
+        effective_from: 'next_billing_period',
+      });
+    });
+
+    it('sends resume_at when a resume date is given', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: SUBSCRIPTION } }));
+      await provider.pauseSubscription({
+        id: 'sub_1',
+        behavior: 'immediately',
+        resumesAt: new Date('2026-10-01T00:00:00Z'),
+      });
+      expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
+        effective_from: 'immediately',
+        resume_at: '2026-10-01T00:00:00.000Z',
+      });
+    });
+
+    it('resumes immediately', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: SUBSCRIPTION } }));
+      await provider.resumeSubscription({ id: 'sub_1' });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('POST');
+      expect(request.url).toBe('https://api.paddle.com/subscriptions/sub_1/resume');
+      expect(JSON.parse(request.body!)).toEqual({ effective_from: 'immediately' });
     });
 
     it('cancels at the next billing period', async () => {

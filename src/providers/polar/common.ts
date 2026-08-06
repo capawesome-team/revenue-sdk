@@ -61,6 +61,7 @@ export interface PolarSubscription {
   id: string;
   status: string;
   cancel_at_period_end?: boolean | null;
+  pause_at_period_end?: boolean | null;
   customer_id: string;
   product_id?: string | null;
   amount?: number | null;
@@ -70,6 +71,7 @@ export interface PolarSubscription {
   current_period_start?: string | null;
   current_period_end?: string | null;
   trial_end?: string | null;
+  resumes_at?: string | null;
   started_at?: string | null;
   ends_at?: string | null;
   ended_at?: string | null;
@@ -204,6 +206,7 @@ export function toSubscription(subscription: PolarSubscription): Subscription {
     id: subscription.id,
     status: toSubscriptionStatus(subscription.status),
     cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
+    pauseAtPeriodEnd: subscription.pause_at_period_end ?? false,
     customerId: String(subscription.customer_id),
     productId: subscription.product_id ?? undefined,
     amount: subscription.amount ?? undefined,
@@ -213,6 +216,7 @@ export function toSubscription(subscription: PolarSubscription): Subscription {
     currentPeriodStart: toDate(subscription.current_period_start),
     currentPeriodEnd: toDate(subscription.current_period_end),
     trialEndsAt: toDate(subscription.trial_end),
+    resumesAt: toDate(subscription.resumes_at),
     startedAt: toDate(subscription.started_at),
     endsAt: toDate(subscription.ends_at),
     endedAt: toDate(subscription.ended_at),
