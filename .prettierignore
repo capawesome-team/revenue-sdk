@@ -1,0 +1,12 @@
+dist
+coverage
+docs
+*.mdx
+package-lock.json
+CHANGELOG.md
+PLAN.md
+.blume
+.blume-dist
+.astro
+.wrangler
+.agents

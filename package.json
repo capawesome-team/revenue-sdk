@@ -1,0 +1,95 @@
+{
+  "name": "revenue-sdk",
+  "version": "0.0.0",
+  "description": "Unified TypeScript SDK for billing providers — Polar, Lemon Squeezy, Stripe, Paddle, Dodo Payments",
+  "license": "MIT",
+  "author": "Robin Genz <mail@robingenz.dev>",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "billing",
+    "payments",
+    "subscriptions",
+    "checkout",
+    "webhooks",
+    "polar",
+    "lemon-squeezy",
+    "stripe",
+    "paddle",
+    "dodo-payments",
+    "merchant-of-record",
+    "sdk"
+  ],
+  "homepage": "https://github.com/capawesome-team/revenue-sdk",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/capawesome-team/revenue-sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/capawesome-team/revenue-sdk"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./polar": {
+      "types": "./dist/polar.d.ts",
+      "default": "./dist/polar.js"
+    },
+    "./lemon-squeezy": {
+      "types": "./dist/lemon-squeezy.d.ts",
+      "default": "./dist/lemon-squeezy.js"
+    },
+    "./stripe": {
+      "types": "./dist/stripe.d.ts",
+      "default": "./dist/stripe.js"
+    },
+    "./paddle": {
+      "types": "./dist/paddle.d.ts",
+      "default": "./dist/paddle.js"
+    },
+    "./dodo-payments": {
+      "types": "./dist/dodo-payments.d.ts",
+      "default": "./dist/dodo-payments.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "prepare": "husky",
+    "prepack": "npm run build",
+    "test": "vitest run",
+    "test:live": "vitest run --config vitest.live.config.ts",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "fmt": "prettier --write .",
+    "fmt:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
+    "eslint": "^10.7.0",
+    "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.9.5",
+    "tsdown": "^0.22.9",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.64.0",
+    "vitest": "^4.1.10"
+  },
+  "lint-staged": {
+    "**/*.{ts,js,json,md,yml,yaml}": "prettier --write"
+  }
+}

@@ -1,0 +1,15 @@
+node_modules
+dist
+coverage
+*.log
+.DS_Store
+PLAN.md
+.blume
+.blume-dist
+.blume-verify
+.astro
+.wrangler
+.agents
+skills-lock.json
+.claude
+*.tgz
