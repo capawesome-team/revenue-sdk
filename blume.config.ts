@@ -13,7 +13,13 @@ export default defineConfig({
   github: { owner: 'capawesome-team', repo: 'revenue-sdk', branch: 'main' },
   content: {
     sources: [
-      { type: 'filesystem', root: '.', include: ['docs/**/*.{md,mdx}'] },
+      // One source rooted at the repo: docs/ → /docs, blog/ → /blog — the landing page owns /.
+      // (Separate roots per folder would break the docs collection's entry ids.)
+      {
+        type: 'filesystem',
+        root: '.',
+        include: ['docs/**/*.{md,mdx}', 'blog/**/*.{md,mdx}'],
+      },
       {
         type: 'github-releases',
         prefix: 'changelog',
@@ -26,10 +32,11 @@ export default defineConfig({
     repo: true,
     tabs: [
       { label: 'Docs', path: '/docs', icon: 'book-open' },
+      { label: 'Blog', path: '/blog', icon: 'newspaper' },
       { label: 'Changelog', path: '/changelog', icon: 'history' },
     ],
   },
   lastModified: true,
-  seo: { rss: { enabled: true, types: ['changelog'] } },
+  seo: { rss: { enabled: true, types: ['blog', 'changelog'] } },
   deployment: { site: 'https://revenue-sdk.dev' },
 });

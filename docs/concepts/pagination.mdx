@@ -126,6 +126,10 @@ Dodo Payments is the notable one: because it reports no total or "has more" flag
 page as "there may be more" and a short page as the end. A collection whose size is an exact multiple of
 the page size therefore costs one extra empty request.
 
+Pagination is one of several places the five APIs pull apart — see
+[how the Stripe, Polar, Lemon Squeezy, Paddle, and Dodo Payments APIs differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences)
+for the wider comparison.
+
 <CardGroup cols={2}>
   <Card title="Next: Errors" icon="shield-alert" href="/docs/concepts/errors">
     The RevenueError code union, retries, and secret redaction.

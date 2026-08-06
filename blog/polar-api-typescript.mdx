@@ -1,0 +1,273 @@
+---
+title: 'How to Use the Polar API from TypeScript'
+description: 'A practical walkthrough of the Polar billing API in TypeScript — access tokens, sandbox, products, hosted checkout, subscriptions, portal, and webhooks.'
+type: blog
+date: 2026-07-27
+---
+
+[Polar](https://polar.sh/) is a merchant of record for digital products: it handles the sale, the
+payment, and the sales tax, VAT, and GST liability that comes with selling software internationally.
+Its API is small, plainly JSON, and pleasant to work against — which makes it a good first billing
+integration and an easy second one.
+
+This is an end-to-end walkthrough in TypeScript: getting a token, listing products, creating a checkout,
+reading subscription state, opening the customer portal, and verifying webhooks. Every example uses
+[`revenue-sdk`](/docs/quickstart), an open-source, zero-dependency SDK whose Polar adapter maps the API
+onto normalized models — but the underlying endpoints and quirks apply whichever client you use.
+
+**The short version:**
+
+- Authenticate with an **organization access token** (`polar_oat_…`) as a bearer credential; the token is scoped to one organization, so no organization ID is needed.
+- Polar's sandbox is a **separate host** (`sandbox-api.polar.sh`) with its own organization, products, and tokens.
+- A Polar **product is the purchasable unit** — checkouts take `products: string[]`, not price IDs.
+- Webhooks follow [Standard Webhooks](https://www.standardwebhooks.com/) and the signing secret is used **verbatim, including the `whsec_` prefix**.
+- Polar has **no idempotency keys**, so never blind-retry a checkout creation.
+
+## How do you authenticate with the Polar API?
+
+Create an **organization access token** in the Polar dashboard under **Settings → Developers → Access
+tokens**, and send it as a bearer credential. Grant it scopes for what you use: products, checkouts,
+customers, subscriptions, and customer sessions.
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { polar } from 'revenue-sdk/polar';
+
+const client = createClient({
+  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
+});
+```
+
+Because the token is scoped to a single organization, the factory needs no organization ID — a detail
+that trips people up coming from APIs where every request carries an account identifier.
+
+## How does Polar's sandbox work?
+
+Polar's sandbox is a **separate environment on a separate host**, not a flag on a request. It has its own
+organization, its own products, and its own tokens, and a production token will not authenticate against
+it:
+
+```ts
+const client = createClient({
+  provider: polar({
+    accessToken: process.env.POLAR_SANDBOX_ACCESS_TOKEN!,
+    server: 'sandbox',
+  }),
+});
+```
+
+This differs from Stripe (one host, test vs live key prefixes) and from Lemon Squeezy (test mode is a
+property of the key). If you are integrating several providers, see
+[how their APIs differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences) for the rest of
+these environment differences.
+
+## How do you list products and prices?
+
+Polar's product model is flat: a product *is* the thing a customer buys, and its prices hang off it.
+There is no separate price object you check out with, the way Stripe has.
+
+```ts
+const page = await client.products.list({ limit: 20 });
+
+for (const product of page.items) {
+  const price = product.prices[0];
+  console.log(product.name, price.amount, price.currency, price.interval);
+}
+```
+
+Amounts are integers in the currency's minor units — `1900` is $19.00 — and currency codes are lowercase
+ISO 4217. Every normalized model also carries `raw` with Polar's untouched payload, so
+Polar-specific fields are always one property away.
+
+To walk every page without managing cursors, use the async generator:
+
+```ts
+for await (const product of client.products.listAll()) {
+  console.log(product.id, product.name);
+}
+```
+
+Polar paginates by page number behind an envelope carrying `max_page`; the SDK wraps that in an opaque
+cursor so the same loop works on all providers. See [Pagination](/docs/concepts/pagination).
+
+One normalization caveat worth knowing: `Price.trialDays` is populated only for day- and week-based
+trials. Month- and year-based trials have no exact day count, so the field is left `undefined` and the
+real value lives in `raw`.
+
+## How do you create a Polar checkout?
+
+Polar returns a fully hosted checkout URL you can redirect to — no client-side SDK required:
+
+```ts
+const product = await client.products.get({ id: process.env.POLAR_PRODUCT_ID! });
+
+const checkout = await client.checkouts.create({
+  items: [{ product: product.prices[0].checkoutRef }],
+  customerEmail: 'ada@example.com',
+  successUrl: 'https://example.com/thanks',
+  metadata: { userId: 'usr_123' },
+});
+
+return Response.redirect(checkout.url, 303);
+```
+
+`checkoutRef` is the identifier Polar's checkout endpoint accepts, which for Polar is the **product ID**
+— its `POST /v1/checkouts/` body takes `products: string[]`. Normalizing it onto a single field is what
+lets the same checkout code target Stripe price IDs or Lemon Squeezy variant IDs unchanged.
+
+Two Polar-specific constraints:
+
+- **No item quantities.** A checkout item with a `quantity` other than `1` is rejected rather than silently ignored.
+- **No idempotency keys.** Polar's API has none, so a retried `checkouts.create` can create a second checkout. Do not wrap checkout creation in a generic retry.
+
+`metadata` is copied onto the resulting order and subscription, which is the cleanest way to link a
+Polar purchase back to your own user. Polar also supports `external_customer_id` on the raw payload for
+the same purpose. More patterns in [Checkouts](/docs/concepts/checkouts).
+
+## How do you read and manage subscriptions?
+
+Subscription state is where Polar's vocabulary needs care. Polar's statuses are `incomplete`,
+`incomplete_expired`, `trialing`, `active`, `past_due`, `unpaid`, `paused`, and `canceled` — and
+`canceled` here does **not** mean access has ended. A cancellation scheduled for the period boundary
+keeps the subscription paid and usable until `ends_at`.
+
+Normalized, that becomes a terminal-only status plus an explicit flag:
+
+```ts
+const subscription = await client.subscriptions.get({ id });
+
+if (subscription.status === 'active' || subscription.status === 'trialing') {
+  // entitled
+}
+if (subscription.cancelAtPeriodEnd) {
+  // still entitled, ends on subscription.endsAt
+}
+```
+
+The write operations Polar supports:
+
+```ts
+await client.subscriptions.cancel({ id, reason: 'too_expensive' }); // at period end
+await client.subscriptions.uncancel({ id }); // undo a scheduled cancellation
+await client.subscriptions.revoke({ id }); // end access immediately
+await client.subscriptions.endTrial({ id });
+await client.subscriptions.changePlan({ id, product: newProductId, prorationBehavior: 'prorate' });
+```
+
+Polar accepts a structured cancellation reason, which not every provider does. It supports `prorate` and
+`invoice_now` proration but **not** `none`: its `next_period` mode defers the plan change itself and
+`reset` restarts the billing anchor, so neither means "switch now, bill nothing extra" — the client
+throws `unsupported` rather than picking a lookalike. For the whole picture, see
+[how to normalize subscription status across billing providers](/blog/normalize-subscription-status-across-providers)
+and [Managing subscriptions](/docs/guides/subscription-management).
+
+## How do you open the Polar customer portal?
+
+Create a customer session and redirect. This is how you let customers update payment methods, download
+invoices, and cancel without building any of it yourself:
+
+```ts
+const session = await client.customerPortal.createSession({
+  customerId: subscription.customerId,
+  returnUrl: 'https://example.com/account',
+});
+
+return Response.redirect(session.url, 303);
+```
+
+Portal URLs are short-lived, so generate one on demand in response to a click rather than storing it. See
+[Customers and portal](/docs/concepts/customers-and-portal).
+
+## How do you verify Polar webhooks?
+
+Create the endpoint under **Settings → Webhooks**, choose the **Raw** payload format, and copy the
+signing secret. Polar sends [Standard Webhooks](https://www.standardwebhooks.com/) headers —
+`webhook-id`, `webhook-timestamp`, `webhook-signature` — and signs `{id}.{timestamp}.{body}` with
+HMAC-SHA256, base64-encoded, within a 300-second tolerance.
+
+The critical detail: **Polar's signing secret is used verbatim, including its `whsec_` prefix.** Do not
+strip it and do not base64-decode it. Dodo Payments uses the same Standard Webhooks headers but the
+opposite key derivation, which is why code copied between the two silently fails.
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/polar';
+
+export async function POST(request: Request): Promise<Response> {
+  const headers = request.headers;
+  const body = await request.text(); // raw bytes — never re-serialize
+
+  if (!(await verifyWebhook({ headers, body, secret: process.env.POLAR_WEBHOOK_SECRET! }))) {
+    return new Response('invalid signature', { status: 401 });
+  }
+
+  const event = await parseWebhookEvent({ headers, body });
+  if (event.type === 'subscription.canceled') {
+    await revokeAccess(event.subscription!.customerId);
+  }
+
+  return new Response(null, { status: 204 });
+}
+```
+
+Events worth subscribing to: `subscription.created`, `subscription.updated`, `subscription.active`,
+`subscription.canceled`, `subscription.uncanceled`, `subscription.revoked`, `subscription.cycled`,
+`order.paid`, and `checkout.updated`.
+
+:::warning
+Polar emits `subscription.canceled` when a cancellation is merely **scheduled**. The terminal event is
+`subscription.revoked`. Handling `subscription.canceled` as "revoke access now" cuts off customers who
+have paid through the end of their period.
+:::
+
+Because verification uses only Web Crypto, this handler runs unchanged on Cloudflare Workers without
+`nodejs_compat`. Full details in
+[how to verify webhook signatures across all five providers](/blog/verify-billing-webhook-signatures) and
+the [production webhook handler guide](/docs/guides/webhook-handler).
+
+## What Polar quirks should you know about?
+
+- **Trailing slashes are load-bearing.** Collection routes are `/v1/checkouts/`, `/v1/products/`, `/v1/customers/` — dropping the trailing slash breaks the request. Only relevant if you hand-roll requests or set a custom `baseUrl`.
+- **No idempotency keys**, so writes that could duplicate a charge must never be blind-retried.
+- **`Retry-After` on 429**, which makes bounded rate-limit retries straightforward.
+- **`external_customer_id`** links your own user IDs to Polar customers.
+- **Sandbox is a different host**, with different data and different tokens.
+
+The full list, with the capability table, is on the [Polar provider page](/docs/providers/polar).
+
+## Frequently asked questions
+
+### Is there an official Polar SDK for TypeScript?
+
+Yes — Polar publishes `@polar-sh/sdk`, which covers the full Polar API surface. `revenue-sdk` is an
+alternative that covers the core billing surface across Polar, Stripe, Lemon Squeezy, Paddle, and Dodo
+Payments behind one normalized API, which is useful when you support more than one provider.
+
+### What is the difference between a Polar product and a price?
+
+A Polar product is the purchasable unit, and prices are attached to it. Checkout takes product IDs, not
+price IDs. This differs from Stripe, where the price is what you check out with, and from Lemon Squeezy,
+where the purchasable unit is a variant.
+
+### Does Polar support idempotency keys?
+
+No. The Polar API has no idempotency-key mechanism, so a retried write may create a duplicate resource.
+Retry reads freely; guard writes such as checkout creation with your own deduplication.
+
+### How do I test Polar without real payments?
+
+Use the sandbox environment at `sandbox-api.polar.sh` with a sandbox organization access token. It is a
+fully separate environment, so you will need to recreate your products there — production tokens and
+production product IDs do not work against it.
+
+### Why does my Polar subscription still show as active after the customer canceled?
+
+Because it is. A Polar cancellation is scheduled by default: the subscription stays paid and entitled
+until `ends_at`, with `cancel_at_period_end` set. Use `subscriptions.revoke` if you need access to end
+immediately.
+
+## Keep reading
+
+- [Polar provider reference](/docs/providers/polar) — factory options, capabilities, and every quirk.
+- [Quickstart](/docs/quickstart) — client, checkout, webhook, and entitlement check in one page.
+- [Stripe vs Polar vs Lemon Squeezy vs Paddle vs Dodo: How Their Billing APIs Differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences) — Polar next to the other four.
+- [How to Verify Webhook Signatures from Stripe, Polar, Lemon Squeezy, Paddle, and Dodo Payments](/blog/verify-billing-webhook-signatures) — all five schemes side by side.

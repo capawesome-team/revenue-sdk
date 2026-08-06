@@ -268,6 +268,10 @@ what makes the payload trustworthy.
 Note that importing all five providers this way defeats tree shaking. If you only ever run one provider
 per deployment, pick it with an environment variable at build time instead.
 
+For the signature schemes behind `verifyWebhook` — and why code copied between Polar and Dodo Payments
+fails — see
+[how to verify webhook signatures from Stripe, Polar, Lemon Squeezy, Paddle, and Dodo Payments](/blog/verify-billing-webhook-signatures).
+
 <CardGroup cols={2}>
   <Card title="Next: Subscription management" icon="settings" href="/docs/guides/subscription-management">
     Build the account page on top of this state.

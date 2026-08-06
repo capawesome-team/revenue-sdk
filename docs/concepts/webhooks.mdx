@@ -93,6 +93,10 @@ Polar, Dodo Payments, Stripe, and Paddle deliveries carry a timestamp and are re
 **300-second** tolerance, which bounds replay attacks. Lemon Squeezy sends no timestamp, so replay
 protection has to come from your own de-duplication.
 
+If you are implementing verification by hand rather than using these helpers, the blog post on
+[verifying webhook signatures across all five providers](/blog/verify-billing-webhook-signatures) walks
+through each scheme with working code.
+
 ## Normalized events
 
 `parseWebhookEvent` maps the provider payload onto a small closed set:

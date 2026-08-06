@@ -96,6 +96,10 @@ Some limits are too fine-grained for a boolean and are enforced by the adapters,
 | Plan-change `quantity` must be `1`                     | Polar, Lemon Squeezy          |
 | No customer portal until the customer has a subscription | Lemon Squeezy (`not_found`) |
 
+These gaps trace back to real differences between the underlying APIs —
+[Stripe vs Polar vs Lemon Squeezy vs Paddle vs Dodo](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences)
+explains where each one comes from.
+
 ## Reading capabilities at runtime
 
 ```ts

@@ -1,0 +1,215 @@
+---
+title: 'How to Verify Webhook Signatures from Stripe, Polar, Lemon Squeezy, Paddle, and Dodo'
+description: 'The exact signature scheme for each of five billing providers — headers, signed payload, HMAC key derivation, and encoding — plus the raw-body rule.'
+type: blog
+date: 2026-07-31
+seo:
+  title: 'How to Verify Billing Webhook Signatures'
+---
+
+A billing webhook is the only trustworthy source of payment truth: the browser redirect after checkout
+can be closed, replayed, or forged, but a correctly verified signature cannot. Verification is also the
+step teams most often get subtly wrong, because every provider signs a slightly different string with a
+slightly different key and encodes the result differently.
+
+This article gives the exact scheme for Stripe, Polar, Lemon Squeezy, Paddle, and Dodo Payments, the one
+rule that breaks verification on every provider at once, and a single endpoint that handles all five.
+
+**The short version:**
+
+- Verify against the **raw request body**. Read it once with `await request.text()` and never re-serialize it.
+- Every provider signs with HMAC-SHA256, but the signed string differs: `{id}.{timestamp}.{body}`, `{timestamp}.{body}`, `{timestamp}:{body}`, or just the body.
+- Stripe, Paddle, and Lemon Squeezy encode the digest as **hex**; Polar and Dodo Payments encode it as **base64**.
+- Polar and Dodo look identical on the wire and still need different HMAC keys — Polar uses the secret verbatim, Dodo base64-decodes it.
+- Compare in constant time, enforce a timestamp tolerance, and dedupe deliveries — providers retry for days.
+
+## Why must webhook signatures be verified against the raw body?
+
+Because the signature covers the exact bytes the provider transmitted. Parsing JSON and re-serializing it
+changes key order, whitespace, and number formatting — the payload stays semantically identical and the
+digest no longer matches.
+
+This is the single most common cause of "my signature never validates". Read the body once, as text, and
+pass that same string everywhere:
+
+```ts
+const body = await request.text(); // once, as text
+await verifyWebhook({ headers: request.headers, body, secret });
+await parseWebhookEvent({ headers: request.headers, body });
+```
+
+In Express, mount `express.raw({ type: '*/*' })` on the webhook route specifically — a global
+`express.json()` will have already destroyed the bytes by the time your handler runs. In Next.js route
+handlers, Remix, Hono, and Cloudflare Workers you get a Web-standard `Request`, so `await request.text()`
+is all you need.
+
+## What signature scheme does each billing provider use?
+
+All five use HMAC-SHA256, and that is where the similarity ends:
+
+| Provider          | Header(s)                                    | Signed payload           | HMAC key                                | Encoding |
+| ----------------- | -------------------------------------------- | ------------------------ | --------------------------------------- | -------- |
+| **Polar**         | `webhook-id`, `webhook-timestamp`, `webhook-signature` | `{id}.{ts}.{body}` | Secret **verbatim**, incl. `whsec_`     | base64   |
+| **Dodo Payments** | `webhook-id`, `webhook-timestamp`, `webhook-signature` | `{id}.{ts}.{body}` | Strip `whsec_`, then **base64-decode**  | base64   |
+| **Stripe**        | `stripe-signature` (`t=…,v1=…`)              | `{t}.{body}`             | Secret verbatim, incl. `whsec_`         | hex      |
+| **Paddle**        | `paddle-signature` (`ts=…;h1=…`)             | `{ts}:{body}`            | Secret verbatim                         | hex      |
+| **Lemon Squeezy** | `x-signature`                                | Body only, no timestamp  | Secret verbatim                         | hex      |
+
+Four details in that table are easy to miss and each one causes a total verification failure:
+
+1. **Stripe's separator is `.`, Paddle's is `:`.** Same idea, different byte.
+2. **Stripe headers can carry several signatures.** Accept the delivery if *any* `v1=` part matches, and ignore `v0=` parts entirely — those belong to Stripe's Connect/thin-payload scheme.
+3. **Lemon Squeezy signs no timestamp**, so there is nothing to check a replay window against. Dedupe is your only replay defense there.
+4. **Polar and Dodo Payments both implement [Standard Webhooks](https://www.standardwebhooks.com/)** and still derive the key differently. Polar's own SDK base64-encodes the raw secret before handing it to the shared library, which cancels out to "use it verbatim"; Dodo relies on the library's strict behavior, which strips the prefix and base64-decodes.
+
+## How do you verify a webhook signature in TypeScript?
+
+The manual version is roughly forty lines per provider of `crypto.subtle` work, timestamp parsing, and
+constant-time comparison. [`revenue-sdk`](/docs/quickstart) ships it as two standalone functions per
+provider subpath — no client instance, no configuration:
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/stripe';
+
+export async function POST(request: Request): Promise<Response> {
+  const headers = request.headers;
+  const body = await request.text();
+
+  const valid = await verifyWebhook({
+    headers,
+    body,
+    secret: process.env.STRIPE_WEBHOOK_SECRET!,
+  });
+  if (!valid) {
+    return new Response('invalid signature', { status: 401 });
+  }
+
+  const event = await parseWebhookEvent({ headers, body });
+  switch (event.type) {
+    case 'subscription.created':
+    case 'subscription.updated':
+      await upsertSubscription(event.subscription!);
+      break;
+    case 'subscription.canceled':
+      await revokeAccess(event.subscription!);
+      break;
+    case 'order.paid':
+      await recordPayment(event.order!);
+      break;
+  }
+
+  return new Response(null, { status: 204 });
+}
+```
+
+Swapping providers is an import change — `revenue-sdk/polar`, `revenue-sdk/lemon-squeezy`,
+`revenue-sdk/paddle`, or `revenue-sdk/dodo-payments` — and the handler body stays as it is.
+
+`verifyWebhook` **returns `false` rather than throwing** for a missing header, a stale timestamp, a
+malformed secret, or a mismatched digest, so there is no error type to discriminate. It also accepts
+`{ request, secret }` directly if you would rather not read the body yourself.
+
+## Verify first, then parse
+
+Always in that order. `parseWebhookEvent` performs no verification whatsoever — it will happily normalize
+a forged payload, because parsing and authentication are deliberately separate concerns. A handler that
+parses first and verifies later has already trusted attacker-controlled input.
+
+The normalized event carries `type` (one of `subscription.created`, `subscription.updated`,
+`subscription.canceled`, `order.paid`, `checkout.completed`, or `unknown`), `providerType` with the
+provider's original string, and `raw` with the untouched envelope. Unrecognized provider events come back
+as `unknown` instead of throwing, which matters because every provider adds event types over time. The
+full mapping is in [Webhook events](/docs/reference/webhook-events).
+
+## How do you handle all five providers on one endpoint?
+
+Route on the headers first, then verify with that provider's secret. `revenue-sdk` exports
+`detectWebhookProvider` for the routing step:
+
+```ts
+import { detectWebhookProvider } from 'revenue-sdk';
+import * as stripeWebhooks from 'revenue-sdk/stripe';
+import * as polarWebhooks from 'revenue-sdk/polar';
+
+export async function POST(request: Request): Promise<Response> {
+  const headers = request.headers;
+  const body = await request.text();
+
+  const provider = await detectWebhookProvider({ headers, body });
+  const handler = provider === 'stripe' ? stripeWebhooks : provider === 'polar' ? polarWebhooks : null;
+  if (!handler) {
+    return new Response('unknown provider', { status: 400 });
+  }
+
+  if (!(await handler.verifyWebhook({ headers, body, secret: secretFor(provider) }))) {
+    return new Response('invalid signature', { status: 401 });
+  }
+
+  const event = await handler.parseWebhookEvent({ headers, body });
+  // ...
+  return new Response(null, { status: 204 });
+}
+```
+
+:::warning
+`detectWebhookProvider` is **routing only, never authentication**. It reads unauthenticated headers, so
+an attacker fully controls which branch you take. Its job is to pick the right secret; the signature
+check is what makes the payload trustworthy.
+:::
+
+Detection is header-based, with one wrinkle: Polar and Dodo Payments send the same Standard Webhooks
+headers, so they are told apart by the `business_id` field that only Dodo payloads carry.
+
+## What else does a production webhook endpoint need?
+
+Verification is necessary but not sufficient. Three more things separate a demo handler from a
+production one:
+
+- **A replay window.** `revenue-sdk` rejects deliveries whose timestamp is more than 300 seconds from now, in either direction, for Stripe, Polar, Paddle, and Dodo Payments. (Paddle's own SDKs default to 5 seconds, which is hostile to legitimate retries.) Lemon Squeezy sends no timestamp, so no window can be enforced.
+- **Idempotency.** Providers retry deliveries, sometimes for days, and a `500` from your handler guarantees a repeat. Store the delivery ID with a TTL and drop repeats: `webhook-id` on Polar and Dodo, `id` on the Stripe envelope, `event_id` on the Paddle envelope. Lemon Squeezy has no delivery ID — derive one from the event type, resource ID, and the resource's `updated_at`.
+- **A fast `2xx`.** Acknowledge first, do slow work asynchronously. Providers time out and retry, which turns a slow handler into a duplicate-processing problem.
+
+The full walkthrough — verify, dedupe, persist, acknowledge — is in the
+[production webhook handler guide](/docs/guides/webhook-handler). If you are deploying to the edge, the
+[Cloudflare Workers guide](/docs/guides/cloudflare-workers) covers doing this without `nodejs_compat`,
+since `crypto.subtle` is available natively there.
+
+## Frequently asked questions
+
+### Why does my webhook signature verification always fail?
+
+In the overwhelming majority of cases, something re-serialized the body before verification — a JSON
+body-parser, a framework middleware, or a proxy. Verify against the exact bytes received by reading
+`await request.text()` once and passing that string to the verifier. The second most common cause is
+using the wrong secret: the endpoint signing secret is not the API key.
+
+### Can I use the same webhook verification code for Polar and Dodo Payments?
+
+No, not without a change to the key derivation. Both send Standard Webhooks headers and sign
+`{id}.{timestamp}.{body}`, but Polar uses the signing secret verbatim including its `whsec_` prefix,
+while Dodo Payments strips the prefix and base64-decodes the remainder into raw key bytes.
+
+### Does Lemon Squeezy sign a timestamp?
+
+No. Lemon Squeezy's `x-signature` header is a hex HMAC-SHA256 of the request body alone, with no
+timestamp component, so a replay window cannot be enforced. Deduplicating deliveries is the only
+protection against replays there.
+
+### How long should the webhook timestamp tolerance be?
+
+300 seconds is a good default and is what `revenue-sdk` uses. Much shorter windows reject legitimate
+retries and deliveries that arrive during a deploy or a cold start; much longer windows widen the replay
+opportunity for a captured request.
+
+### Do I need Node.js crypto to verify billing webhooks?
+
+No. HMAC-SHA256 verification only needs Web Crypto (`crypto.subtle`), which is available in Node.js 22+,
+Cloudflare Workers, Deno, and Bun. `revenue-sdk` uses Web Crypto exclusively, so webhook verification
+runs on Workers without the `nodejs_compat` flag.
+
+## Keep reading
+
+- [Stripe vs Polar vs Lemon Squeezy vs Paddle vs Dodo: How Their Billing APIs Differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences) — the rest of the API surface.
+- [How to Normalize Subscription Status Across Billing Providers](/blog/normalize-subscription-status-across-providers) — what to do with the events once they are verified.
+- [Webhooks](/docs/concepts/webhooks) — the verify-then-parse pattern in full.
+- [Webhook events](/docs/reference/webhook-events) — every provider event and what it normalizes to.

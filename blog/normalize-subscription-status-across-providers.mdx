@@ -1,0 +1,221 @@
+---
+title: 'How to Normalize Subscription Status Across Billing Providers'
+description: 'Why "canceled" means different things on Stripe, Polar, Lemon Squeezy, Paddle, and Dodo — and how to write one entitlement check correct on all five.'
+type: blog
+date: 2026-07-29
+seo:
+  title: 'Normalize Subscription Status Across Providers'
+---
+
+Subscription status is the field most likely to cost you money when it is wrong. Get it right and
+entitlement is a one-line check. Get it wrong in the obvious way — treating every `cancelled` as "access
+revoked" — and you cut off customers who have already paid through the end of their billing period.
+
+The trap is that Stripe, Polar, Lemon Squeezy, Paddle, and Dodo Payments all use ordinary English words
+for subtly different states, and no two of them agree on the set. This article explains what each status
+actually means, the one distinction that matters most, and how to collapse all of them into a single
+model you can safely branch on.
+
+**The short version:**
+
+- A subscription that is **scheduled to cancel** is not a canceled subscription — it is an active, paid subscription with an end date.
+- Lemon Squeezy's `cancelled` status is the classic bug: it means "still entitled until `ends_at`", not "over".
+- Model this as two fields: a status enum where `canceled` is **terminal only**, plus a separate `cancelAtPeriodEnd` boolean.
+- Detecting a scheduled cancellation takes a different field on each provider, and on Stripe it takes two.
+- Grant access for `active` and `trialing`; decide deliberately about `past_due` and `paused`.
+
+## Why is subscription status so hard to normalize?
+
+Because the same word encodes different lifecycle positions on different providers. Stripe exposes eight
+statuses, Paddle five, Dodo Payments six, and Lemon Squeezy seven — and they overlap only partially.
+
+The specific collisions that cause bugs:
+
+- **Lemon Squeezy `cancelled`** means the customer has turned off renewal but remains fully entitled until `ends_at`. Their terminal state is called `expired`.
+- **Stripe `canceled`** is terminal — access is over. A Stripe subscription scheduled to end later still reads `active`.
+- **Polar `canceled`** is also non-terminal in its webhook vocabulary: Polar emits `subscription.canceled` when a cancellation is *scheduled*, and `subscription.revoked` when it actually ends.
+- **Dodo Payments `on_hold`** is a payment-failure state equivalent to `past_due` elsewhere, and its `cancelled` is terminal.
+- **Paddle** has no `unpaid` and no `incomplete` at all; failed payments live in `past_due` and a `scheduled_change` object carries pending cancellations.
+
+Port an entitlement check from one provider to another without re-reading the status docs and you will
+ship one of these.
+
+## What does a normalized subscription status model look like?
+
+A model that works across all five needs two things: a status enum where cancellation is unambiguous,
+and a separate flag for a *pending* cancellation. `revenue-sdk` uses this union:
+
+```ts
+type SubscriptionStatus =
+  | 'incomplete'
+  | 'trialing'
+  | 'active'
+  | 'past_due'
+  | 'unpaid'
+  | 'paused'
+  | 'canceled';
+```
+
+The rule that makes it usable: **`canceled` is terminal only.** A subscription that will end at the
+period boundary keeps whatever status it has — usually `active` — and sets `cancelAtPeriodEnd: true` plus
+an `endsAt` date. There is exactly one place in your code that needs to know the difference, and it is
+not your entitlement check.
+
+Here is how the five providers map onto that union:
+
+| Unified      | Stripe                           | Polar                            | Lemon Squeezy          | Paddle     | Dodo Payments                    |
+| ------------ | -------------------------------- | -------------------------------- | ---------------------- | ---------- | -------------------------------- |
+| `incomplete` | `incomplete`                     | `incomplete`                     | —                      | —          | `pending`                        |
+| `trialing`   | `trialing`                       | `trialing`                       | `on_trial`             | `trialing` | —                                |
+| `active`     | `active`                         | `active`                         | `active`, `cancelled`¹ | `active`   | `active`                         |
+| `past_due`   | `past_due`                       | `past_due`                       | `past_due`             | `past_due` | `on_hold`                        |
+| `unpaid`     | `unpaid`                         | `unpaid`                         | `unpaid`               | —          | —                                |
+| `paused`     | `paused`                         | `paused`                         | `paused`               | `paused`   | —                                |
+| `canceled`   | `canceled`, `incomplete_expired` | `canceled`, `incomplete_expired` | `expired`              | `canceled` | `cancelled`, `failed`, `expired` |
+
+<small>¹ Lemon Squeezy's `cancelled` maps to `active` with `cancelAtPeriodEnd: true` — the customer paid
+for the current period and keeps access until `ends_at`.</small>
+
+The complete reference, including the date fields and checkout status, is in
+[Status mapping](/docs/reference/status-mapping).
+
+## How do you detect a scheduled cancellation on each provider?
+
+Every provider signals it differently, and one of them needs two fields checked:
+
+| Provider          | Scheduled-cancellation signal                              |
+| ----------------- | ---------------------------------------------------------- |
+| **Stripe**        | `cancel_at_period_end === true` **or** `cancel_at !== null` |
+| **Polar**         | `cancel_at_period_end`                                      |
+| **Lemon Squeezy** | Status is `cancelled`                                       |
+| **Paddle**        | `scheduled_change?.action === 'cancel'`                     |
+| **Dodo Payments** | `cancel_at_next_billing_date`                               |
+
+Stripe's two-field rule is a genuine production trap. Under flexible billing mode — now the default —
+a cancellation made through the customer portal sets `cancel_at` to a timestamp and leaves
+`cancel_at_period_end` as `false`. Code that checks only `cancel_at_period_end` sees a perfectly normal
+active subscription and never learns it is ending, so the customer keeps access after they have stopped
+paying, and no "your subscription is ending" email ever goes out.
+
+Normalized, all five collapse into one boolean:
+
+```ts
+const subscription = await client.subscriptions.get({ id });
+
+if (subscription.cancelAtPeriodEnd) {
+  // Still entitled. Show "ends on <date>" and offer to resume.
+  console.log(subscription.endsAt);
+}
+```
+
+## How do you write one entitlement check for all five providers?
+
+Once status is normalized, entitlement is a set membership test — and the interesting part is which
+statuses you choose to include:
+
+```ts
+import type { Subscription } from 'revenue-sdk';
+
+const ENTITLED: ReadonlySet<Subscription['status']> = new Set(['active', 'trialing']);
+
+export function hasAccess(subscription: Subscription): boolean {
+  return ENTITLED.has(subscription.status);
+}
+```
+
+Note what is *not* in the check: `cancelAtPeriodEnd`. A subscription scheduled to cancel is still paid
+for, so it must not affect access — it affects your messaging. That separation is the entire point of
+splitting the two fields.
+
+The judgment calls are the remaining statuses:
+
+- **`past_due`** — the renewal payment failed and the provider is retrying. Most SaaS products keep access during dunning, because revoking it converts a recoverable card failure into a churned customer. Add `'past_due'` to the set if that is your policy.
+- **`unpaid`** — dunning has been exhausted. Almost always revoke.
+- **`paused`** — deliberate, and the semantics are yours to define; usually revoke, since the customer is not being billed.
+- **`incomplete`** — the first payment never completed. Never grant access.
+
+Whatever you choose, put it in one place. The failure mode is not picking the wrong policy — it is
+picking three different policies in three files.
+
+## When should you read status from webhooks versus the API?
+
+Read it from webhooks, and use the API to reconcile. The webhook is the only signal that arrives when
+state changes without a request from you, which covers renewals, dunning, expiries, and portal-initiated
+cancellations — most of the interesting transitions.
+
+Normalized events make this uniform. `parseWebhookEvent` returns `subscription.created`,
+`subscription.updated`, `subscription.canceled`, `order.paid`, or `checkout.completed`, each carrying an
+already-normalized `Subscription`:
+
+```ts
+import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/polar';
+
+const event = await parseWebhookEvent({ headers, body });
+if (event.subscription) {
+  await upsert({
+    id: event.subscription.id,
+    status: event.subscription.status,
+    cancelAtPeriodEnd: event.subscription.cancelAtPeriodEnd,
+    endsAt: event.subscription.endsAt,
+  });
+}
+```
+
+This is where Polar's vocabulary pays off for normalization: its `subscription.canceled` event (a
+*scheduled* cancellation) maps to `subscription.updated`, while `subscription.revoked` maps to
+`subscription.canceled`. Your handler sees the terminal event only when access should actually end. The
+full event mapping is in [Webhook events](/docs/reference/webhook-events), and verifying deliveries
+correctly is covered in
+[how to verify webhook signatures across all five providers](/blog/verify-billing-webhook-signatures).
+
+Reconcile periodically anyway — deliveries get lost, endpoints get misconfigured, and a nightly sweep
+over `client.subscriptions.listAll()` costs little:
+
+```ts
+for await (const subscription of client.subscriptions.listAll()) {
+  await reconcile(subscription);
+}
+```
+
+On Stripe, note that `GET /v1/subscriptions` hides canceled subscriptions unless you ask for them —
+`revenue-sdk` passes `status=all` so a reconciliation sweep does not silently miss terminal states.
+
+## Frequently asked questions
+
+### Does a canceled subscription mean the customer loses access immediately?
+
+Not usually. On most providers a cancellation is *scheduled*: the customer keeps access until the end of
+the paid period. Only a terminal cancellation — Stripe `canceled`, Lemon Squeezy `expired`, Polar
+`revoked`, Paddle `canceled`, Dodo `cancelled` — means access should end now. Immediate termination is a
+separate operation, exposed as `subscriptions.revoke`.
+
+### What does Lemon Squeezy's "cancelled" status actually mean?
+
+It means renewal is turned off but the subscription is still paid and active until `ends_at`, and it can
+be resumed before then. Lemon Squeezy's terminal status is `expired`. Mapping `cancelled` to "no access"
+is one of the most common billing bugs in Lemon Squeezy integrations.
+
+### Should past_due subscriptions keep access?
+
+Most SaaS products keep access during `past_due` because the provider is still retrying the payment and
+many failures are recoverable card issues. Revoke at `unpaid`, when dunning has been exhausted. The right
+answer depends on your abuse exposure — a high-cost API product may revoke sooner.
+
+### Why does my Stripe subscription show cancel_at_period_end as false when the customer canceled?
+
+Because Stripe's flexible billing mode records portal cancellations in `cancel_at` while leaving
+`cancel_at_period_end` at `false`. Check both fields — `cancel_at_period_end === true || cancel_at !== null`
+— to detect every scheduled cancellation.
+
+### How do I show "your subscription ends on X" reliably?
+
+Use the normalized `endsAt` field, which is populated for a scheduled cancellation and for grace periods.
+Do not derive the date from `currentPeriodEnd` alone: a cancellation set for a specific future date can
+fall outside the current period.
+
+## Keep reading
+
+- [Subscription lifecycle](/docs/concepts/subscription-lifecycle) — the conceptual model behind the union.
+- [Managing subscriptions](/docs/guides/subscription-management) — cancel, uncancel, change plan, and revoke in practice.
+- [Stripe vs Polar vs Lemon Squeezy vs Paddle vs Dodo: How Their Billing APIs Differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences) — the other places the five APIs diverge.
+- [Stripe SDK Alternatives for Multi-Provider Billing](/blog/stripe-sdk-alternatives-multi-provider-billing) — whether a unified layer is worth adopting.

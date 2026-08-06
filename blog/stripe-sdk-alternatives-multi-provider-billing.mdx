@@ -1,0 +1,209 @@
+---
+title: 'Stripe SDK Alternatives for Multi-Provider Billing'
+description: 'How the official Stripe SDK, per-provider SDKs, and a unified SDK compare when one app must support Stripe, Polar, Lemon Squeezy, Paddle, and Dodo.'
+type: blog
+date: 2026-08-06
+seo:
+  title: 'Stripe SDK Alternatives for Multi-Provider Billing'
+---
+
+If Stripe is your only payment provider, the official `stripe` package is the right tool and this
+article will not talk you out of it. The problem starts when the same product also has to sell through
+Polar, Lemon Squeezy, Paddle, or Dodo Payments — and you discover the Stripe SDK only speaks Stripe.
+From there you either wire up one SDK per provider and maintain five clients, or you adopt a unified
+layer that normalizes all five behind one API.
+
+**The short version:**
+
+- The official Stripe SDK is excellent, but it is single-provider by design — there is no Stripe client that talks to Paddle.
+- Running five provider SDKs side by side means five auth models, five pagination styles, five error shapes, five status vocabularies, and five webhook signature schemes.
+- A unified SDK such as [`revenue-sdk`](/docs/quickstart) collapses that glue into one normalized contract; swapping providers becomes a one-line change.
+- The tradeoff is coverage: a unified layer exposes the intersection of what all providers do, plus explicit `unsupported` errors where they genuinely differ.
+
+## Why would you need an alternative to the Stripe SDK?
+
+You need an alternative when a second provider enters the picture — which happens more often than teams
+expect. Three common triggers:
+
+- **You want a merchant of record.** Stripe is a payment processor; you remain the seller and owe sales
+  tax, VAT, and GST compliance. Polar, Lemon Squeezy, Paddle, and Dodo Payments act as merchant of record
+  and take on that liability. Many teams add one alongside Stripe rather than migrating.
+- **Stripe is unavailable in your market.** Stripe does not support every country for payouts, so
+  developer-tool companies routinely start on an MoR and add Stripe later.
+- **You are building a platform or template.** If your customers bring their own billing account, you do
+  not get to choose the provider — you have to support several.
+
+In all three cases the code that changes is not the business logic; it is the transport layer underneath.
+
+## What does the official Stripe SDK do well?
+
+The `stripe` npm package tracks Stripe's API closely and is one of the best-maintained SDKs in the
+payments space. It covers the whole surface — not just subscriptions but Connect, Terminal, Issuing,
+Tax, Radar, and Billing Meters. It pins API versions explicitly, ships accurate TypeScript types, and has
+first-class idempotency-key support and automatic retries.
+
+That depth is the point: if you need Stripe Connect payouts or usage-based billing meters, no unified
+abstraction will match a dedicated SDK, and you should use the dedicated SDK.
+
+## What does the per-provider SDK landscape look like?
+
+Each billing provider ships its own client, and the five do not share a shape:
+
+| Provider          | Official SDK                    | Wire format                       |
+| ----------------- | ------------------------------- | --------------------------------- |
+| **Stripe**        | `stripe`                        | Form-encoded, bracket notation    |
+| **Polar**         | `@polar-sh/sdk`                 | JSON                              |
+| **Lemon Squeezy** | `@lemonsqueezy/lemonsqueezy.js` | JSON:API (`application/vnd.api+json`) |
+| **Paddle**        | `@paddle/paddle-node-sdk`       | JSON, string-typed amounts        |
+| **Dodo Payments** | `dodopayments`                  | JSON                              |
+
+Each is a reasonable choice on its own. The difficulty is not any single library — it is that they were
+designed independently, so covering five providers means learning and maintaining five unrelated
+clients. The APIs underneath diverge just as much;
+[how the Stripe, Polar, Lemon Squeezy, Paddle, and Dodo Payments APIs differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences)
+walks through where.
+
+## What does maintaining five billing SDKs actually cost?
+
+The cost is not the five `npm install` lines. It is the glue between them, and it lands in five places:
+
+- **Five authentication models.** Stripe secret keys, Polar organization access tokens, Lemon Squeezy API
+  keys, Paddle API keys, and Dodo API keys all differ in shape and in how sandbox is selected — Polar,
+  Paddle, and Dodo use separate hosts, Stripe uses a key prefix, and Lemon Squeezy makes test mode a
+  property of the key.
+- **Five pagination styles.** Stripe cursors, Polar and Lemon Squeezy page numbers, Paddle URL-carrying
+  next links, and Dodo's zero-based `page_number` with no `has_more` field. Each needs bespoke loop code,
+  and the bugs live in the termination conditions.
+- **Five error shapes.** One SDK throws typed errors, another returns a result object, a third rejects
+  with a differently shaped body. Writing one "should I retry this?" branch that works everywhere means
+  normalizing all five by hand.
+- **Five status vocabularies.** This is the expensive one. Lemon Squeezy's `cancelled` means "still
+  entitled until `ends_at`", while Stripe's `canceled` is terminal. Treating them the same revokes access
+  from paying customers.
+- **Five webhook schemes.** Three signature algorithms and two encodings across five providers, each with
+  its own header names and its own replay-window semantics.
+
+That glue is code you write, test, and own forever — and it is where multi-provider billing quietly rots.
+
+## Where does a unified SDK like revenue-sdk fit?
+
+A unified SDK collapses that glue into one normalized contract. [`revenue-sdk`](/docs/quickstart) is an
+open-source, zero-dependency TypeScript SDK that gives you a single API over Stripe, Polar, Lemon
+Squeezy, Paddle, and Dodo Payments. You write your products, checkout, subscription, portal, and webhook
+logic once, and switching providers means swapping one argument:
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { stripe } from 'revenue-sdk/stripe';
+
+const client = createClient({
+  provider: stripe({ secretKey: process.env.STRIPE_SECRET_KEY! }),
+});
+
+const checkout = await client.checkouts.create({
+  items: [{ product: 'price_123' }],
+  customerEmail: 'ada@example.com',
+  successUrl: 'https://example.com/thanks',
+});
+console.log(checkout.url);
+```
+
+Point the same code at Polar by changing only the provider factory:
+
+```ts
+import { polar } from 'revenue-sdk/polar';
+
+const client = createClient({
+  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
+});
+```
+
+The five cost centers above become one each:
+
+- **Authentication** is one options object per factory.
+- **Pagination** is `listAll` async generators that follow the provider's cursor for you — see [Pagination](/docs/concepts/pagination).
+- **Errors** are a single [`RevenueError`](/docs/concepts/errors) with a closed `code` union — `unauthorized`, `not_found`, `rate_limited`, `payment_required`, `unsupported`, and so on — plus `retryable` and `retryAfter` hints:
+
+```ts
+import { RevenueError } from 'revenue-sdk';
+
+try {
+  await client.subscriptions.get({ id: subscriptionId });
+} catch (error) {
+  if (error instanceof RevenueError && error.code === 'rate_limited') {
+    // back off using error.retryAfter
+  }
+}
+```
+
+- **Subscription status** is one seven-value union with `cancelAtPeriodEnd` broken out as its own boolean, documented in [Status mapping](/docs/reference/status-mapping).
+- **Webhooks** are standalone `verifyWebhook` / `parseWebhookEvent` exports per provider that take a Web-standard `Request` and need no client instance — see [Webhooks](/docs/concepts/webhooks).
+
+`RevenueError` also redacts known secrets from its message before construction, so an API key never
+lands in your logs. Because the SDK is built on `fetch` and Web Crypto with zero runtime dependencies, it
+runs on Node.js 22+, Cloudflare Workers **without** `nodejs_compat`, Deno, and Bun — see the
+[Cloudflare Workers guide](/docs/guides/cloudflare-workers).
+
+## Where does a unified SDK get in your way?
+
+It is worth being blunt about the limits, because an abstraction that hides them is worse than no
+abstraction:
+
+- **The surface is the useful intersection, not the union.** `revenue-sdk` covers products, checkouts, customers, subscriptions, the customer portal, and webhooks. Stripe Connect, Terminal, Issuing, and Tax are out of scope by design.
+- **Provider gaps are real and surfaced, not smoothed over.** Paddle has no API-hosted checkout, so `capabilities.hostedCheckout` is `false` and you render the Paddle.js overlay yourself. Dodo Payments has no end-trial operation. Lemon Squeezy cannot filter subscriptions by customer ID. The client throws `unsupported` instead of silently doing something else — read them at runtime from `client.capabilities`, or up front in the [capability matrix](/docs/reference/capability-matrix).
+- **Every model keeps `raw`.** When you do need a provider-specific field, it is one property away rather than a fork.
+- **It is `0.x`.** The API may change between minor releases.
+
+## Stripe SDK vs per-provider SDKs vs a unified SDK
+
+| | **Official Stripe SDK** | **Five provider SDKs** | **Unified SDK** |
+| --- | --- | --- | --- |
+| Providers covered | Stripe only | All five | All five |
+| API surface depth | Complete | Complete per provider | Core billing surface |
+| Glue code you own | None | Auth, pagination, errors, status, webhooks | None |
+| Adding a provider | Not possible | New client + new mappings | One-line factory swap |
+| Bundle cost | One SDK | Five SDKs | Zero dependencies, per-provider subpaths |
+| Edge runtime support | Good | Varies per SDK | Web-standard APIs only |
+
+The honest rule of thumb: **one provider, ever → use its official SDK. Two or more providers, core
+billing operations → use a unified SDK. Deep provider-specific features → use both**, with the unified
+client for the shared 90% and the native SDK where you need the rest.
+
+## Frequently asked questions
+
+### Is there an official Stripe SDK that supports other payment providers?
+
+No. The `stripe` npm package is maintained by Stripe and targets the Stripe API exclusively. Supporting
+another provider requires either that provider's own SDK or a third-party unified layer such as
+`revenue-sdk`.
+
+### Can I use revenue-sdk alongside the official Stripe SDK?
+
+Yes. They are independent packages and can share the same secret key. A common pattern is to use the
+unified client for products, checkouts, subscriptions, and webhooks, and drop to the native Stripe SDK
+for Stripe-only features like Connect or Tax.
+
+### Does a unified billing SDK work on Cloudflare Workers?
+
+`revenue-sdk` does. It has zero runtime dependencies and uses only Web-standard APIs — `fetch`,
+`crypto.subtle`, `TextEncoder`, `URL` — so it runs on Cloudflare Workers without the `nodejs_compat`
+flag, as well as on Deno, Bun, and Node.js 22+. Node-oriented SDKs that import `node:crypto` typically
+need the compatibility flag.
+
+### How do I handle features one provider supports and another does not?
+
+Read them as data before you offer them. Every client exposes `client.capabilities`, a plain object of
+booleans and arrays, so you can branch in your UI. When you call an unsupported operation anyway, the
+client throws a `RevenueError` with code `unsupported` rather than silently doing something different.
+
+### What happens to provider-specific fields under a normalized model?
+
+Every normalized model — `Product`, `Price`, `Checkout`, `Customer`, `Subscription`, `Order` — carries a
+`raw` property holding the untouched provider payload, so nothing the API returns is out of reach.
+
+## Keep reading
+
+- [Stripe vs Polar vs Lemon Squeezy vs Paddle vs Dodo: How Their Billing APIs Differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences) — the field guide to all five APIs.
+- [How to Normalize Subscription Status Across Billing Providers](/blog/normalize-subscription-status-across-providers) — one entitlement check for five providers.
+- [How to Verify Webhook Signatures from Stripe, Polar, Lemon Squeezy, Paddle, and Dodo Payments](/blog/verify-billing-webhook-signatures) — all five schemes with working code.
+- [Client and providers](/docs/concepts/client-and-providers) — how the thin adapters and fat client fit together.

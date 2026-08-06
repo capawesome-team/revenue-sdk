@@ -57,6 +57,10 @@ A dash means the provider has no equivalent state. **Any unrecognized provider s
 On Stripe and Dodo Payments, `cancelAtPeriodEnd` is normalized back to `false` when the subscription is
 terminally `canceled` — there is nothing left to schedule.
 
+Each of these rules exists because a provider encodes the schedule somewhere different;
+[normalizing subscription status across billing providers](/blog/normalize-subscription-status-across-providers)
+covers the entitlement bugs they cause when handled per provider.
+
 ## Date fields
 
 | Field                | Polar                  | Lemon Squeezy                 | Stripe                              | Paddle                                | Dodo Payments                             |

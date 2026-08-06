@@ -86,6 +86,9 @@ cancellation made through the **customer portal** sets only `cancel_at` and leav
 Once a subscription is terminally `canceled`, `cancelAtPeriodEnd` is forced back to `false` — there is
 nothing left to schedule.
 
+For the reasoning behind this split, and the entitlement bugs it prevents, see
+[how to normalize subscription status across billing providers](/blog/normalize-subscription-status-across-providers).
+
 ## A lifecycle timeline
 
 <Steps>

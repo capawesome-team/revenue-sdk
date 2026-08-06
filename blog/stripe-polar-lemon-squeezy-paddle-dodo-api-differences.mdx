@@ -1,0 +1,269 @@
+---
+title: 'Stripe vs Polar vs Lemon Squeezy vs Paddle vs Dodo: How Their Billing APIs Differ'
+description: 'A field guide to five billing APIs — authentication, request encoding, money, product models, pagination, subscription status, checkout, and webhook signatures.'
+type: blog
+date: 2026-08-04
+seo:
+  title: 'Stripe vs Polar vs Lemon Squeezy vs Paddle vs Dodo'
+---
+
+Supporting one billing provider is a weekend. Supporting five is a product decision, because the five
+APIs agree on almost nothing below the surface. They disagree on how you authenticate, how you encode a
+request body, what a "product" is, how amounts are typed, how pages are walked, what a canceled
+subscription means, and how a webhook is signed.
+
+This is a walkthrough of where [Stripe](/docs/providers/stripe), [Polar](/docs/providers/polar),
+[Lemon Squeezy](/docs/providers/lemon-squeezy), [Paddle](/docs/providers/paddle), and
+[Dodo Payments](/docs/providers/dodo-payments) actually diverge — the differences that cost you time,
+not the ones in the marketing pages.
+
+**The short version:**
+
+- **Wire format** — Stripe is form-encoded with bracket notation, Lemon Squeezy is JSON:API, the other three are plain JSON.
+- **Money** — everyone uses integer minor units except Paddle, which sends amounts as **strings**.
+- **Products** — Stripe and Paddle check out with a price ID; Polar and Dodo Payments with a product ID; Lemon Squeezy with a **variant** ID.
+- **Pagination** — cursors (Stripe), page numbers (Polar, Lemon Squeezy), URL links (Paddle), and zero-based pages with no `has_more` (Dodo).
+- **Status** — Lemon Squeezy's `cancelled` still means entitled; Stripe's `canceled` is terminal.
+- **Checkout** — four providers return a hosted URL; Paddle has no API-hosted checkout at all.
+- **Webhooks** — three signature schemes, two encodings, and two providers that look identical but derive the HMAC key differently.
+
+## How does authentication differ?
+
+All five are bearer-token APIs, which makes them look interchangeable until you try to get a token.
+
+| Provider          | Credential                                   | Environment separation                         |
+| ----------------- | -------------------------------------------- | ---------------------------------------------- |
+| **Stripe**        | Secret or restricted key (`sk_…` / `rk_…`)   | Key prefix (`sk_test_` vs `sk_live_`)          |
+| **Polar**         | Organization access token (`polar_oat_…`)    | Separate host — `sandbox-api.polar.sh`         |
+| **Lemon Squeezy** | API key                                      | A property of the key itself (test-mode store) |
+| **Paddle**        | API key                                      | Separate host — `sandbox-api.paddle.com`       |
+| **Dodo Payments** | API key                                      | Separate host — `test.dodopayments.com`        |
+
+The trap is that "sandbox" means something different in each. A Polar production token will not
+authenticate against the sandbox host at all — it is a wholly separate environment with its own
+organization, products, and tokens. Lemon Squeezy has no separate host: whether you are in test mode is
+decided by which key you hold. Stripe encodes it in the key prefix against one host.
+
+The other surprise is failure codes. Four providers answer an invalid credential with `401`. Paddle
+answers with **`403`**, so any "is this an auth problem?" branch written against Stripe silently
+misclassifies Paddle. `revenue-sdk` maps both onto `unauthorized` and `forbidden` in one
+[`RevenueError`](/docs/concepts/errors) code union.
+
+## How do the request bodies differ?
+
+Stripe is the outlier: it takes form-encoded bodies, Lemon Squeezy takes JSON:API, and the remaining
+three take plain JSON. This is the difference that surprises people most, because it is invisible from
+the docs' example snippets:
+
+- **Stripe** takes `application/x-www-form-urlencoded` with bracket notation — `items[0][price]=price_123`.
+  Nested objects and arrays are flattened into keys, booleans are the strings `'true'`/`'false'`, and
+  timestamps are unix seconds.
+- **Lemon Squeezy** speaks [JSON:API](https://jsonapi.org/), with `application/vnd.api+json` required on
+  **every** request including `GET`. Resources are `{ data: { type, id, attributes, relationships } }`.
+- **Polar**, **Paddle**, and **Dodo Payments** take plain JSON.
+
+Two encoding details are worth internalizing. Stripe's arrays need **sequential, explicit indices** —
+skipping one truncates the array server-side. And Lemon Squeezy serializes empty objects as `[]`, so
+`custom: {}` and `billing_address: {}` need to be omitted rather than sent empty.
+
+## How is money represented?
+
+All five APIs express amounts in the currency's smallest unit — cents for USD — but Paddle types those
+integers as **strings** while the other four send numbers:
+
+| Provider          | Amount type       | Example for $19.00 |
+| ----------------- | ----------------- | ------------------ |
+| **Stripe**        | Integer minor units | `1900`           |
+| **Polar**         | Integer minor units | `1900`           |
+| **Lemon Squeezy** | Integer minor units | `1900`           |
+| **Dodo Payments** | Integer minor units | `1900`           |
+| **Paddle**        | **String** integer  | `"1900"`         |
+
+Paddle's string-typed amounts exist to dodge floating-point drift in languages without integer JSON, and
+they are correct — but they mean `amount > 1000` is a string comparison in JavaScript unless you coerce.
+Currency codes also arrive in mixed case across providers. Normalized models keep amounts as `number` in
+minor units and currency as lowercase ISO 4217, always.
+
+## What counts as a "product"?
+
+The purchasable unit is a **price** on Stripe and Paddle, a **product** on Polar and Dodo Payments, and
+a **variant** on Lemon Squeezy. This is the single biggest modelling difference between the five APIs:
+
+- **Stripe** — a `Product` with many `Price` objects; you check out with a **price ID**.
+- **Polar** — a product **is** the purchasable unit; you check out with a **product ID**, and the
+  checkout body takes `products: string[]`.
+- **Lemon Squeezy** — products contain **variants**, and the variant is what is bought. The current price
+  hangs off the variant's `price-model` relationship. (Not `/v1/prices?filter[variant_id]` — that endpoint
+  is append-only price *history*, so the newest row is not reliably the active one.)
+- **Paddle** — products with prices, checked out with a **price ID**.
+- **Dodo Payments** — the product is the purchasable unit, like Polar.
+
+`revenue-sdk` normalizes all five to `Product` + `Price[]` and puts the provider's purchasable identifier
+on a single field, `Price.checkoutRef`, so your checkout code never has to know which of the five models
+it is looking at:
+
+```ts
+const product = await client.products.get({ id: productId });
+const checkout = await client.checkouts.create({
+  items: [{ product: product.prices[0].checkoutRef }],
+  successUrl: 'https://example.com/thanks',
+});
+```
+
+The details of the mapping — including which providers support multiple items and quantities — are in
+[Products and prices](/docs/concepts/products-and-prices).
+
+## How does pagination differ?
+
+Four different schemes across five providers:
+
+| Provider          | Scheme                         | End-of-list signal                     |
+| ----------------- | ------------------------------ | -------------------------------------- |
+| **Stripe**        | Cursor (`starting_after`)      | `has_more: false`                      |
+| **Polar**         | Page number                    | Pagination envelope with `max_page`    |
+| **Lemon Squeezy** | Page number (JSON:API `links`) | Absence of `links.next`                |
+| **Paddle**        | URL-carrying `next` link       | Absence of `meta.pagination.next`      |
+| **Dodo Payments** | Zero-based `page_number`       | **None** — a short page ends the list  |
+
+Dodo is the one that bites: there is no `has_more` and no total, so the only correct termination rule is
+"the returned `items` array was shorter than the requested page size". Getting that wrong gives you
+either an infinite loop or a silently truncated list.
+
+`revenue-sdk` hides all four behind one opaque, provider-tagged cursor plus `listAll` async generators:
+
+```ts
+for await (const subscription of client.subscriptions.listAll()) {
+  console.log(subscription.id, subscription.status);
+}
+```
+
+Cursors that carry a provider URL are checked against the configured API origin before being followed —
+without that guard, a manipulated cursor could redirect an authenticated request to an attacker's host.
+See [Pagination](/docs/concepts/pagination) for the cursor model.
+
+## How does subscription status differ?
+
+The most dangerous divergence, because every provider uses familiar English words for subtly different
+states. Stripe has eight statuses; Paddle has five; Dodo has six with different names; Lemon Squeezy's
+`cancelled` does **not** mean the subscription is over.
+
+That last one is the classic production bug: a Lemon Squeezy subscription with status `cancelled` is
+still fully paid and entitled until `ends_at`. Treat it as terminal and you revoke access from a paying
+customer.
+
+The full table, the unified union, and how a scheduled cancellation is distinguished from a terminal one
+live in [Status mapping](/docs/reference/status-mapping). If you are writing entitlement checks, read
+[How to Normalize Subscription Status Across Billing Providers](/blog/normalize-subscription-status-across-providers)
+first — it walks through the traps one at a time.
+
+## How does hosted checkout differ?
+
+Four of the five return a URL you can redirect to. Paddle does not.
+
+`POST /transactions` on Paddle returns a `checkout.url`, but that URL points at **your own**
+Paddle.js-hosted payment page, on a domain you have registered and had approved. There is no
+Paddle-hosted checkout reachable purely from the server API. This is a real capability gap, not a naming
+difference, and it is exposed as data rather than papered over:
+
+```ts
+if (!client.capabilities.hostedCheckout) {
+  // Paddle: render the Paddle.js overlay instead of redirecting.
+}
+```
+
+The same applies to success redirects: Paddle configures them in Paddle.js, so `successUrl` is a
+capability (`checkoutSuccessUrl`) rather than a universal parameter. See
+[Checkouts](/docs/concepts/checkouts) and the [capability matrix](/docs/reference/capability-matrix).
+
+## How do webhooks differ?
+
+Five providers, three signature schemes, and two encodings:
+
+| Provider          | Header(s)                            | Signed payload     | Output |
+| ----------------- | ------------------------------------ | ------------------ | ------ |
+| **Polar**         | `webhook-id/-timestamp/-signature`   | `{id}.{ts}.{body}` | base64 |
+| **Dodo Payments** | `webhook-id/-timestamp/-signature`   | `{id}.{ts}.{body}` | base64 |
+| **Stripe**        | `stripe-signature`                   | `{t}.{body}`       | hex    |
+| **Paddle**        | `paddle-signature`                   | `{ts}:{body}`      | hex    |
+| **Lemon Squeezy** | `x-signature`                        | body only          | hex    |
+
+Polar and Dodo look identical — both implement Standard Webhooks — and yet the HMAC key is derived
+differently: Polar uses the signing secret verbatim including its `whsec_` prefix, while Dodo strips the
+prefix and base64-decodes the rest into key bytes. Swap them and every signature fails with no useful
+error. That trap, with working code for all five, is covered in
+[How to Verify Webhook Signatures from Stripe, Polar, Lemon Squeezy, Paddle, and Dodo Payments](/blog/verify-billing-webhook-signatures).
+
+Event vocabularies diverge just as much — Polar emits `subscription.canceled` when a cancellation is
+merely *scheduled* and `subscription.revoked` when it is actually over. The normalized event union and
+the full per-provider mapping are in [Webhook events](/docs/reference/webhook-events).
+
+## Writing against all five at once
+
+Every difference above is mechanical, which is exactly why it is worth pushing into a library instead of
+your application. [`revenue-sdk`](/docs/quickstart) is an open-source, zero-dependency TypeScript SDK
+that normalizes all five behind one API — swapping providers means swapping one factory:
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { stripe } from 'revenue-sdk/stripe';
+
+const client = createClient({
+  provider: stripe({ secretKey: process.env.STRIPE_SECRET_KEY! }),
+});
+```
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { polar } from 'revenue-sdk/polar';
+
+const client = createClient({
+  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN!, server: 'sandbox' }),
+});
+```
+
+Everything after that line — `client.products`, `client.checkouts`, `client.subscriptions`,
+`client.customerPortal` — is identical. Where a provider genuinely cannot do something, the client throws
+`unsupported` rather than silently doing something else, and the gaps are readable at runtime from
+`client.capabilities`. See [Client and providers](/docs/concepts/client-and-providers) for how the pieces
+fit together.
+
+## Frequently asked questions
+
+### Which billing provider has the simplest API?
+
+Polar and Dodo Payments have the smallest surface: plain JSON, a product-as-purchasable-unit model, and
+no separate price objects to resolve. Stripe has the largest and most capable API, at the cost of
+form-encoded bodies and a two-level product/price model. Lemon Squeezy's JSON:API envelope is the most
+verbose to consume.
+
+### Which of these providers are merchants of record?
+
+Polar, Lemon Squeezy, Paddle, and Dodo Payments act as merchant of record, meaning they are the legal
+seller and handle sales tax, VAT, and GST. Stripe is a payment processor: you remain the seller of
+record and own the tax compliance, unless you add Stripe Tax and file yourself.
+
+### Why do Polar and Dodo Payments webhooks fail when I reuse the same verification code?
+
+Because the HMAC key is derived differently even though both implement Standard Webhooks. Polar uses the
+signing secret verbatim, including the `whsec_` prefix; Dodo Payments strips the prefix and base64-decodes
+the remainder into key bytes. The signed payload and headers are otherwise identical.
+
+### Can the same checkout code work across all five providers?
+
+Yes, if you normalize the purchasable identifier. `revenue-sdk` exposes it as `Price.checkoutRef`, which
+resolves to a Stripe price ID, a Polar product ID, a Lemon Squeezy variant ID, a Paddle price ID, or a
+Dodo product ID depending on the configured provider. The one genuine exception is Paddle, which has no
+API-hosted checkout and requires a Paddle.js page.
+
+### How do I paginate Dodo Payments correctly?
+
+Request a fixed `page_size`, increment the zero-based `page_number`, and stop when a response returns
+fewer items than the page size. Dodo's list envelope has no `has_more` flag and no total count, so the
+short-page rule is the only reliable termination condition.
+
+## Keep reading
+
+- [Stripe SDK Alternatives for Multi-Provider Billing](/blog/stripe-sdk-alternatives-multi-provider-billing) — when a unified layer is worth it, and when it is not.
+- [How to Normalize Subscription Status Across Billing Providers](/blog/normalize-subscription-status-across-providers) — the entitlement check that works on all five.
+- [How to Use the Polar API from TypeScript](/blog/polar-api-typescript) — one provider end to end.
+- [Quickstart](/docs/quickstart) — client, checkout, webhook, entitlement check in one page.
