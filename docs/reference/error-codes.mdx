@@ -65,7 +65,7 @@ These never touch the network:
 | Code          | Raised by                                                                                                     |
 | ------------- | -------------------------------------------------------------------------------------------------------------- |
 | `validation`  | An empty `id`, `customerId`, `product`, or `items[].product`; an empty `items` array; a `quantity` that isn't a positive integer |
-| `validation`  | An empty `customerId` or `eventName` on `usage.report`, or a usage `value` that isn't a finite number          |
+| `validation`  | An empty `customerId` or `eventName` on `usage.report`, or a usage `value` or numeric `metadata` entry that isn't finite |
 | `validation`  | A malformed pagination cursor, a cursor from another provider, or a cursor URL on a different origin           |
 | `unsupported` | Capability gating — `successUrl`, `returnUrl`, `customerId` on a subscription list, `reason`/`comment`, `uncancel`, `endTrial`, `pause`, `resume`, `revoke`, `usage.report`, a `behavior` outside `capabilities.pauseBehaviors`, and a `prorationBehavior` outside `capabilities.prorationBehaviors` |
 

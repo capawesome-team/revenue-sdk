@@ -116,9 +116,16 @@ export function createClient(options: CreateClientOptions): RevenueClient {
     }
   }
 
-  function checkUsageValue(value: number | undefined): void {
-    if (value !== undefined && !Number.isFinite(value)) {
+  // Any numeric entry can be the billed quantity — meters aggregate on a caller-configured key,
+  // not just `value` — and a non-finite number serializes to `null` or `"NaN"` on the wire.
+  function checkUsagePayload(params: ReportUsageParams): void {
+    if (params.value !== undefined && !Number.isFinite(params.value)) {
       fail('validation', 'The value parameter must be a finite number');
+    }
+    for (const [key, entry] of Object.entries(params.metadata ?? {})) {
+      if (typeof entry === 'number' && !Number.isFinite(entry)) {
+        fail('validation', `The metadata.${key} parameter must be a finite number`);
+      }
     }
   }
 
@@ -290,7 +297,7 @@ export function createClient(options: CreateClientOptions): RevenueClient {
       report: async (params) => {
         requireNonEmpty(params.customerId, 'customerId');
         requireNonEmpty(params.eventName, 'eventName');
-        checkUsageValue(params.value);
+        checkUsagePayload(params);
         if (!provider.capabilities.usageReporting) {
           fail('unsupported', `${provider.name} does not support usage reporting`);
         }

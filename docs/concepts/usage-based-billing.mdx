@@ -57,9 +57,12 @@ It resolves to `void`: providers acknowledge ingestion, they do not hand back a 
   }}
 />
 
-The client rejects an empty `customerId`, an empty `eventName`, and a `value` that isn't a finite number
-with `RevenueError { code: 'validation' }` **before** any request is made. A provider without the
-`usageReporting` capability throws `unsupported`, also pre-flight.
+The client rejects an empty `customerId`, an empty `eventName`, and any non-finite number — whether it
+arrives as `value` or as a numeric `metadata` entry — with `RevenueError { code: 'validation' }`
+**before** any request is made. Every numeric entry is checked, not just `value`, because a meter
+aggregates on a key you configure: a `NaN` under any name is a corrupted billed quantity, and it would
+otherwise reach the provider as `null` or `"NaN"`. A provider without the `usageReporting` capability
+throws `unsupported`, also pre-flight.
 
 :::warning
 An `eventName` no meter is configured for is **not** an error you can catch. The event is accepted and

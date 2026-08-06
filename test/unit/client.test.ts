@@ -119,6 +119,41 @@ describe('createClient', () => {
       expect(reportUsage).not.toHaveBeenCalled();
     });
 
+    it('rejects non-finite usage metadata under any key', async () => {
+      // Meters aggregate on a caller-configured key, so any numeric entry can be the billed
+      // quantity — not just one named `value`.
+      const reportUsage = vi.fn();
+      const client = createClient({ provider: fakeProvider({ reportUsage }) });
+      await expectRevenueError(
+        client.usage.report({
+          customerId: 'c1',
+          eventName: 'api_call',
+          metadata: { value: Number.NaN },
+        }),
+        'validation',
+      );
+      await expectRevenueError(
+        client.usage.report({
+          customerId: 'c1',
+          eventName: 'api_call',
+          metadata: { total_tokens: Number.POSITIVE_INFINITY },
+        }),
+        'validation',
+      );
+      expect(reportUsage).not.toHaveBeenCalled();
+    });
+
+    it('accepts finite and non-numeric usage metadata', async () => {
+      const reportUsage = vi.fn().mockResolvedValue(undefined);
+      const client = createClient({ provider: fakeProvider({ reportUsage }) });
+      await client.usage.report({
+        customerId: 'c1',
+        eventName: 'api_call',
+        metadata: { total_tokens: 0, region: 'eu', premium: true },
+      });
+      expect(reportUsage).toHaveBeenCalledOnce();
+    });
+
     it('rejects an empty plan-change product', async () => {
       const client = createClient({ provider: fakeProvider() });
       await expectRevenueError(

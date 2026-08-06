@@ -80,7 +80,7 @@ Both are frequently raised **before any HTTP request is made**:
 
 - **`validation`** — an empty `id`, an empty `items` array, an empty `items[].product`, a `quantity`
   that isn't a positive integer, an empty `customerId` or `eventName` on `usage.report`, or a usage
-  `value` that isn't a finite number.
+  `value` — or any numeric `metadata` entry — that isn't a finite number.
 - **`unsupported`** — capability gating: `successUrl` on Paddle, `returnUrl` on Lemon Squeezy or
   Paddle, `customerId` on a Lemon Squeezy subscription list, `reason`/`comment` on a provider without
   `cancellationReason`, `uncancel`/`endTrial`/`pause`/`resume`/`revoke` where unsupported, `usage.report`
