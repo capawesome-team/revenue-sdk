@@ -10,6 +10,7 @@ const ALL_CAPABILITIES: RevenueCapabilities = {
   endTrial: true,
   hostedCheckout: true,
   licenseKeys: true,
+  listOrdersByCustomer: true,
   listSubscriptionsByCustomer: true,
   pause: true,
   pauseBehaviors: ['immediately', 'period_end'],
@@ -48,6 +49,9 @@ function fakeProvider(
     revokeSubscription: notImplemented,
     createCustomerPortalSession: notImplemented,
     reportUsage: notImplemented,
+    listOrders: notImplemented,
+    getOrder: notImplemented,
+    getOrderInvoiceUrl: notImplemented,
     listLicenseKeys: notImplemented,
     getLicenseKey: notImplemented,
     updateLicenseKey: notImplemented,
@@ -261,6 +265,32 @@ describe('createClient', () => {
       });
       await client.subscriptions.pause({ id: 's1' });
       expect(pauseSubscription).toHaveBeenCalledOnce();
+    });
+
+    it('rejects customer-filtered order listing when unsupported', async () => {
+      const listOrders = vi.fn();
+      const client = createClient({
+        provider: fakeProvider({ listOrders }, { listOrdersByCustomer: false }),
+      });
+      await expectRevenueError(client.orders.list({ customerId: 'c1' }), 'unsupported');
+      await expectRevenueError(
+        (async () => {
+          for await (const order of client.orders.listAll({ customerId: 'c1' })) {
+            void order;
+          }
+        })(),
+        'unsupported',
+      );
+      expect(listOrders).not.toHaveBeenCalled();
+    });
+
+    it('still lists orders unfiltered when the customer filter is unsupported', async () => {
+      const listOrders = vi.fn().mockResolvedValue({ items: [] });
+      const client = createClient({
+        provider: fakeProvider({ listOrders }, { listOrdersByCustomer: false }),
+      });
+      await client.orders.list();
+      expect(listOrders).toHaveBeenCalledOnce();
     });
 
     it('rejects customer-filtered listing when unsupported', async () => {

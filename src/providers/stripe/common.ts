@@ -3,6 +3,7 @@ import type {
   Checkout,
   Customer,
   Order,
+  OrderStatus,
   Price,
   PriceModel,
   Product,
@@ -84,11 +85,17 @@ export interface StripeSubscription {
 
 export interface StripeInvoice {
   id: string;
+  status?: string | null;
+  created?: number | null;
   amount_paid?: number | null;
   total?: number | null;
   currency?: string | null;
   customer?: string | { id: string } | null;
   customer_email?: string | null;
+  /** Null until the invoice is finalized; expires 30 days after the due date (capped at 120). */
+  hosted_invoice_url?: string | null;
+  /** Null until the invoice is finalized; an expired link responds with HTTP 400. */
+  invoice_pdf?: string | null;
   metadata?: Record<string, unknown> | null;
   parent?: {
     subscription_details?: {
@@ -247,14 +254,39 @@ export function toSubscription(subscription: StripeSubscription): Subscription {
   };
 }
 
+function toOrderStatus(status: string | null | undefined): OrderStatus {
+  switch (status) {
+    case 'paid':
+      return 'paid';
+    case 'uncollectible':
+      return 'failed';
+    case 'void':
+      return 'void';
+    // `open` — and anything unknown — is still awaiting payment. `draft` has no unified
+    // equivalent; `listOrders` drops drafts, so this only applies to a directly fetched one.
+    default:
+      return 'pending';
+  }
+}
+
 export function toOrderFromInvoice(invoice: StripeInvoice): Order {
   return {
     id: invoice.id,
-    amount: invoice.amount_paid ?? invoice.total ?? undefined,
+    status: toOrderStatus(invoice.status),
+    // The unified amount is what the customer was charged, so a settled invoice reports
+    // `amount_paid` — it is below `total` whenever a customer credit balance covered part of it.
+    // An unpaid invoice has `amount_paid: 0`, so it reports the billed `total` instead.
+    amount:
+      (invoice.status === 'paid' ? (invoice.amount_paid ?? invoice.total) : invoice.total) ??
+      undefined,
     currency: invoice.currency ?? undefined,
     customerId: idOf(invoice.customer),
     customerEmail: invoice.customer_email ?? undefined,
     subscriptionId: idOf(invoice.parent?.subscription_details?.subscription),
+    // Invoice creation time, not payment time — the latter is `status_transitions.paid_at`.
+    createdAt: fromUnixSeconds(invoice.created),
+    // `refundStatus` stays unset: refunds are Charge-level objects and leave no trace on the
+    // invoice — it carries neither a refunded flag nor a refunded amount.
     metadata:
       toMetadata(invoice.metadata) ?? toMetadata(invoice.parent?.subscription_details?.metadata),
     raw: invoice,

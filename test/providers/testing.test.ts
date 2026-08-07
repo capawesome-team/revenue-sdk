@@ -129,6 +129,61 @@ describe('createInMemoryProvider', () => {
     ]);
   });
 
+  it('seeds, filters, and paginates orders', async () => {
+    const provider = createInMemoryProvider({
+      orders: [
+        {
+          id: 'ord-1',
+          amount: 2900,
+          currency: 'usd',
+          customerId: 'customer-1',
+          subscriptionId: 'sub-1',
+          createdAt: new Date('2026-08-01T00:00:00Z'),
+          refundStatus: 'partial',
+          metadata: { org: '1' },
+        },
+        { id: 'ord-2', customerId: 'customer-1' },
+        { id: 'ord-3', status: 'refunded', customerId: 'customer-2' },
+      ],
+    });
+
+    const first = await provider.listOrders({});
+    expect(first.items.map((item) => item.id)).toEqual(['ord-1', 'ord-2']);
+    const second = await provider.listOrders({ cursor: first.cursor });
+    expect(second.items.map((item) => item.id)).toEqual(['ord-3']);
+    expect(second.cursor).toBeUndefined();
+
+    const byCustomer = await provider.listOrders({ customerId: 'customer-1' });
+    expect(byCustomer.items.map((item) => item.id)).toEqual(['ord-1', 'ord-2']);
+
+    await expect(provider.getOrder({ id: 'ord-1' })).resolves.toMatchObject({
+      status: 'paid',
+      amount: 2900,
+      currency: 'usd',
+      subscriptionId: 'sub-1',
+      refundStatus: 'partial',
+      metadata: { org: '1' },
+    });
+    // `status` defaults to paid and an omitted id is generated.
+    await expect(provider.getOrder({ id: 'ord-2' })).resolves.toMatchObject({ status: 'paid' });
+    await expect(provider.getOrder({ id: 'ord-3' })).resolves.toMatchObject({
+      status: 'refunded',
+    });
+    await expect(provider.getOrder({ id: 'missing' })).rejects.toMatchObject({
+      code: 'not_found',
+    });
+  });
+
+  it('fabricates an invoice URL for a seeded order', async () => {
+    const provider = createInMemoryProvider({ orders: [{ id: 'ord-1' }] });
+    await expect(provider.getOrderInvoiceUrl({ id: 'ord-1' })).resolves.toBe(
+      'https://invoices.example.com/ord-1',
+    );
+    await expect(provider.getOrderInvoiceUrl({ id: 'missing' })).rejects.toMatchObject({
+      code: 'not_found',
+    });
+  });
+
   it('seeds, paginates, and reads license keys', async () => {
     const provider = createInMemoryProvider({
       licenseKeys: [

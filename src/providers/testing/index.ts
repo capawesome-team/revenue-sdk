@@ -7,6 +7,8 @@ import type {
   LicenseKey,
   LicenseKeyStatus,
   Metadata,
+  Order,
+  OrderStatus,
   Page,
   PriceModel,
   PriceType,
@@ -29,6 +31,7 @@ const DEFAULT_CAPABILITIES: RevenueCapabilities = {
   endTrial: true,
   hostedCheckout: true,
   licenseKeys: true,
+  listOrdersByCustomer: true,
   listSubscriptionsByCustomer: true,
   pause: true,
   pauseBehaviors: ['immediately', 'period_end'],
@@ -83,6 +86,19 @@ export interface InMemorySubscriptionSeed {
   metadata?: Metadata;
 }
 
+export interface InMemoryOrderSeed {
+  id?: string;
+  status?: OrderStatus;
+  amount?: number;
+  currency?: string;
+  customerId?: string;
+  customerEmail?: string;
+  subscriptionId?: string;
+  createdAt?: Date;
+  refundStatus?: 'full' | 'partial';
+  metadata?: Metadata;
+}
+
 export interface InMemoryLicenseKeySeed {
   id?: string;
   key?: string;
@@ -98,6 +114,7 @@ export interface InMemorySeed {
   products?: InMemoryProductSeed[];
   customers?: InMemoryCustomerSeed[];
   subscriptions?: InMemorySubscriptionSeed[];
+  orders?: InMemoryOrderSeed[];
   licenseKeys?: InMemoryLicenseKeySeed[];
 }
 
@@ -114,6 +131,7 @@ export interface InMemoryState {
   products: Product[];
   customers: Customer[];
   subscriptions: Subscription[];
+  orders: Order[];
   licenseKeys: LicenseKey[];
   checkouts: Checkout[];
   usageEvents: InMemoryUsageEvent[];
@@ -188,6 +206,19 @@ export function createInMemoryProvider(
       metadata: subscription.metadata,
       raw: subscription,
     })),
+    orders: (seed.orders ?? []).map((order) => ({
+      id: order.id ?? nextId('order'),
+      status: order.status ?? 'paid',
+      amount: order.amount,
+      currency: order.currency,
+      customerId: order.customerId,
+      customerEmail: order.customerEmail,
+      subscriptionId: order.subscriptionId,
+      createdAt: order.createdAt,
+      refundStatus: order.refundStatus,
+      metadata: order.metadata,
+      raw: order,
+    })),
     licenseKeys: (seed.licenseKeys ?? []).map((licenseKey) => {
       const id = licenseKey.id ?? nextId('license-key');
       return {
@@ -228,6 +259,14 @@ export function createInMemoryProvider(
       throw notFound('subscription', id);
     }
     return subscription;
+  }
+
+  function getOrderById(id: string): Order {
+    const order = state.orders.find((entry) => entry.id === id);
+    if (!order) {
+      throw notFound('order', id);
+    }
+    return order;
   }
 
   function getLicenseKeyById(id: string): LicenseKey {
@@ -379,6 +418,21 @@ export function createInMemoryProvider(
         idempotencyKey: params.idempotencyKey,
         timestamp: params.timestamp,
       });
+    },
+
+    async listOrders(params) {
+      const items = params.customerId
+        ? state.orders.filter((entry) => entry.customerId === params.customerId)
+        : state.orders;
+      return paginate(items, params.cursor);
+    },
+
+    async getOrder(params) {
+      return getOrderById(params.id);
+    },
+
+    async getOrderInvoiceUrl(params) {
+      return `https://invoices.example.com/${getOrderById(params.id).id}`;
     },
 
     async listLicenseKeys(params) {

@@ -133,7 +133,10 @@ describe('stripe parseWebhookEvent', () => {
         data: {
           object: {
             id: 'in_1',
+            status: 'paid',
+            created: 1754006400,
             amount_paid: 2900,
+            total: 2900,
             currency: 'usd',
             customer: 'cus_1',
             customer_email: 'user@example.com',
@@ -147,10 +150,12 @@ describe('stripe parseWebhookEvent', () => {
     expect(event.type).toBe('order.paid');
     expect(event.order).toMatchObject({
       id: 'in_1',
+      status: 'paid',
       amount: 2900,
       currency: 'usd',
       customerId: 'cus_1',
       subscriptionId: 'sub_1',
+      createdAt: new Date(1754006400 * 1000),
       metadata: { org_id: 'org_1' },
     });
   });

@@ -125,6 +125,44 @@ Merchant-side management — `client.licenseKeys.list/listAll/get/update` — us
 `/v1/license-keys`, filtered by the factory's `storeId`. See
 [License keys](/docs/concepts/license-keys).
 
+## Orders
+
+Lemon Squeezy has no single payments collection, so a unified `Order` is the **union of an Order and a
+Subscription Invoice**. A one-off purchase raises an order; a renewal raises an invoice and no order;
+the **first** subscription payment raises **both** — the same money under two IDs, in two numeric ID
+spaces, with nothing joining them.
+
+`orders.list` therefore returns **all orders, plus every subscription invoice whose `billing_reason` is
+not `initial`**, which yields each payment exactly once. Both requests are scoped to the factory's
+`storeId`.
+
+:::warning
+**Pages are not chronological.** The cursor drains `/v1/orders` first and only then starts on
+`/v1/subscription-invoices`, so an old purchase can precede yesterday's renewal. Every other provider
+returns newest-first — sort by `createdAt` after draining `listAll` if you need strict chronology.
+:::
+
+- **A page can come back short, or empty.** The `initial` invoices are dropped after Lemon Squeezy has
+  already paged, and the page is never backfilled. Follow the cursor until it is `undefined`.
+- **`orders.get` tries both ID spaces.** It reads `/v1/orders/{id}` and falls back to
+  `/v1/subscription-invoices/{id}` on a `not_found`; if both miss, the order lookup's `not_found` is
+  what surfaces. The fallback costs a second request whenever the ID is an invoice.
+- **No customer filter.** `/v1/orders` filters by store, user email, and order number only, so
+  `listOrdersByCustomer` is `false` and `orders.list({ customerId })` throws `unsupported`. Listing
+  unfiltered works.
+- **`subscriptionId` is only ever set on the invoice half** — a Lemon Squeezy order carries no
+  subscription reference.
+- **`refundStatus` is derived from amounts.** The `refunded` boolean means *fully* refunded only, so it
+  is deliberately not read; the SDK compares `refunded_amount` against `total` (and treats status
+  `refunded` as full).
+- **Invoice URLs do not expire.** `getInvoiceUrl` returns `urls.receipt` for an order and
+  `urls.invoice_url` for a subscription invoice — both hosted by Lemon Squeezy. A subscription invoice
+  that is still pending has no PDF link yet and throws `not_found`.
+- **`void` belongs to invoices only.** It is a bill cancelled while the subscription was paused; orders
+  never carry it.
+
+See [Orders](/docs/concepts/orders) for the model and the cross-provider comparison.
+
 ## Capabilities
 
 | Capability                    | Value                                  |
@@ -135,6 +173,7 @@ Merchant-side management — `client.licenseKeys.list/listAll/get/update` — us
 | `endTrial`                    | `true`                                 |
 | `hostedCheckout`              | `true`                                 |
 | `licenseKeys`                 | `true`                                 |
+| `listOrdersByCustomer`        | `false`                                |
 | `listSubscriptionsByCustomer` | `false`                                |
 | `pause`                       | `true`                                 |
 | `pauseBehaviors`              | `['immediately']`                      |

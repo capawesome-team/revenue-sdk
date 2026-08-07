@@ -7,15 +7,20 @@ import {
   toCheckout,
   toCustomer,
   toLicenseKey,
+  toOrderFromInvoice,
+  toOrderFromOrder,
   toProduct,
   toSubscription,
   type LsCheckoutAttributes,
   type LsCustomerAttributes,
   type LsLicenseKeyAttributes,
   type LsListResponse,
+  type LsOrderAttributes,
   type LsPriceAttributes,
+  type LsResource,
   type LsSingleResponse,
   type LsSubscriptionAttributes,
+  type LsSubscriptionInvoiceAttributes,
   type LsVariantAttributes,
 } from './common.ts';
 
@@ -29,6 +34,8 @@ const CAPABILITIES: RevenueCapabilities = {
   endTrial: true,
   hostedCheckout: true,
   licenseKeys: true,
+  // `/v1/orders` only filters by store, user email and order number.
+  listOrdersByCustomer: false,
   // Subscriptions are filterable by store/product/variant/email only, not by customer ID.
   listSubscriptionsByCustomer: false,
   pause: true,
@@ -54,6 +61,19 @@ export interface LemonSqueezyProviderOptions {
 interface PageCursorState {
   page: number;
 }
+
+/**
+ * Orders live in two independently paginated resources, so the cursor names the phase it is in:
+ * `/v1/orders` is drained first, then `/v1/subscription-invoices`.
+ */
+interface OrderCursorState {
+  source: 'orders' | 'invoices';
+  page: number;
+}
+
+type LsOrderLookup =
+  | { source: 'orders'; resource: LsResource<LsOrderAttributes> }
+  | { source: 'invoices'; resource: LsResource<LsSubscriptionInvoiceAttributes> };
 
 function unsupported(feature: string): RevenueError {
   return new RevenueError(`Lemon Squeezy does not support ${feature}`, {
@@ -144,6 +164,36 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
       },
     );
     return toSubscription(data.data);
+  }
+
+  /**
+   * Orders and subscription invoices are separate numeric ID spaces with nothing to tell them
+   * apart, so an opaque order ID is resolved by trying the order first and falling back to the
+   * invoice. When both miss, the original order lookup is what the caller asked for.
+   */
+  async function findOrder(id: string, signal: AbortSignal | undefined): Promise<LsOrderLookup> {
+    try {
+      const { data } = await http.json<LsSingleResponse<LsOrderAttributes>>(`/v1/orders/${id}`, {
+        signal,
+      });
+      return { source: 'orders', resource: data.data };
+    } catch (error) {
+      if (!(error instanceof RevenueError) || error.code !== 'not_found') {
+        throw error;
+      }
+      try {
+        const { data } = await http.json<LsSingleResponse<LsSubscriptionInvoiceAttributes>>(
+          `/v1/subscription-invoices/${id}`,
+          { signal },
+        );
+        return { source: 'invoices', resource: data.data };
+      } catch (fallbackError) {
+        if (fallbackError instanceof RevenueError && fallbackError.code === 'not_found') {
+          throw error;
+        }
+        throw fallbackError;
+      }
+    }
   }
 
   return {
@@ -344,6 +394,91 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
 
     async reportUsage() {
       throw unsupported('usage reporting');
+    },
+
+    /**
+     * Lists every payment exactly once as the union of ALL orders and the subscription invoices
+     * whose `billing_reason` is not `initial`: a one-off purchase raises an order only, a renewal
+     * raises an invoice only, and the FIRST subscription payment raises BOTH — the same money
+     * under two IDs in two ID spaces with no foreign key to join on. Dropping the `initial`
+     * invoices is what keeps that first payment from being counted twice.
+     *
+     * Unlike the other providers, a page is therefore NOT globally chronological: all orders come
+     * before all invoices. Merge-sorting two independently paginated sources cannot be expressed
+     * in an opaque cursor, so the ordering is the accepted tradeoff.
+     */
+    async listOrders(params) {
+      if (params.customerId !== undefined) {
+        throw unsupported('filtering orders by customer');
+      }
+      const state: OrderCursorState = params.cursor
+        ? decodeCursor<OrderCursorState>('lemon-squeezy', params.cursor)
+        : { source: 'orders', page: 1 };
+      const query = {
+        'page[number]': state.page,
+        'page[size]': clampLimit(params.limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
+        'filter[store_id]': storeId,
+      };
+      if (state.source === 'orders') {
+        const { data } = await http.json<LsListResponse<LsOrderAttributes>>('/v1/orders', {
+          query,
+          signal: params.signal,
+        });
+        const lastPage = data.meta?.page?.lastPage ?? state.page;
+        return {
+          items: data.data.map((order) => toOrderFromOrder(order)),
+          // The invoice phase always follows, even on the last page of orders.
+          cursor: encodeCursor<OrderCursorState>(
+            'lemon-squeezy',
+            state.page < lastPage
+              ? { source: 'orders', page: state.page + 1 }
+              : { source: 'invoices', page: 1 },
+          ),
+        };
+      }
+      const { data } = await http.json<LsListResponse<LsSubscriptionInvoiceAttributes>>(
+        '/v1/subscription-invoices',
+        { query, signal: params.signal },
+      );
+      const lastPage = data.meta?.page?.lastPage ?? state.page;
+      return {
+        // Filtering can leave a page short or even empty; it is never backfilled.
+        items: data.data
+          .filter((invoice) => invoice.attributes.billing_reason !== 'initial')
+          .map(toOrderFromInvoice),
+        cursor:
+          state.page < lastPage
+            ? encodeCursor<OrderCursorState>('lemon-squeezy', {
+                source: 'invoices',
+                page: state.page + 1,
+              })
+            : undefined,
+      };
+    },
+
+    async getOrder(params) {
+      const found = await findOrder(params.id, params.signal);
+      return found.source === 'orders'
+        ? toOrderFromOrder(found.resource)
+        : toOrderFromInvoice(found.resource);
+    },
+
+    async getOrderInvoiceUrl(params) {
+      const found = await findOrder(params.id, params.signal);
+      // Both URLs are hosted by Lemon Squeezy and documented as not expiring, so they come
+      // straight off the resource: orders link to the "My Orders" receipt page, subscription
+      // invoices to a signed PDF that only exists once the invoice is no longer pending.
+      const url =
+        found.source === 'orders'
+          ? found.resource.attributes.urls?.receipt
+          : found.resource.attributes.urls?.invoice_url;
+      if (!url) {
+        throw new RevenueError('This order has no invoice URL yet', {
+          code: 'not_found',
+          provider: 'lemon-squeezy',
+        });
+      }
+      return url;
     },
 
     async listLicenseKeys(params) {

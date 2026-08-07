@@ -117,7 +117,7 @@ type WebhookEventType =
     type: { type: 'WebhookEventType', description: 'The normalized event type.' },
     providerType: { type: 'string', description: "The provider's original event type string, always preserved." },
     subscription: { type: 'Subscription', required: false, description: 'Set on subscription.* events.' },
-    order: { type: 'Order', required: false, description: 'Set on order.paid.' },
+    order: { type: 'Order', required: false, description: 'Set on order.paid. Fully mapped — including status, createdAt, and refundStatus.' },
     checkout: { type: 'Checkout', required: false, description: 'Set on checkout.completed (and on not-yet-complete checkout events, which report unknown).' },
     licenseKeyId: { type: 'string', required: false, description: 'Which key a license.issued event refers to. Always set on that event, even when licenseKey is not.' },
     licenseKey: { type: 'LicenseKey', required: false, description: 'The issued key. Absent on Polar, which sends only a masked form — fetch it with licenseKeys.get.' },
@@ -134,7 +134,9 @@ type WebhookEventType =
 - **`subscription.canceled`** — **terminal only**. The subscription has actually ended.
 - **`order.paid`** — money was received, **including renewals**. On Lemon Squeezy this covers both
   `order_created` (first payment) and `subscription_payment_success` (renewals), since renewals never
-  emit an order.
+  emit an order. The attached `Order` carries `status`, `createdAt`, and `refundStatus`, and its `id`
+  is the same identifier `client.orders.get` takes — see [Orders](/docs/concepts/orders) for reading
+  history back.
 - **`checkout.completed`** — a checkout was paid. Only Polar and Stripe expose a checkout event the SDK
   can confirm as paid.
 - **`license.issued`** — a license key was issued to a customer. Polar, Lemon Squeezy, and Dodo Payments

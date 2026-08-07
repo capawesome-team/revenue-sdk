@@ -10,6 +10,7 @@ import {
   toCheckoutFromStatus,
   toCustomer,
   toLicenseKey,
+  toOrderFromPayment,
   toProduct,
   toSubscription,
   type DodoCheckoutSession,
@@ -17,6 +18,7 @@ import {
   type DodoCustomer,
   type DodoLicenseKey,
   type DodoListResponse,
+  type DodoPayment,
   type DodoProduct,
   type DodoSubscription,
 } from './common.ts';
@@ -32,6 +34,7 @@ const CAPABILITIES: RevenueCapabilities = {
   endTrial: false,
   hostedCheckout: true,
   licenseKeys: true,
+  listOrdersByCustomer: true,
   listSubscriptionsByCustomer: true,
   // Dodo has no pause/resume endpoint and no paused subscription status.
   pause: false,
@@ -294,6 +297,42 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
         },
         signal: params.signal,
       });
+    },
+
+    async listOrders(params) {
+      const { page, pageSize, query } = pageQuery(params.cursor, params.limit);
+      // `/payments` takes no sort parameter and documents no ordering guarantee — the order is
+      // provider-defined and unverified.
+      const { data } = await http.json<DodoListResponse<DodoPayment>>('/payments', {
+        query: { ...query, status: 'succeeded', customer_id: params.customerId },
+        signal: params.signal,
+      });
+      return {
+        items: data.items.map(toOrderFromPayment),
+        cursor: nextCursor(page, pageSize, data.items.length),
+      };
+    },
+
+    async getOrder(params) {
+      const { data } = await http.json<DodoPayment>(`/payments/${params.id}`, {
+        signal: params.signal,
+      });
+      return toOrderFromPayment(data);
+    },
+
+    async getOrderInvoiceUrl(params) {
+      // `invoice_url` is a field on the payment itself; `GET /invoices/payments/{id}` returns
+      // the PDF bytes rather than a URL.
+      const { data } = await http.json<DodoPayment>(`/payments/${params.id}`, {
+        signal: params.signal,
+      });
+      if (!data.invoice_url) {
+        throw new RevenueError(`Dodo Payments has no invoice for payment ${params.id}`, {
+          code: 'not_found',
+          provider: 'dodo-payments',
+        });
+      }
+      return data.invoice_url;
     },
 
     // The merchant routes are `/license_keys` (underscore); the credential-free activate,

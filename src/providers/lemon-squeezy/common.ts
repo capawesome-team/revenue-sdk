@@ -7,6 +7,7 @@ import type {
   LicenseKeyStatus,
   Metadata,
   Order,
+  OrderStatus,
   Price,
   PriceModel,
   Product,
@@ -106,6 +107,13 @@ export interface LsOrderAttributes {
   user_email?: string | null;
   currency?: string | null;
   total?: number | null;
+  status?: string | null;
+  refunded_amount?: number | null;
+  created_at?: string | null;
+  urls?: {
+    /** The hosted "My Orders" receipt page. Documented as not expiring. */
+    receipt?: string | null;
+  } | null;
 }
 
 export interface LsSubscriptionInvoiceAttributes {
@@ -114,6 +122,14 @@ export interface LsSubscriptionInvoiceAttributes {
   user_email?: string | null;
   currency?: string | null;
   total?: number | null;
+  status?: string | null;
+  refunded_amount?: number | null;
+  billing_reason?: string | null;
+  created_at?: string | null;
+  urls?: {
+    /** A signed PDF link. Documented as not expiring; `null` while the invoice is pending. */
+    invoice_url?: string | null;
+  } | null;
 }
 
 export interface LsLicenseKeyAttributes {
@@ -296,6 +312,45 @@ export function toSubscription(
   };
 }
 
+function toOrderStatus(status: string | null | undefined): OrderStatus {
+  switch (status) {
+    case 'paid':
+      return 'paid';
+    // A fraudulent order was charged back or blocked, so no money was collected.
+    case 'failed':
+    case 'fraudulent':
+      return 'failed';
+    case 'refunded':
+      return 'refunded';
+    case 'partial_refund':
+      return 'partially_refunded';
+    // Only subscription invoices carry `void` (a bill cancelled while the subscription was paused).
+    case 'void':
+      return 'void';
+    // Open enum: an unknown status is reported as pending rather than throwing.
+    default:
+      return 'pending';
+  }
+}
+
+/**
+ * `refunded` is true for a FULL refund only — a partial refund leaves it false with
+ * `refunded_amount > 0` and `status: 'partial_refund'` — so the boolean is never read here.
+ */
+function toRefundStatus(
+  status: string | null | undefined,
+  refundedAmount: number | null | undefined,
+  total: number | null | undefined,
+): Order['refundStatus'] {
+  if (status === 'refunded') {
+    return 'full';
+  }
+  if (!refundedAmount) {
+    return undefined;
+  }
+  return total !== null && total !== undefined && refundedAmount >= total ? 'full' : 'partial';
+}
+
 export function toOrderFromOrder(
   resource: LsResource<LsOrderAttributes>,
   metadata?: Metadata,
@@ -303,6 +358,7 @@ export function toOrderFromOrder(
   const attributes = resource.attributes;
   return {
     id: String(resource.id),
+    status: toOrderStatus(attributes.status),
     amount: attributes.total ?? undefined,
     currency: attributes.currency?.toLowerCase(),
     customerId:
@@ -310,6 +366,8 @@ export function toOrderFromOrder(
         ? undefined
         : String(attributes.customer_id),
     customerEmail: attributes.user_email ?? undefined,
+    createdAt: toDate(attributes.created_at),
+    refundStatus: toRefundStatus(attributes.status, attributes.refunded_amount, attributes.total),
     metadata,
     raw: resource,
   };
@@ -319,6 +377,7 @@ export function toOrderFromInvoice(resource: LsResource<LsSubscriptionInvoiceAtt
   const attributes = resource.attributes;
   return {
     id: String(resource.id),
+    status: toOrderStatus(attributes.status),
     amount: attributes.total ?? undefined,
     currency: attributes.currency?.toLowerCase(),
     customerId:
@@ -330,6 +389,8 @@ export function toOrderFromInvoice(resource: LsResource<LsSubscriptionInvoiceAtt
       attributes.subscription_id === null || attributes.subscription_id === undefined
         ? undefined
         : String(attributes.subscription_id),
+    createdAt: toDate(attributes.created_at),
+    refundStatus: toRefundStatus(attributes.status, attributes.refunded_amount, attributes.total),
     raw: resource,
   };
 }

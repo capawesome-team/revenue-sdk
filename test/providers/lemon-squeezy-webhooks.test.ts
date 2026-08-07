@@ -114,6 +114,10 @@ describe('lemon-squeezy parseWebhookEvent', () => {
             user_email: 'user@example.com',
             currency: 'USD',
             total: 2900,
+            status: 'paid',
+            refunded: false,
+            refunded_amount: 0,
+            created_at: '2026-08-01T00:00:00.000000Z',
           },
         },
       }),
@@ -121,6 +125,7 @@ describe('lemon-squeezy parseWebhookEvent', () => {
     expect(event.type).toBe('order.paid');
     expect(event.order).toMatchObject({
       id: '11',
+      status: 'paid',
       amount: 2900,
       currency: 'usd',
       customerId: '7',
@@ -143,12 +148,19 @@ describe('lemon-squeezy parseWebhookEvent', () => {
             user_email: 'user@example.com',
             currency: 'USD',
             total: 2900,
+            status: 'paid',
+            billing_reason: 'renewal',
           },
         },
       }),
     });
     expect(event.type).toBe('order.paid');
-    expect(event.order).toMatchObject({ id: '77', subscriptionId: '42', amount: 2900 });
+    expect(event.order).toMatchObject({
+      id: '77',
+      status: 'paid',
+      subscriptionId: '42',
+      amount: 2900,
+    });
   });
 
   it('maps license_key_created to license.issued with the plaintext key', async () => {

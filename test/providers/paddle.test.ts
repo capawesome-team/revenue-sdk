@@ -34,6 +34,19 @@ const SUBSCRIPTION = {
   items: [{ quantity: 1, price: PRICE }],
 };
 
+const TRANSACTION = {
+  id: 'txn_1',
+  status: 'completed',
+  customer_id: 'ctm_1',
+  subscription_id: 'sub_1',
+  currency_code: 'USD',
+  custom_data: { org_id: 'org_1' },
+  billed_at: '2026-08-02T00:00:00Z',
+  created_at: '2026-08-01T00:00:00Z',
+  // A credit absorbed part of the bill, so `grand_total` is below `total`.
+  details: { totals: { total: '2499', grand_total: '2000' } },
+};
+
 async function expectRevenueError(promise: Promise<unknown>, code: string): Promise<void> {
   try {
     await promise;
@@ -372,6 +385,131 @@ describe('paddle', () => {
       await provider.revokeSubscription({ id: 'sub_1' });
       expect(stub.requests[1]!.url).toBe('https://api.paddle.com/subscriptions/sub_1/cancel');
       expect(JSON.parse(stub.requests[1]!.body!)).toEqual({ effective_from: 'immediately' });
+    });
+  });
+
+  describe('orders', () => {
+    it('lists completed transactions in billing order with per_page clamped to 30', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { data: [TRANSACTION], meta: { pagination: { has_more: false, next: null } } },
+      }));
+      const page = await provider.listOrders({ limit: 100 });
+      expect(stub.requests[0]!.url).toBe(
+        'https://api.paddle.com/transactions?status=completed&order_by=billed_at%5BDESC%5D&include=adjustments_totals&per_page=30',
+      );
+      expect(page.items[0]).toMatchObject({
+        id: 'txn_1',
+        status: 'paid',
+        // `grand_total`, not `total`.
+        amount: 2000,
+        currency: 'usd',
+        customerId: 'ctm_1',
+        subscriptionId: 'sub_1',
+        metadata: { org_id: 'org_1' },
+      });
+      expect(page.items[0]!.createdAt).toEqual(new Date('2026-08-02T00:00:00Z'));
+      expect(page.items[0]!.refundStatus).toBeUndefined();
+    });
+
+    it('filters by customer', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: [] } }));
+      await provider.listOrders({ customerId: 'ctm_1' });
+      expect(stub.requests[0]!.url).toBe(
+        'https://api.paddle.com/transactions?customer_id=ctm_1&status=completed&order_by=billed_at%5BDESC%5D&include=adjustments_totals&per_page=10',
+      );
+    });
+
+    it('falls back to created_at when the transaction has no statement date', async () => {
+      const { provider } = setup(() => ({ json: { data: [{ ...TRANSACTION, billed_at: null }] } }));
+      const page = await provider.listOrders({});
+      expect(page.items[0]!.createdAt).toEqual(new Date('2026-08-01T00:00:00Z'));
+    });
+
+    it('derives refundStatus from the included adjustments totals', async () => {
+      const { provider } = setup(() => ({
+        json: {
+          data: [
+            { ...TRANSACTION, adjustments_totals: { breakdown: { refund: '500' } } },
+            { ...TRANSACTION, id: 'txn_2', adjustments_totals: { breakdown: { refund: '2000' } } },
+            { ...TRANSACTION, id: 'txn_3', adjustments_totals: { breakdown: { refund: '0' } } },
+          ],
+        },
+      }));
+      const page = await provider.listOrders({});
+      expect(page.items.map((order) => order.refundStatus)).toEqual(['partial', 'full', undefined]);
+    });
+
+    it('maps the transaction status and treats the enum as open', async () => {
+      const { provider } = setup(() => ({
+        json: {
+          data: [
+            { ...TRANSACTION, id: 'txn_billed', status: 'billed' },
+            { ...TRANSACTION, id: 'txn_ready', status: 'ready' },
+            { ...TRANSACTION, id: 'txn_past_due', status: 'past_due' },
+            { ...TRANSACTION, id: 'txn_canceled', status: 'canceled' },
+            { ...TRANSACTION, id: 'txn_future', status: 'something_new' },
+          ],
+        },
+      }));
+      const page = await provider.listOrders({});
+      expect(page.items.map((order) => order.status)).toEqual([
+        'pending',
+        'pending',
+        'failed',
+        'void',
+        'pending',
+      ]);
+    });
+
+    it('follows the next URL and stops once has_more is false', async () => {
+      let call = 0;
+      const { provider, stub } = setup(() => {
+        call += 1;
+        return {
+          json: {
+            data: [TRANSACTION],
+            meta: {
+              pagination: {
+                has_more: call === 1,
+                // Paddle returns `next` even on the last page.
+                next: 'https://api.paddle.com/transactions?after=txn_1&per_page=10',
+              },
+            },
+          },
+        };
+      });
+      const first = await provider.listOrders({});
+      expect(first.cursor).toBeDefined();
+      const second = await provider.listOrders({ cursor: first.cursor });
+      expect(stub.requests[1]!.url).toBe(
+        'https://api.paddle.com/transactions?after=txn_1&per_page=10',
+      );
+      expect(second.cursor).toBeUndefined();
+    });
+
+    it('reads a single transaction with the adjustment totals included', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: TRANSACTION } }));
+      const order = await provider.getOrder({ id: 'txn_1' });
+      expect(stub.requests[0]!.url).toBe(
+        'https://api.paddle.com/transactions/txn_1?include=adjustments_totals',
+      );
+      expect(order).toMatchObject({ id: 'txn_1', status: 'paid', amount: 2000 });
+    });
+
+    it('fetches the invoice URL on demand', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { data: { url: 'https://paddle-invoice.s3.example.com/txn_1.pdf?token=abc' } },
+      }));
+      const url = await provider.getOrderInvoiceUrl({ id: 'txn_1' });
+      expect(stub.requests[0]!.url).toBe(
+        'https://api.paddle.com/transactions/txn_1/invoice?disposition=inline',
+      );
+      expect(url).toBe('https://paddle-invoice.s3.example.com/txn_1.pdf?token=abc');
+    });
+
+    it('throws not_found when no invoice exists for the transaction', async () => {
+      const { provider } = setup(() => ({ json: { data: { url: null } } }));
+      await expectRevenueError(provider.getOrderInvoiceUrl({ id: 'txn_1' }), 'not_found');
     });
   });
 

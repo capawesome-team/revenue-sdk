@@ -40,6 +40,10 @@ Every provider exposes a `capabilities` object, also surfaced on `client.capabil
       type: 'boolean',
       description: 'Whether the licenseKeys namespace is supported. false for Stripe and Paddle. Validating and activating keys needs no client — see License keys.',
     },
+    listOrdersByCustomer: {
+      type: 'boolean',
+      description: 'Whether orders.list accepts a customerId filter. false for Lemon Squeezy, whose orders filter by store, email, and order number only.',
+    },
     listSubscriptionsByCustomer: {
       type: 'boolean',
       description: 'Whether subscriptions.list accepts a customerId filter. false for Lemon Squeezy.',
@@ -107,6 +111,7 @@ difference at integration time, in your own test suite.
 The client gates on:
 
 - `checkouts.create({ successUrl })` — requires `checkoutSuccessUrl`
+- `orders.list/listAll({ customerId })` — requires `listOrdersByCustomer`
 - `subscriptions.list/listAll({ customerId })` — requires `listSubscriptionsByCustomer`
 - `subscriptions.cancel({ reason | comment })` — requires `cancellationReason`
 - `subscriptions.uncancel` — requires `uncancel`

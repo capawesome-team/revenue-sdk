@@ -8,6 +8,7 @@ import type {
   LicenseKeyActivation,
   LicenseKeyStatus,
   Order,
+  OrderStatus,
   Price,
   PriceModel,
   Product,
@@ -132,11 +133,14 @@ export interface PolarLicenseKey {
 
 export interface PolarOrder {
   id: string;
+  status?: string | null;
+  created_at?: string | null;
   total_amount?: number | null;
   currency?: string | null;
   customer_id?: string | null;
   customer?: { email?: string | null } | null;
   subscription_id?: string | null;
+  refunded_amount?: number | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -290,14 +294,48 @@ export function toSubscription(subscription: PolarSubscription): Subscription {
   };
 }
 
+function toOrderStatus(status: string | null | undefined): OrderStatus {
+  switch (status) {
+    case 'paid':
+      return 'paid';
+    case 'refunded':
+      return 'refunded';
+    case 'partially_refunded':
+      return 'partially_refunded';
+    case 'void':
+      return 'void';
+    // `draft` has no unified equivalent — an unbilled order is still awaiting payment. `listOrders`
+    // filters drafts out server-side, so this only applies to a directly fetched draft.
+    default:
+      return 'pending';
+  }
+}
+
+function toRefundStatus(order: PolarOrder): Order['refundStatus'] {
+  if (order.status === 'refunded') {
+    return 'full';
+  }
+  // `refunded_amount` also covers partial refunds issued against an order Polar still reports as
+  // `paid` (a refund below the total does not always move the status).
+  if (order.status === 'partially_refunded' || (order.refunded_amount ?? 0) > 0) {
+    return 'partial';
+  }
+  return undefined;
+}
+
 export function toOrder(order: PolarOrder): Order {
   return {
     id: order.id,
+    status: toOrderStatus(order.status),
+    // `total_amount` is what the customer is charged; `net_amount` excludes tax and `due_amount`
+    // is only the unpaid remainder.
     amount: order.total_amount ?? undefined,
     currency: order.currency ?? undefined,
     customerId: order.customer_id ?? undefined,
     customerEmail: order.customer?.email ?? undefined,
     subscriptionId: order.subscription_id ?? undefined,
+    createdAt: toDate(order.created_at),
+    refundStatus: toRefundStatus(order),
     metadata: toMetadata(order.metadata),
     raw: order,
   };

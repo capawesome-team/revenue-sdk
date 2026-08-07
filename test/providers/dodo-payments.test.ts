@@ -348,6 +348,110 @@ describe('dodoPayments', () => {
     });
   });
 
+  describe('orders', () => {
+    const PAYMENT = {
+      payment_id: 'pay_1',
+      status: 'succeeded',
+      total_amount: 2500,
+      currency: 'USD',
+      subscription_id: 'sub_abc',
+      customer: { customer_id: 'cus_1', email: 'user@example.com', name: 'User' },
+      created_at: '2026-08-01T00:00:00Z',
+      refund_status: null,
+      invoice_url: 'https://live.dodopayments.com/invoices/inv_1',
+      metadata: { org_id: 'org_1' },
+    };
+
+    it('lists succeeded payments with zero-based pagination', async () => {
+      const { provider, stub } = setup(() => ({ json: { items: [PAYMENT] } }));
+      const page = await provider.listOrders({ limit: 25 });
+      expect(stub.requests[0]!.url).toBe(
+        'https://live.dodopayments.com/payments?page_number=0&page_size=25&status=succeeded',
+      );
+      expect(page.items[0]).toMatchObject({
+        id: 'pay_1',
+        status: 'paid',
+        amount: 2500,
+        currency: 'usd',
+        customerId: 'cus_1',
+        customerEmail: 'user@example.com',
+        subscriptionId: 'sub_abc',
+        metadata: { org_id: 'org_1' },
+      });
+      expect(page.items[0]!.createdAt).toEqual(new Date('2026-08-01T00:00:00Z'));
+      expect(page.items[0]!.refundStatus).toBeUndefined();
+      expect(page.cursor).toBeUndefined();
+    });
+
+    it('filters by customer and paginates through page_number', async () => {
+      const fullPage = Array.from({ length: 10 }, (_, index) => ({
+        ...PAYMENT,
+        payment_id: `pay_${index}`,
+      }));
+      let call = 0;
+      const { provider, stub } = setup(() => {
+        call += 1;
+        return { json: { items: call === 1 ? fullPage : fullPage.slice(0, 3) } };
+      });
+      const first = await provider.listOrders({ customerId: 'cus_1' });
+      expect(stub.requests[0]!.url).toBe(
+        'https://live.dodopayments.com/payments?page_number=0&page_size=10&status=succeeded&customer_id=cus_1',
+      );
+      expect(first.cursor).toBeDefined();
+      const second = await provider.listOrders({ cursor: first.cursor, customerId: 'cus_1' });
+      expect(stub.requests[1]!.url).toContain('page_number=1');
+      expect(second.cursor).toBeUndefined();
+    });
+
+    it('passes minor units through for zero-decimal currencies', async () => {
+      const { provider } = setup(() => ({
+        json: { ...PAYMENT, total_amount: 1000, currency: 'JPY' },
+      }));
+      const order = await provider.getOrder({ id: 'pay_1' });
+      expect(order).toMatchObject({ amount: 1000, currency: 'jpy' });
+    });
+
+    it('maps the payment status and treats the enum as open', async () => {
+      for (const [dodoStatus, unified] of [
+        ['succeeded', 'paid'],
+        ['processing', 'pending'],
+        ['requires_payment_method', 'pending'],
+        ['requires_customer_action', 'pending'],
+        ['failed', 'failed'],
+        ['cancelled', 'failed'],
+        [null, 'pending'],
+        ['something_new', 'pending'],
+      ] as const) {
+        const { provider } = setup(() => ({ json: { ...PAYMENT, status: dodoStatus } }));
+        const order = await provider.getOrder({ id: 'pay_1' });
+        expect(order.status).toBe(unified);
+      }
+    });
+
+    it('maps the refund status reported on the payment', async () => {
+      for (const refundStatus of ['partial', 'full'] as const) {
+        const { provider, stub } = setup(() => ({
+          json: { ...PAYMENT, refund_status: refundStatus },
+        }));
+        const order = await provider.getOrder({ id: 'pay_1' });
+        expect(stub.requests[0]!.url).toBe('https://live.dodopayments.com/payments/pay_1');
+        expect(order.refundStatus).toBe(refundStatus);
+      }
+    });
+
+    it('returns the invoice URL carried by the payment', async () => {
+      const { provider, stub } = setup(() => ({ json: PAYMENT }));
+      const url = await provider.getOrderInvoiceUrl({ id: 'pay_1' });
+      expect(stub.requests[0]!.url).toBe('https://live.dodopayments.com/payments/pay_1');
+      expect(url).toBe('https://live.dodopayments.com/invoices/inv_1');
+    });
+
+    it('throws not_found when the payment carries no invoice URL', async () => {
+      const { provider } = setup(() => ({ json: { ...PAYMENT, invoice_url: null } }));
+      await expectRevenueError(provider.getOrderInvoiceUrl({ id: 'pay_1' }), 'not_found');
+    });
+  });
+
   describe('license keys', () => {
     const LICENSE_KEY = {
       id: 'lic_1',

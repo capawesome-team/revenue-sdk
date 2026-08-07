@@ -154,7 +154,9 @@ Three things this gets right:
 - **A scheduled cancellation is an *update*.** It arrives as `subscription.updated` with
   `cancelAtPeriodEnd: true`; the terminal `subscription.canceled` comes later. Store both fields.
 - **`order.paid` covers renewals.** It is the uniform "money received" signal — on Lemon Squeezy it maps
-  from both `order_created` and `subscription_payment_success`, because renewals emit no order.
+  from both `order_created` and `subscription_payment_success`, because renewals emit no order. The
+  attached `Order` is the same shape `client.orders.list` returns, so a delivery you dropped can be
+  reconciled later by ID — see [Orders](/docs/concepts/orders).
 
 ## 4. Return 2xx fast
 

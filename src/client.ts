@@ -12,13 +12,17 @@ import type {
   GetCheckoutParams,
   GetCustomerParams,
   GetLicenseKeyParams,
+  GetOrderInvoiceUrlParams,
+  GetOrderParams,
   GetProductParams,
   GetSubscriptionParams,
   LicenseKey,
   ListCustomersParams,
   ListLicenseKeysParams,
+  ListOrdersParams,
   ListProductsParams,
   ListSubscriptionsParams,
+  Order,
   Page,
   PauseSubscriptionParams,
   Product,
@@ -89,6 +93,13 @@ export interface RevenueClient {
     get(params: GetLicenseKeyParams): Promise<LicenseKey>;
     update(params: UpdateLicenseKeyParams): Promise<LicenseKey>;
   };
+  orders: {
+    list(params?: ListOrdersParams): Promise<Page<Order>>;
+    listAll(params?: Omit<ListOrdersParams, 'cursor'>): AsyncGenerator<Order, void>;
+    get(params: GetOrderParams): Promise<Order>;
+    /** Fetched on demand — several providers mint short-lived URLs, so they are never listed. */
+    getInvoiceUrl(params: GetOrderInvoiceUrlParams): Promise<string>;
+  };
 }
 
 function sleep(seconds: number): Promise<void> {
@@ -123,6 +134,12 @@ export function createClient(options: CreateClientOptions): RevenueClient {
   function checkQuantity(quantity: number | undefined): void {
     if (quantity !== undefined && (!Number.isInteger(quantity) || quantity < 1)) {
       fail('validation', 'The quantity parameter must be a positive integer');
+    }
+  }
+
+  function checkOrderCustomerFilter(customerId: string | undefined): void {
+    if (customerId !== undefined && !provider.capabilities.listOrdersByCustomer) {
+      fail('unsupported', `${provider.name} cannot filter orders by customer`);
     }
   }
 
@@ -348,6 +365,25 @@ export function createClient(options: CreateClientOptions): RevenueClient {
         checkActivationLimit(params.activationLimit);
         requireLicenseKeys();
         return withRetry(() => provider.updateLicenseKey(params));
+      },
+    },
+
+    orders: {
+      list: async (params = {}) => {
+        checkOrderCustomerFilter(params.customerId);
+        return withRetry(() => provider.listOrders(params));
+      },
+      listAll: (params = {}) => {
+        checkOrderCustomerFilter(params.customerId);
+        return listAllOf(params, (p) => provider.listOrders(p));
+      },
+      get: async (params) => {
+        requireNonEmpty(params.id, 'id');
+        return withRetry(() => provider.getOrder(params));
+      },
+      getInvoiceUrl: async (params) => {
+        requireNonEmpty(params.id, 'id');
+        return withRetry(() => provider.getOrderInvoiceUrl(params));
       },
     },
   };

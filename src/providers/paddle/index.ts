@@ -10,6 +10,7 @@ import type {
 import {
   toCheckout,
   toCustomer,
+  toOrderFromTransaction,
   toProduct,
   toSubscription,
   type PaddleCustomer,
@@ -24,6 +25,8 @@ const PRODUCTION_BASE_URL = 'https://api.paddle.com';
 const SANDBOX_BASE_URL = 'https://sandbox-api.paddle.com';
 const DEFAULT_PAGE_LIMIT = 10;
 const MAX_PAGE_LIMIT = 200;
+/** `/transactions` rejects a `per_page` above 30, unlike every other collection. */
+const MAX_TRANSACTION_PAGE_LIMIT = 30;
 
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: false,
@@ -37,6 +40,7 @@ const CAPABILITIES: RevenueCapabilities = {
   // Paddle Classic generated and activated license keys; Billing v1 dropped them with no
   // equivalent, and Classic takes no new signups.
   licenseKeys: false,
+  listOrdersByCustomer: true,
   listSubscriptionsByCustomer: true,
   pause: true,
   pauseBehaviors: ['immediately', 'period_end'],
@@ -377,6 +381,51 @@ export function paddle(options: PaddleProviderOptions): RevenueProvider {
 
     async reportUsage() {
       throw unsupported('usage reporting');
+    },
+
+    async listOrders(params) {
+      const page = await listPage<PaddleTransaction>(
+        '/transactions',
+        {
+          customer_id: params.customerId,
+          // `draft` and `ready` transactions are abandoned checkouts, and Paddle returns them
+          // by default — they are not billing history.
+          status: 'completed',
+          // Transactions default to `id[DESC]`, which is not a chronological order.
+          order_by: 'billed_at[DESC]',
+          // Refunds live on separate Adjustment entities; the include keeps `refundStatus`
+          // free of an extra request.
+          include: 'adjustments_totals',
+        },
+        params.cursor,
+        clampLimit(params.limit, DEFAULT_PAGE_LIMIT, MAX_TRANSACTION_PAGE_LIMIT),
+        params.signal,
+      );
+      return { items: page.data.map(toOrderFromTransaction), cursor: page.cursor };
+    },
+
+    async getOrder(params) {
+      const { data } = await http.json<PaddleResponse<PaddleTransaction>>(
+        `/transactions/${params.id}`,
+        { query: { include: 'adjustments_totals' }, signal: params.signal },
+      );
+      return toOrderFromTransaction(data.data);
+    },
+
+    async getOrderInvoiceUrl(params) {
+      // The minted URL expires after an hour, so it is fetched on demand and never stored.
+      const { data } = await http.json<PaddleResponse<{ url?: string | null }>>(
+        `/transactions/${params.id}/invoice`,
+        { query: { disposition: 'inline' }, signal: params.signal },
+      );
+      const url = data.data.url;
+      if (!url) {
+        throw new RevenueError(
+          `Paddle has no invoice for transaction ${params.id}; invoices exist only for billed or completed transactions with a non-zero total`,
+          { code: 'not_found', provider: 'paddle' },
+        );
+      }
+      return url;
     },
 
     async listLicenseKeys() {
