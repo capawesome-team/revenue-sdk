@@ -72,13 +72,55 @@ its own secret to its own `verifyWebhook`.
 
 Events worth subscribing to: `subscription.active`, `subscription.updated`, `subscription.renewed`,
 `subscription.plan_changed`, `subscription.on_hold`, `subscription.paused`, `subscription.cancelled`,
-`subscription.expired`, `subscription.failed`, `payment.succeeded`.
+`subscription.expired`, `subscription.failed`, `payment.succeeded`, and — if you sell license keys —
+`license_key.created`.
 
 :::note
 Dodo Payments has **no `subscription.created` event**. The first signal for a new subscription is
 `subscription.active`, which also fires after recovery from `on_hold`. Every subscription event
 normalizes to `subscription.updated` (or `subscription.canceled`), so **upsert** rather than insert.
 :::
+
+## License keys
+
+The `/licenses/*` routes need **no credential**, so validate, activate, and deactivate are standalone
+exports rather than client methods — safe to ship inside a desktop, mobile, or CLI app.
+
+```ts
+import {
+  activateLicenseKey,
+  deactivateLicenseKey,
+  validateLicenseKey,
+} from 'revenue-sdk/dodo-payments';
+
+const { valid } = await validateLicenseKey({
+  key: 'LICENSE-KEY',
+  activationId: 'ACTIVATION_ID', // optional — narrows the check to one device
+});
+
+const activation = await activateLicenseKey({ key: 'LICENSE-KEY', label: 'MacBook Pro' });
+
+await deactivateLicenseKey({ key: 'LICENSE-KEY', activationId: activation.id });
+```
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'The license key as the customer received it.' },
+    activationId: {
+      type: 'string',
+      required: false,
+      description: 'Sent as license_key_instance_id. Optional on validate, required on deactivate.',
+    },
+    label: { type: 'string', description: 'Activate only. Sent as name; required by Dodo Payments.' },
+    server: { type: "'live' | 'test'", default: 'live', required: false, description: 'Same hosts as the factory.' },
+    baseUrl: { type: 'string', required: false, description: 'Overrides server; used verbatim.' },
+    fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
+  }}
+/>
+
+Merchant-side management — `client.licenseKeys.list/listAll/get/update` — uses the API key and reads
+`/license_keys`. See [License keys](/docs/concepts/license-keys).
 
 ## Capabilities
 
@@ -89,6 +131,7 @@ normalizes to `subscription.updated` (or `subscription.canceled`), so **upsert**
 | `checkoutSuccessUrl`          | `true`                      |
 | `endTrial`                    | `false`                     |
 | `hostedCheckout`              | `true`                      |
+| `licenseKeys`                 | `true`                      |
 | `listSubscriptionsByCustomer` | `true`                      |
 | `pause`                       | `false`                     |
 | `pauseBehaviors`              | `[]`                        |
@@ -131,6 +174,23 @@ normalizes to `subscription.updated` (or `subscription.canceled`), so **upsert**
   [Usage-based billing](/docs/concepts/usage-based-billing).
 - **`checkouts.get` returns no URL.** The status endpoint omits it, so a `Checkout` read back has
   `url: ''`. Persist the URL from `checkouts.create`.
+- **Validate cannot be scoped.** `POST /licenses/validate` answers with literally `{ "valid": boolean }`
+  — no product, business, customer, or expiry — so a key from any Dodo Payments merchant for any product
+  validates as `true`, and `LicenseKeyValidation.licenseKey` is **always `undefined`**. Only
+  `activateLicenseKey` reveals ownership (`business_id` and `product` on `raw`); bind the key to your
+  product there, or read it server-side with `client.licenseKeys.get`. See
+  [License keys](/docs/concepts/license-keys).
+- **Two spellings for the license routes.** The credential-free ones are `/licenses/validate`,
+  `/licenses/activate`, `/licenses/deactivate`; the merchant ones are `/license_keys` with an
+  **underscore**.
+- **The public license routes carry the tightest rate limits** of the three supporting providers —
+  roughly 20 requests per second and 100 per minute. Cache the verdict in your app instead of validating
+  on every action.
+- **The merchant license endpoints are marked `@deprecated` upstream** in favour of an entitlements-based
+  replacement, but still function; `client.licenseKeys` continues to use them.
+- **A 404 on validate is a verdict, not an error.** An unknown key answers `200 { "valid": false }` in
+  most cases and `404` in others, so the SDK maps both to `valid: false`. `activateLicenseKey` on an
+  unknown key still throws `not_found`, and `deactivateLicenseKey` answers `200` with an empty body.
 
 <CardGroup cols={2}>
   <Card title="Testing provider" icon="flask-conical" href="/docs/providers/testing">

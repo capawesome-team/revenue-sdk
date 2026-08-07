@@ -1,0 +1,576 @@
+---
+title: License keys
+description: Validate, activate, and deactivate license keys with no credential, manage them from the client, and the scoping guards each provider needs.
+sidebar:
+  label: License keys
+---
+
+A license key unlocks software the customer runs themselves — a desktop app, a CLI, a plugin. That
+splits the feature in two, and `revenue-sdk` keeps the two halves apart on purpose:
+
+- **Checking a key** — validate, activate, deactivate — happens **inside the shipped application**.
+  These are standalone functions on the provider subpath, and they take **no credential**.
+- **Managing keys** — list, get, disable, re-limit — happens **on your server**. That is the
+  `client.licenseKeys` namespace, gated by the `licenseKeys` capability.
+
+```ts
+// In the app you ship. No API key anywhere.
+import { validateLicenseKey } from 'revenue-sdk/polar';
+
+const { valid } = await validateLicenseKey({ key, organizationId: 'ORGANIZATION_ID' });
+```
+
+```ts
+// On your server, with the merchant credential.
+const licenseKey = await client.licenseKeys.get({ id: 'LICENSE_KEY_ID' });
+```
+
+## Why validation is not on the client
+
+Every other operation in this SDK needs a merchant secret. These three do not — they are the
+customer-facing routes of the provider's own license API. Hanging them off `createClient` would teach
+exactly the wrong lesson.
+
+:::warning
+A `createClient` method that validates a license reads as "validation needs the merchant key", and the
+next step is shipping that key inside a desktop binary — where anyone can extract it and call every
+other endpoint it unlocks. That is the failure mode this split exists to prevent.
+:::
+
+Two more reasons, both concrete:
+
+- **Polar rejects the credential.** `POST /v1/customer-portal/license-keys/validate` answers
+  `401 invalid_token` when **any** `Authorization` header is present. A client-mounted method would have
+  to strip the header its own transport had just added.
+- **Bundle size.** A shipped app imports three small functions, not the client, the pagination layer,
+  and a provider adapter it never calls.
+
+## Validate, activate, deactivate
+
+Each supporting provider exports the same three functions from its own subpath. The names are uniform;
+the parameters differ because the providers scope these routes differently.
+
+<CodeGroup>
+
+```ts Polar
+import {
+  activateLicenseKey,
+  deactivateLicenseKey,
+  validateLicenseKey,
+} from 'revenue-sdk/polar';
+
+const validation = await validateLicenseKey({
+  key: 'POLAR-KEY-0001',
+  organizationId: 'ORGANIZATION_ID', // required
+  activationId: 'ACTIVATION_ID', // optional
+});
+
+const activation = await activateLicenseKey({
+  key: 'POLAR-KEY-0001',
+  organizationId: 'ORGANIZATION_ID',
+  label: 'MacBook Pro',
+});
+
+await deactivateLicenseKey({
+  key: 'POLAR-KEY-0001',
+  organizationId: 'ORGANIZATION_ID',
+  activationId: activation.id,
+});
+```
+
+```ts Lemon Squeezy
+import {
+  activateLicenseKey,
+  deactivateLicenseKey,
+  validateLicenseKey,
+} from 'revenue-sdk/lemon-squeezy';
+
+const expect = { storeId: 'STORE_ID', variantId: 'VARIANT_ID' }; // required
+
+const validation = await validateLicenseKey({
+  key: 'LICENSE-KEY',
+  expect,
+  activationId: 'ACTIVATION_ID', // optional
+});
+
+const activated = await activateLicenseKey({
+  key: 'LICENSE-KEY',
+  expect,
+  label: 'MacBook Pro',
+});
+
+await deactivateLicenseKey({
+  key: 'LICENSE-KEY',
+  expect,
+  activationId: activated.id,
+});
+```
+
+```ts Dodo Payments
+import {
+  activateLicenseKey,
+  deactivateLicenseKey,
+  validateLicenseKey,
+} from 'revenue-sdk/dodo-payments';
+
+const validation = await validateLicenseKey({
+  key: 'LICENSE-KEY',
+  activationId: 'ACTIVATION_ID', // optional
+  server: 'test', // 'live' (default) | 'test'
+});
+
+const activation = await activateLicenseKey({
+  key: 'LICENSE-KEY',
+  label: 'MacBook Pro',
+  server: 'test',
+});
+
+await deactivateLicenseKey({
+  key: 'LICENSE-KEY',
+  activationId: activation.id,
+  server: 'test',
+});
+```
+
+</CodeGroup>
+
+Common parameters:
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'The license key as the customer received it.' },
+    activationId: {
+      type: 'string',
+      required: false,
+      description: 'Required on deactivate; on validate it narrows the check to one activation and returns it. Lemon Squeezy calls this an instance — the SDK name is uniform.',
+    },
+    label: { type: 'string', description: 'Activate only. Names the device or instance being activated.' },
+    baseUrl: { type: 'string', required: false, description: 'Used verbatim; overrides server where a server option exists.' },
+    fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
+  }}
+/>
+
+Plus, per provider:
+
+- **Polar** — `organizationId`, required, and `server?: 'production' | 'sandbox'`.
+- **Lemon Squeezy** — `expect: { storeId, productId?, variantId? }`, required.
+- **Dodo Payments** — `server?: 'live' | 'test'`.
+
+The return types are the same on every subpath:
+
+| Call             | Returns                |
+| ---------------- | ---------------------- |
+| `validate…`      | `LicenseKeyValidation` |
+| `activate…`      | `LicenseKeyActivation` |
+| `deactivate…`    | `void`                 |
+
+Only `validateLicenseKey` reports a rejection as data. A key that is unknown, revoked, disabled,
+expired or — on Lemon Squeezy — owned by another store comes back as `valid: false`, and never
+throws. Activation and deactivation report their outcome through the return type alone, so a refusal
+throws a `RevenueError` instead: a reached activation limit as `validation`, a key that is not yours
+as `not_found`.
+
+<TypeTable
+  type={{
+    valid: { type: 'boolean', description: "The provider's verdict. Always authoritative — unlike the locally derived status." },
+    licenseKey: { type: 'LicenseKey', required: false, description: 'The key. Always undefined on Dodo Payments, and undefined whenever valid is false.' },
+    activation: { type: 'LicenseKeyActivation', required: false, description: 'The matched activation, when the call supplied or created one.' },
+    raw: { type: 'unknown', description: 'The untouched provider payload.' },
+  }}
+/>
+
+## A desktop app flow
+
+Activate once, validate on every later start, deactivate when the customer signs out. Store the key and
+the activation ID locally — the activation ID is what frees the seat again.
+
+```ts
+import {
+  activateLicenseKey,
+  deactivateLicenseKey,
+  validateLicenseKey,
+} from 'revenue-sdk/polar';
+
+// A public identifier. Shipping it inside the app is the point — it is what scopes
+// the check to your organization server-side.
+const ORGANIZATION_ID = 'ORGANIZATION_ID';
+
+// First run: the customer pastes the key from their purchase email.
+export async function activate(key: string): Promise<void> {
+  const activation = await activateLicenseKey({
+    key,
+    organizationId: ORGANIZATION_ID,
+    label: deviceName(), // e.g. os.hostname()
+  });
+  await settings.set({ key, activationId: activation.id });
+}
+
+// Every later start: check the key and the activation this device holds.
+export async function isLicensed(): Promise<boolean> {
+  const stored = await settings.get();
+  if (!stored) {
+    return false;
+  }
+  const { valid } = await validateLicenseKey({
+    key: stored.key,
+    organizationId: ORGANIZATION_ID,
+    activationId: stored.activationId,
+    signal: AbortSignal.timeout(5_000),
+  });
+  return valid;
+}
+
+// Sign-out: release the seat so the customer can use another machine.
+export async function deactivate(): Promise<void> {
+  const stored = await settings.get();
+  if (stored) {
+    await deactivateLicenseKey({
+      key: stored.key,
+      organizationId: ORGANIZATION_ID,
+      activationId: stored.activationId,
+    });
+    await settings.clear();
+  }
+}
+```
+
+Passing `activationId` to `validateLicenseKey` is what makes the check per-device: without it the key
+validates on any machine, including ones that were never activated or have since been deactivated.
+
+:::tip
+Decide what happens when the network is unavailable. `validateLicenseKey` throws `network_error` rather
+than returning `valid: false`, so an offline start is distinguishable from a revoked key — cache the
+last successful result with a grace period instead of locking the customer out.
+:::
+
+## Lemon Squeezy: `expect` is required
+
+Lemon Squeezy's public license API takes **only the key**. It is not scoped to a store, a product, or a
+variant, so *any* Lemon Squeezy merchant's key validates successfully against it. Lemon Squeezy's own
+documentation:
+
+> verify that the `store_id`, `product_id` and/or `variant_id` from this response match… If you don't do
+> this, someone using a license key from another Lemon Squeezy product could use it to get access to
+> your product.
+
+The SDK makes that check mandatory instead of leaving it to the caller: `expect` is a **required**
+parameter on all three functions and is asserted against the response `meta` every time.
+
+```ts
+const { valid, licenseKey } = await validateLicenseKey({
+  key,
+  expect: { storeId: 76833, variantId: 1615641 },
+});
+```
+
+<TypeTable
+  type={{
+    storeId: { type: 'string | number', description: 'Your store. Required — this is the minimum scoping.' },
+    productId: { type: 'string | number', required: false, description: 'Narrows the check to one Lemon Squeezy product.' },
+    variantId: { type: 'string | number', required: false, description: 'Narrows the check to one variant — the unified Product.' },
+  }}
+/>
+
+IDs are compared as strings, so `76833` and `'76833'` both match. A key that belongs to someone else
+comes back `valid: false` with `licenseKey` and `activation` left `undefined` — the mismatched key is
+never handed to the caller, even though Lemon Squeezy called it valid. A response with **no `meta` at
+all** fails closed for the same reason.
+
+Polar gets this for free: `organizationId` is required and Polar scopes the check server-side.
+
+## Dodo Payments: validate answers with a bare boolean
+
+`POST /licenses/validate` on Dodo Payments returns literally `{ "valid": boolean }` — no product, no
+business, no customer, no expiry.
+
+:::warning
+There is **nothing to scope against**. A live key issued by any Dodo Payments merchant for any product
+validates as `true`. `LicenseKeyValidation.licenseKey` is therefore **always `undefined`** on Dodo
+Payments — there is no key data in the response to map.
+:::
+
+Only `activateLicenseKey` reveals ownership: its response carries `business_id` and `product`, both
+available on `raw`. Bind the key to your own product there, or read it server-side with
+`client.licenseKeys.get`.
+
+```ts
+const activation = await activateLicenseKey({ key, label: deviceName() });
+const { product } = activation.raw as { product: { product_id: string } };
+
+if (product.product_id !== MY_PRODUCT_ID) {
+  throw new Error('This key is for a different product.');
+}
+```
+
+## Managing keys from your server
+
+`client.licenseKeys` is the merchant half. It needs the credential, so it belongs on your server — never
+in the app you ship.
+
+```ts
+const { items, cursor } = await client.licenseKeys.list({ limit: 20 });
+
+for await (const licenseKey of client.licenseKeys.listAll()) {
+  console.log(licenseKey.key, licenseKey.status, licenseKey.activationCount);
+}
+
+const licenseKey = await client.licenseKeys.get({ id: 'LICENSE_KEY_ID' });
+
+// Revoke a key after a chargeback, without deleting it.
+await client.licenseKeys.update({ id: 'LICENSE_KEY_ID', disabled: true });
+
+// Or hand out more seats and drop the expiry.
+await client.licenseKeys.update({
+  id: 'LICENSE_KEY_ID',
+  activationLimit: 5,
+  expiresAt: null,
+});
+```
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'The license key ID — LicenseKey.id, not the key string.' },
+    disabled: { type: 'boolean', required: false, description: 'Revokes the key while leaving it in place; false re-enables it.' },
+    activationLimit: { type: 'number | null', required: false, description: 'Maximum simultaneous activations. null removes the limit.' },
+    expiresAt: { type: 'Date | null', required: false, description: 'When the key stops working. null removes the expiry.' },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
+  }}
+/>
+
+An empty `id` and an `activationLimit` that is neither `null` nor a positive integer are rejected with
+`RevenueError { code: 'validation' }` before any request is made. All four methods throw `unsupported`
+on a provider without the `licenseKeys` capability.
+
+The `LicenseKey` model:
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'The identifier the merchant methods take.' },
+    key: { type: 'string', description: 'The key itself. Merchant reads may return a masked form — check raw.' },
+    status: { type: "'active' | 'disabled' | 'expired'", description: 'Normalized status. valid from a validation call always wins.' },
+    activationLimit: { type: 'number', required: false, description: 'Maximum simultaneous activations; absent when unlimited.' },
+    activationCount: { type: 'number', required: false, description: 'Activations currently in use.' },
+    expiresAt: { type: 'Date', required: false, description: 'When the key stops working.' },
+    customerId: { type: 'string', required: false, description: "The provider's customer identifier." },
+    productId: { type: 'string', required: false, description: 'Set on Dodo Payments, and on the Lemon Squeezy public path. Never on Polar.' },
+    raw: { type: 'unknown', description: 'The untouched provider payload.' },
+  }}
+/>
+
+Key **creation** is not part of this namespace — see [Out of scope](#out-of-scope).
+
+## Status is normalized, `valid` is authoritative
+
+`LicenseKeyStatus` is a closed union of three values:
+
+| Unified    | Polar                        | Lemon Squeezy         | Dodo Payments |
+| ---------- | ---------------------------- | --------------------- | ------------- |
+| `active`   | `granted`                    | `active`, `inactive`¹ | `active`      |
+| `disabled` | `revoked`, `disabled`        | `disabled`            | `disabled`    |
+| `expired`  | *derived from `expires_at`*² | `expired`             | `expired`     |
+
+¹ Lemon Squeezy's `inactive` means "issued but never activated" — a perfectly usable key, so it maps to
+`active`.
+
+² Polar has no `expired` status; expiry lives only in `expires_at`, and the SDK derives the status from
+it using the local clock.
+
+:::note
+The derived Polar status can never contradict a validation verdict, because Polar rejects expired,
+revoked and disabled keys **server-side** on validate (its service raises `ResourceNotFound`), which
+surfaces as `valid: false`. The derivation only ever shows up on merchant reads.
+:::
+
+When both are available, branch on `valid` — it is the provider's answer, not a local guess.
+
+## Getting notified
+
+One license event is normalized: **`license.issued`**, emitted when a provider hands a key to a
+customer.
+
+| Provider          | Provider event                                                           | `licenseKeyId` | `licenseKey`                    |
+| ----------------- | ------------------------------------------------------------------------ | -------------- | ------------------------------- |
+| **Polar**         | `benefit_grant.created`, only when `data.benefit.type` is `license_keys` | set            | — (only a masked `display_key`) |
+| **Lemon Squeezy** | `license_key_created`                                                    | set            | set, with the key itself        |
+| **Stripe**        | —                                                                        | —              | —                               |
+| **Paddle**        | —                                                                        | —              | —                               |
+| **Dodo Payments** | `license_key.created`                                                    | set            | set, with the key itself        |
+
+Two fields rather than one, on purpose. `licenseKeyId` is the uniform access path — it is set on every
+`license.issued` event, on every provider that emits one — while `licenseKey` carries the full record
+only where the provider actually sends it. That makes the follow-up fetch explicit instead of silently
+handing you a masked key:
+
+```ts
+const event = await parseWebhookEvent({ headers, body });
+
+if (event.type === 'license.issued') {
+  // Set everywhere except Polar, whose grant carries only a masked display_key.
+  const licenseKey = event.licenseKey ?? (await client.licenseKeys.get({ id: event.licenseKeyId! }));
+  await emailTheKey(licenseKey.key);
+}
+```
+
+:::warning
+**Polar has no license webhook.** A key is delivered as a *benefit grant*, which makes `license.issued`
+the one normalized event type the SDK derives from the payload rather than the provider's event string.
+A `benefit_grant.created` for a Discord, downloadable, or meter-credit benefit stays `unknown`.
+:::
+
+On Lemon Squeezy the mapped `licenseKey` carries no `productId`, for the reason described in the model
+above: LS's `product_id` names the Lemon Squeezy *product*, while the unified `Product` is a *variant*.
+Dodo Payments' does.
+
+### Why revocation is not an event
+
+Because only one provider actually reports it:
+
+- **Polar** has `benefit_grant.revoked` — a direct signal — plus `benefit_grant.updated` and
+  `benefit_grant.cycled`.
+- **Lemon Squeezy** has only a generic `license_key_updated`. A revocation would have to be *inferred*
+  by diffing `status` against what you stored.
+- **Dodo Payments** has no revocation or update event at all. `license_key.created` is its only license
+  event.
+
+One direct signal, one inference, one absence. Mapping the Lemon Squeezy update to `license.revoked`
+would report a revocation that may not have happened, and keeping it honest would mean adding a
+`license.updated` event that exists on exactly one provider. Neither is a normalization.
+
+### Enforce with `validateLicenseKey`, not with a webhook
+
+All three providers reject revoked, disabled, and expired keys **server-side** on validate — Polar's own
+service raises `ResourceNotFound` for all three — so the shipped app sees `valid: false` on its next
+check without any event being involved.
+
+That is also the only thing that reaches the machine you need to stop. A webhook notifies *your server*;
+it does not reach the customer's laptop, and it has nothing to say about a copy that was offline while
+the revocation happened and reconnects a week later. Validation covers both.
+
+```ts
+import { validateLicenseKey } from 'revenue-sdk/polar';
+
+// The same check as the desktop flow above, read as a tier decision: a revoked,
+// disabled, or expired key answers valid: false, so the app downgrades itself on
+// the first start after the revocation.
+export async function currentTier(): Promise<'pro' | 'free'> {
+  const stored = await settings.get();
+  if (!stored) {
+    return 'free';
+  }
+  const { valid } = await validateLicenseKey({
+    key: stored.key,
+    organizationId: ORGANIZATION_ID,
+    activationId: stored.activationId,
+    signal: AbortSignal.timeout(5_000),
+  });
+  return valid ? 'pro' : 'free';
+}
+```
+
+A start with no network throws `network_error` rather than returning `valid: false`, which is what makes
+the cached grace period suggested above implementable: only a real verdict downgrades the customer.
+
+### For bookkeeping, use the subscription events
+
+When a key is tied to a subscription — the usual case on all three providers — the *cause* of a
+revocation is the subscription ending. Those events are already normalized across **all five** providers,
+including Dodo Payments, where no license webhook exists at all:
+
+```ts
+switch (event.type) {
+  case 'subscription.canceled':
+    // Terminal: the subscription is over, so the keys it issued are done too.
+    await markLicensesRevoked(event.subscription!.customerId);
+    break;
+  case 'subscription.updated':
+    if (event.subscription!.cancelAtPeriodEnd) {
+      await scheduleRevocationNotice(event.subscription!);
+    }
+    break;
+}
+```
+
+Your database learns why access ended; the app learns *that* it ended from its next validate call.
+
+## Provider support
+
+Gated by the `licenseKeys` capability:
+
+| Provider          | `licenseKeys` | Public routes                                                          | Merchant routes    |
+| ----------------- | ------------- | ---------------------------------------------------------------------- | ------------------ |
+| **Polar**         | `true`        | `POST /v1/customer-portal/license-keys/{validate,activate,deactivate}` | `/v1/license-keys` |
+| **Lemon Squeezy** | `true`        | `POST /v1/licenses/{validate,activate,deactivate}`                     | `/v1/license-keys` |
+| **Stripe**        | `false`       | —                                                                      | —                  |
+| **Paddle**        | `false`       | —                                                                      | —                  |
+| **Dodo Payments** | `true`        | `POST /licenses/{validate,activate,deactivate}`                        | `/license_keys`    |
+
+```ts
+if (client.capabilities.licenseKeys) {
+  const { items } = await client.licenseKeys.list();
+}
+```
+
+### Why Stripe and Paddle are unsupported
+
+**Stripe has no license-key API at all.** Billing Entitlements is not a substitute: it is a derived
+per-customer feature boolean with no key string, no activation count, and no device identity. And
+`GET /v1/entitlements/active_entitlements` is **secret-key-only** — `CustomerSessions` has no
+`entitlements` component — so a desktop app cannot check its own license without shipping your secret
+key.
+
+**Paddle Billing v1 removed license keys.** Paddle Classic generated and activated them
+(`POST /api/2.0/product/generate_license`); Paddle's own migration matrix lists license keys as
+Classic-only with no Billing equivalent, and Classic takes no new signups.
+
+## Testing
+
+The in-memory provider from `revenue-sdk/testing` seeds license keys and exposes them on
+`state.licenseKeys`:
+
+```ts
+import { expect, test } from 'vitest';
+import { createClient } from 'revenue-sdk';
+import { createInMemoryProvider } from 'revenue-sdk/testing';
+
+test('a chargeback disables the key', async () => {
+  const provider = createInMemoryProvider({
+    licenseKeys: [{ id: 'lk-1', key: 'AAAA-BBBB', activationLimit: 3 }],
+  });
+  const client = createClient({ provider });
+
+  await client.licenseKeys.update({ id: 'lk-1', disabled: true });
+
+  expect(provider.state.licenseKeys[0]!.status).toBe('disabled');
+});
+```
+
+Override `capabilities: { licenseKeys: false }` to exercise the Stripe and Paddle fallback path.
+
+:::note
+The in-memory provider deliberately does **not** implement `validateLicenseKey`, `activateLicenseKey`,
+or `deactivateLicenseKey`. Those are subpath exports, not part of the `RevenueProvider` contract — stub
+them in your app the way you stub any other module, or inject a `fetch` into them.
+:::
+
+## Out of scope
+
+The two surfaces above are the whole feature. Deliberately absent:
+
+- **Key creation.** Only Dodo Payments can mint a key through its API; on Polar and Lemon Squeezy keys
+  are issued by a purchase. A unified `create` would work on one provider out of three.
+- **Issuance configuration** — Polar's license-key benefit, the Lemon Squeezy variant setting, the Dodo
+  Payments entitlement. All are dashboard settings.
+- **Polar's usage metering on keys** (`increment_usage`, `conditions`, `limit_usage`), which no other
+  provider has.
+- **Revocation and update webhook events.** Only issuance is normalized, as `license.issued` — see
+  [Getting notified](#getting-notified).
+
+<CardGroup cols={2}>
+  <Card title="Next: Customers & portal" icon="users" href="/docs/concepts/customers-and-portal">
+    Look up customers and mint portal sessions.
+  </Card>
+  <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
+    licenseKeys next to every other capability.
+  </Card>
+</CardGroup>

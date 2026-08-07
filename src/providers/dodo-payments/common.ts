@@ -1,8 +1,12 @@
+import type { ProviderErrorInfo } from '../../http.ts';
 import type {
   BillingInterval,
   Checkout,
   CheckoutStatus,
   Customer,
+  LicenseKey,
+  LicenseKeyActivation,
+  LicenseKeyStatus,
   Order,
   Price,
   Product,
@@ -10,6 +14,25 @@ import type {
   SubscriptionStatus,
 } from '../../types.ts';
 import { toDate, toMetadata } from '../shared.ts';
+
+const LIVE_BASE_URL = 'https://live.dodopayments.com';
+const TEST_BASE_URL = 'https://test.dodopayments.com';
+
+/** Test and live are separate hosts, not a mode flag on a shared one. */
+export function toBaseUrl(options: { server?: 'live' | 'test'; baseUrl?: string }): string {
+  return options.baseUrl ?? (options.server === 'test' ? TEST_BASE_URL : LIVE_BASE_URL);
+}
+
+export function mapError(status: number, body: unknown): ProviderErrorInfo {
+  if (body === null || typeof body !== 'object') {
+    return {};
+  }
+  const { code, message } = body as { code?: unknown; message?: unknown };
+  if (typeof message === 'string') {
+    return { message: typeof code === 'string' ? `${code}: ${message}` : message };
+  }
+  return {};
+}
 
 export interface DodoListResponse<T> {
   items: T[];
@@ -86,6 +109,24 @@ export interface DodoPayment {
   subscription_id?: string | null;
   customer?: { customer_id?: string | null; email?: string | null } | null;
   metadata?: Record<string, unknown> | null;
+}
+
+export interface DodoLicenseKey {
+  id: string;
+  key: string;
+  status: string;
+  activations_limit?: number | null;
+  instances_count?: number | null;
+  expires_at?: string | null;
+  customer_id?: string | null;
+  product_id?: string | null;
+}
+
+/** Dodo calls an activation an "instance"; `POST /licenses/activate` returns this shape. */
+export interface DodoLicenseKeyInstance {
+  id: string;
+  name?: string | null;
+  created_at?: string | null;
 }
 
 function toInterval(interval: DodoTimeInterval | null | undefined): BillingInterval | undefined {
@@ -231,5 +272,41 @@ export function toOrderFromPayment(payment: DodoPayment): Order {
     subscriptionId: payment.subscription_id ?? undefined,
     metadata: toMetadata(payment.metadata),
     raw: payment,
+  };
+}
+
+function toLicenseKeyStatus(status: string): LicenseKeyStatus {
+  switch (status) {
+    case 'disabled':
+      return 'disabled';
+    case 'expired':
+      return 'expired';
+    // Dodo's enum is exactly `active | expired | disabled`, but the API is unversioned and
+    // additive, so an unrecognized value falls back to the usable state.
+    default:
+      return 'active';
+  }
+}
+
+export function toLicenseKey(licenseKey: DodoLicenseKey): LicenseKey {
+  return {
+    id: licenseKey.id,
+    key: licenseKey.key,
+    status: toLicenseKeyStatus(licenseKey.status),
+    activationLimit: licenseKey.activations_limit ?? undefined,
+    activationCount: licenseKey.instances_count ?? undefined,
+    expiresAt: toDate(licenseKey.expires_at),
+    customerId: licenseKey.customer_id ?? undefined,
+    productId: licenseKey.product_id ?? undefined,
+    raw: licenseKey,
+  };
+}
+
+export function toLicenseKeyActivation(instance: DodoLicenseKeyInstance): LicenseKeyActivation {
+  return {
+    id: instance.id,
+    label: instance.name ?? undefined,
+    createdAt: toDate(instance.created_at),
+    raw: instance,
   };
 }

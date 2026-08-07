@@ -89,6 +89,17 @@ describe('stripe', () => {
     expect(provider.name).toBe('stripe');
     expect(provider.capabilities.hostedCheckout).toBe(true);
     expect(provider.capabilities.usageReporting).toBe(true);
+    expect(provider.capabilities.licenseKeys).toBe(false);
+  });
+
+  it('rejects license key operations', async () => {
+    const { provider } = setup(() => ({ json: {} }));
+    await expectRevenueError(provider.listLicenseKeys({}), 'unsupported');
+    await expectRevenueError(provider.getLicenseKey({ id: 'lk_1' }), 'unsupported');
+    await expectRevenueError(
+      provider.updateLicenseKey({ id: 'lk_1', disabled: true }),
+      'unsupported',
+    );
   });
 
   describe('products', () => {

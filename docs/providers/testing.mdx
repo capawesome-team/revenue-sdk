@@ -31,8 +31,8 @@ The seed is optional — `createInMemoryProvider()` starts empty.
 
 ## The seed shape
 
-`products`, `customers`, and `subscriptions` are arrays; every field is optional and gets a sensible
-default. Missing IDs are generated (`product-1`, `price-2`, `customer-3`, …).
+`products`, `customers`, `subscriptions`, and `licenseKeys` are arrays; every field is optional and gets
+a sensible default. Missing IDs are generated (`product-1`, `price-2`, `customer-3`, …).
 
 <TypeTable
   type={{
@@ -51,6 +51,12 @@ default. Missing IDs are generated (`product-1`, `price-2`, `customer-3`, …).
       required: false,
       description:
         '{ id?, status?, cancelAtPeriodEnd?, pauseAtPeriodEnd?, customerId?, productId?, quantity?, currency?, amount?, interval?, currentPeriodEnd?, trialEndsAt?, resumesAt?, endsAt?, metadata? }.',
+    },
+    licenseKeys: {
+      type: 'InMemoryLicenseKeySeed[]',
+      required: false,
+      description:
+        '{ id?, key?, status?, activationLimit?, activationCount?, expiresAt?, customerId?, productId? }. key defaults to the id, status to active.',
     },
   }}
 />
@@ -175,8 +181,8 @@ test('creating a checkout records it', async () => {
 ```
 
 `provider.state` is `{ products: Product[], customers: Customer[], subscriptions: Subscription[],
-checkouts: Checkout[], usageEvents: InMemoryUsageEvent[] }`. Mutating operations write straight into it,
-so the seeded objects and the returned ones are the same instances.
+licenseKeys: LicenseKey[], checkouts: Checkout[], usageEvents: InMemoryUsageEvent[] }`. Mutating
+operations write straight into it, so the seeded objects and the returned ones are the same instances.
 
 ### Reported usage events
 
@@ -221,6 +227,31 @@ The type is exported as `InMemoryUsageEvent` from `revenue-sdk/testing`. Overrid
 `capabilities: { usageReporting: false }` to exercise the Lemon Squeezy and Paddle fallback path — see
 [Usage-based billing](/docs/concepts/usage-based-billing).
 
+### Seeded license keys
+
+`licenseKeys` seeds surface on `state.licenseKeys`, and `licenseKeys.update` writes into them:
+
+```ts
+test('a chargeback disables the key', async () => {
+  const provider = createInMemoryProvider({
+    licenseKeys: [{ id: 'lk-1', key: 'AAAA-BBBB', activationLimit: 3 }],
+  });
+  const client = createClient({ provider });
+
+  await client.licenseKeys.update({ id: 'lk-1', disabled: true });
+
+  expect(provider.state.licenseKeys[0]!.status).toBe('disabled');
+});
+```
+
+Override `capabilities: { licenseKeys: false }` to exercise the Stripe and Paddle fallback path.
+
+:::note
+The in-memory provider deliberately does **not** implement `validateLicenseKey`, `activateLicenseKey`,
+or `deactivateLicenseKey`. Those are subpath exports rather than `RevenueProvider` methods — inject a
+`fetch` into them, or stub the module. See [License keys](/docs/concepts/license-keys).
+:::
+
 ## Behavior of the mutating operations
 
 | Call                          | Effect on state                                                                  |
@@ -235,6 +266,7 @@ The type is exported as `InMemoryUsageEvent` from `revenue-sdk/testing`. Overrid
 | `subscriptions.revoke`        | Sets `status: 'canceled'`, clears `cancelAtPeriodEnd`, and sets `endedAt`.         |
 | `customerPortal.createSession`| Returns a fake portal URL, or throws `not_found` for an unknown customer.          |
 | `usage.report`                | Appends an `InMemoryUsageEvent`; `value` is merged into `payload`.                 |
+| `licenseKeys.update`          | Sets `status` to `disabled`/`active` from `disabled`, and writes `activationLimit` and `expiresAt` when given (`null` clears them). |
 
 Anything looked up by an ID that isn't seeded throws `RevenueError` with code `not_found`.
 

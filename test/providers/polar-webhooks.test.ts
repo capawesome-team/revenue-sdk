@@ -157,6 +157,42 @@ describe('polar parseWebhookEvent', () => {
     expect(event.checkout?.status).toBe('complete');
   });
 
+  it('maps a license-keys benefit_grant.created to license.issued without the key', async () => {
+    const event = await parseWebhookEvent({
+      headers: {},
+      body: JSON.stringify({
+        type: 'benefit_grant.created',
+        data: {
+          id: 'grant-1',
+          benefit: { id: 'ben-1', type: 'license_keys' },
+          properties: {
+            license_key_id: 'lk-uuid-1',
+            display_key: '****-****-1234',
+            user_provided_key: false,
+          },
+        },
+      }),
+    });
+    expect(event.type).toBe('license.issued');
+    expect(event.providerType).toBe('benefit_grant.created');
+    expect(event.licenseKeyId).toBe('lk-uuid-1');
+    // Polar sends only a masked `display_key`, so the full record is never available here.
+    expect(event.licenseKey).toBeUndefined();
+  });
+
+  it('maps a benefit_grant.created for a non-license benefit to unknown', async () => {
+    const event = await parseWebhookEvent({
+      headers: {},
+      body: JSON.stringify({
+        type: 'benefit_grant.created',
+        data: { id: 'grant-2', benefit: { id: 'ben-2', type: 'discord' }, properties: {} },
+      }),
+    });
+    expect(event.type).toBe('unknown');
+    expect(event.providerType).toBe('benefit_grant.created');
+    expect(event.licenseKeyId).toBeUndefined();
+  });
+
   it('never throws on unknown event types', async () => {
     const event = await parseWebhookEvent({
       headers: {},

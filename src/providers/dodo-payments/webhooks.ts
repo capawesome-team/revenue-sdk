@@ -10,8 +10,10 @@ import {
   type WebhookInput,
 } from '../../webhooks/verify.ts';
 import {
+  toLicenseKey,
   toOrderFromPayment,
   toSubscription,
+  type DodoLicenseKey,
   type DodoPayment,
   type DodoSubscription,
 } from './common.ts';
@@ -125,6 +127,16 @@ export async function parseWebhookEvent(input: WebhookInput): Promise<WebhookEve
       type: 'order.paid',
       providerType,
       order: toOrderFromPayment(envelope.data as DodoPayment),
+      raw: envelope,
+    };
+  }
+  if (providerType === 'license_key.created') {
+    const licenseKey = toLicenseKey(envelope.data as DodoLicenseKey);
+    return {
+      type: 'license.issued',
+      providerType,
+      licenseKeyId: licenseKey.id,
+      licenseKey,
       raw: envelope,
     };
   }

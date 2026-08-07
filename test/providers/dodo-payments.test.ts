@@ -348,6 +348,95 @@ describe('dodoPayments', () => {
     });
   });
 
+  describe('license keys', () => {
+    const LICENSE_KEY = {
+      id: 'lic_1',
+      key: 'a1b2c3d4-0000-4000-8000-000000000000',
+      status: 'active',
+      activations_limit: 3,
+      instances_count: 1,
+      expires_at: '2027-01-01T00:00:00Z',
+      customer_id: 'cus_1',
+      product_id: 'pdt_1',
+    };
+
+    it('advertises license key support', () => {
+      const { provider } = setup(() => ({ json: {} }));
+      expect(provider.capabilities.licenseKeys).toBe(true);
+    });
+
+    it('lists license keys from the underscored merchant route', async () => {
+      const { provider, stub } = setup(() => ({ json: { items: [LICENSE_KEY] } }));
+      const page = await provider.listLicenseKeys({ limit: 2 });
+      expect(stub.requests[0]!.url).toBe(
+        'https://live.dodopayments.com/license_keys?page_number=0&page_size=2',
+      );
+      expect(stub.requests[0]!.headers['authorization']).toBe(`Bearer ${API_KEY}`);
+      expect(page.items[0]).toMatchObject({
+        id: 'lic_1',
+        key: 'a1b2c3d4-0000-4000-8000-000000000000',
+        status: 'active',
+        activationLimit: 3,
+        activationCount: 1,
+        customerId: 'cus_1',
+        productId: 'pdt_1',
+      });
+      expect(page.items[0]!.expiresAt).toEqual(new Date('2027-01-01T00:00:00Z'));
+      // A short page terminates pagination — Dodo lists carry no has_more.
+      expect(page.cursor).toBeUndefined();
+    });
+
+    it('maps the disabled and expired statuses', async () => {
+      for (const [dodoStatus, unified] of [
+        ['active', 'active'],
+        ['disabled', 'disabled'],
+        ['expired', 'expired'],
+      ] as const) {
+        const { provider } = setup(() => ({ json: { ...LICENSE_KEY, status: dodoStatus } }));
+        const licenseKey = await provider.getLicenseKey({ id: 'lic_1' });
+        expect(licenseKey.status).toBe(unified);
+      }
+    });
+
+    it('omits an absent limit and expiry', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { ...LICENSE_KEY, activations_limit: null, expires_at: null },
+      }));
+      const licenseKey = await provider.getLicenseKey({ id: 'lic_1' });
+      expect(stub.requests[0]!.url).toBe('https://live.dodopayments.com/license_keys/lic_1');
+      expect(licenseKey.activationLimit).toBeUndefined();
+      expect(licenseKey.expiresAt).toBeUndefined();
+    });
+
+    it('updates a license key with an ISO expiry', async () => {
+      const { provider, stub } = setup(() => ({ json: { ...LICENSE_KEY, activations_limit: 5 } }));
+      const licenseKey = await provider.updateLicenseKey({
+        id: 'lic_1',
+        activationLimit: 5,
+        disabled: false,
+        expiresAt: new Date('2027-06-01T00:00:00Z'),
+      });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('PATCH');
+      expect(request.url).toBe('https://live.dodopayments.com/license_keys/lic_1');
+      expect(JSON.parse(request.body!)).toEqual({
+        activations_limit: 5,
+        disabled: false,
+        expires_at: '2027-06-01T00:00:00.000Z',
+      });
+      expect(licenseKey.activationLimit).toBe(5);
+    });
+
+    it('sends null to clear the limit and expiry and omits untouched fields', async () => {
+      const { provider, stub } = setup(() => ({ json: LICENSE_KEY }));
+      await provider.updateLicenseKey({ id: 'lic_1', activationLimit: null, expiresAt: null });
+      expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
+        activations_limit: null,
+        expires_at: null,
+      });
+    });
+  });
+
   it('creates portal sessions with query-string parameters', async () => {
     const { provider, stub } = setup(() => ({
       json: { link: 'https://portal.dodopayments.com/session/tok' },

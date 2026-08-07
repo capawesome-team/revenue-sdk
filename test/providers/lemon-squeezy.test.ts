@@ -98,6 +98,7 @@ describe('lemonSqueezy', () => {
     expect(provider.capabilities.pause).toBe(true);
     expect(provider.capabilities.pauseBehaviors).toEqual(['immediately']);
     expect(provider.capabilities.usageReporting).toBe(false);
+    expect(provider.capabilities.licenseKeys).toBe(true);
   });
 
   describe('listProducts', () => {
@@ -505,6 +506,130 @@ describe('lemonSqueezy', () => {
         provider.createCustomerPortalSession({ customerId: '7', returnUrl: 'https://x' }),
         'unsupported',
       );
+    });
+  });
+
+  describe('license keys', () => {
+    const LICENSE_KEY = {
+      type: 'license-keys',
+      id: '1',
+      attributes: {
+        store_id: 76833,
+        customer_id: 7,
+        order_id: 11,
+        product_id: 1030025,
+        user_email: 'user@example.com',
+        key: '38b1460a-5104-4067-a91d-77b872934d51',
+        key_short: '38B1-...-4D51',
+        activation_limit: 5,
+        instances_count: 1,
+        disabled: 0,
+        status: 'active',
+        expires_at: null,
+        created_at: '2026-08-01T00:00:00.000000Z',
+      },
+    };
+
+    it('lists the store license keys and maps them', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { data: [LICENSE_KEY], meta: { page: { currentPage: 1, lastPage: 2 } } },
+      }));
+      const page = await provider.listLicenseKeys({ limit: 2 });
+      const request = stub.requests[0]!;
+      expect(request.url).toContain('/v1/license-keys?');
+      expect(request.url).toContain('page%5Bsize%5D=2');
+      expect(request.url).toContain('filter%5Bstore_id%5D=76833');
+      expect(page.cursor).toBeDefined();
+      expect(page.items[0]).toMatchObject({
+        id: '1',
+        key: '38b1460a-5104-4067-a91d-77b872934d51',
+        status: 'active',
+        activationLimit: 5,
+        activationCount: 1,
+        customerId: '7',
+      });
+      // The license key references the Lemon Squeezy product, not the variant a unified
+      // `Product` maps to, so no product ID is reported.
+      expect(page.items[0]!.productId).toBeUndefined();
+      expect(page.items[0]!.expiresAt).toBeUndefined();
+    });
+
+    it('gets a license key and maps an unlimited activation limit and an expiry', async () => {
+      const { provider, stub } = setup(() => ({
+        json: {
+          data: {
+            ...LICENSE_KEY,
+            attributes: {
+              ...LICENSE_KEY.attributes,
+              activation_limit: null,
+              expires_at: '2027-01-01T00:00:00.000000Z',
+            },
+          },
+        },
+      }));
+      const licenseKey = await provider.getLicenseKey({ id: '1' });
+      expect(stub.requests[0]!.url).toBe('https://api.lemonsqueezy.com/v1/license-keys/1');
+      expect(licenseKey.activationLimit).toBeUndefined();
+      expect(licenseKey.expiresAt).toEqual(new Date('2027-01-01T00:00:00.000000Z'));
+    });
+
+    it.each([
+      ['a numeric flag', 1],
+      ['a boolean flag', true],
+    ])('maps %s to the disabled status', async (_name, disabled) => {
+      const { provider } = setup(() => ({
+        json: { data: { ...LICENSE_KEY, attributes: { ...LICENSE_KEY.attributes, disabled } } },
+      }));
+      expect((await provider.getLicenseKey({ id: '1' })).status).toBe('disabled');
+    });
+
+    it.each([
+      ['expired', 'expired'],
+      ['inactive', 'active'],
+    ])('maps the %s status to %s', async (status, expected) => {
+      const { provider } = setup(() => ({
+        json: { data: { ...LICENSE_KEY, attributes: { ...LICENSE_KEY.attributes, status } } },
+      }));
+      expect((await provider.getLicenseKey({ id: '1' })).status).toBe(expected);
+    });
+
+    it('updates a license key via a JSON:API PATCH', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: LICENSE_KEY } }));
+      await provider.updateLicenseKey({
+        id: '1',
+        disabled: true,
+        activationLimit: 10,
+        expiresAt: new Date('2027-01-01T00:00:00Z'),
+      });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('PATCH');
+      expect(request.url).toBe('https://api.lemonsqueezy.com/v1/license-keys/1');
+      expect(request.headers['content-type']).toBe('application/vnd.api+json');
+      expect(JSON.parse(request.body!)).toEqual({
+        data: {
+          type: 'license-keys',
+          id: '1',
+          attributes: {
+            disabled: true,
+            activation_limit: 10,
+            expires_at: '2027-01-01T00:00:00.000Z',
+          },
+        },
+      });
+    });
+
+    it('sends literal nulls to remove the limit and the expiry', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: LICENSE_KEY } }));
+      await provider.updateLicenseKey({ id: '1', activationLimit: null, expiresAt: null });
+      const attributes = JSON.parse(stub.requests[0]!.body!).data.attributes;
+      // Dropped keys would leave the current limit and expiry in place.
+      expect(attributes).toEqual({ activation_limit: null, expires_at: null });
+    });
+
+    it('omits untouched attributes', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: LICENSE_KEY } }));
+      await provider.updateLicenseKey({ id: '1', disabled: false });
+      expect(JSON.parse(stub.requests[0]!.body!).data.attributes).toEqual({ disabled: false });
     });
   });
 

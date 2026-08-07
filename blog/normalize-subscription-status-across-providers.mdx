@@ -143,8 +143,8 @@ Read it from webhooks, and use the API to reconcile. The webhook is the only sig
 state changes without a request from you, which covers renewals, dunning, expiries, and portal-initiated
 cancellations — most of the interesting transitions.
 
-Normalized events make this uniform. `parseWebhookEvent` returns `subscription.created`,
-`subscription.updated`, `subscription.canceled`, `order.paid`, or `checkout.completed`, each carrying an
+Normalized events make this uniform. The subscription lifecycle arrives as `subscription.created`,
+`subscription.updated`, or `subscription.canceled` from `parseWebhookEvent`, each carrying an
 already-normalized `Subscription`:
 
 ```ts

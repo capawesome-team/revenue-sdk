@@ -4,6 +4,8 @@ import type {
   BillingInterval,
   Checkout,
   Customer,
+  LicenseKey,
+  LicenseKeyStatus,
   Metadata,
   Page,
   PriceModel,
@@ -26,6 +28,7 @@ const DEFAULT_CAPABILITIES: RevenueCapabilities = {
   checkoutSuccessUrl: true,
   endTrial: true,
   hostedCheckout: true,
+  licenseKeys: true,
   listSubscriptionsByCustomer: true,
   pause: true,
   pauseBehaviors: ['immediately', 'period_end'],
@@ -80,10 +83,22 @@ export interface InMemorySubscriptionSeed {
   metadata?: Metadata;
 }
 
+export interface InMemoryLicenseKeySeed {
+  id?: string;
+  key?: string;
+  status?: LicenseKeyStatus;
+  activationLimit?: number;
+  activationCount?: number;
+  expiresAt?: Date;
+  customerId?: string;
+  productId?: string;
+}
+
 export interface InMemorySeed {
   products?: InMemoryProductSeed[];
   customers?: InMemoryCustomerSeed[];
   subscriptions?: InMemorySubscriptionSeed[];
+  licenseKeys?: InMemoryLicenseKeySeed[];
 }
 
 export interface InMemoryUsageEvent {
@@ -99,6 +114,7 @@ export interface InMemoryState {
   products: Product[];
   customers: Customer[];
   subscriptions: Subscription[];
+  licenseKeys: LicenseKey[];
   checkouts: Checkout[];
   usageEvents: InMemoryUsageEvent[];
 }
@@ -172,6 +188,20 @@ export function createInMemoryProvider(
       metadata: subscription.metadata,
       raw: subscription,
     })),
+    licenseKeys: (seed.licenseKeys ?? []).map((licenseKey) => {
+      const id = licenseKey.id ?? nextId('license-key');
+      return {
+        id,
+        key: licenseKey.key ?? id,
+        status: licenseKey.status ?? 'active',
+        activationLimit: licenseKey.activationLimit,
+        activationCount: licenseKey.activationCount,
+        expiresAt: licenseKey.expiresAt,
+        customerId: licenseKey.customerId,
+        productId: licenseKey.productId,
+        raw: licenseKey,
+      };
+    }),
     checkouts: [],
     usageEvents: [],
   };
@@ -198,6 +228,14 @@ export function createInMemoryProvider(
       throw notFound('subscription', id);
     }
     return subscription;
+  }
+
+  function getLicenseKeyById(id: string): LicenseKey {
+    const licenseKey = state.licenseKeys.find((entry) => entry.id === id);
+    if (!licenseKey) {
+      throw notFound('license key', id);
+    }
+    return licenseKey;
   }
 
   return {
@@ -341,6 +379,28 @@ export function createInMemoryProvider(
         idempotencyKey: params.idempotencyKey,
         timestamp: params.timestamp,
       });
+    },
+
+    async listLicenseKeys(params) {
+      return paginate(state.licenseKeys, params.cursor);
+    },
+
+    async getLicenseKey(params) {
+      return getLicenseKeyById(params.id);
+    },
+
+    async updateLicenseKey(params) {
+      const licenseKey = getLicenseKeyById(params.id);
+      if (params.disabled !== undefined) {
+        licenseKey.status = params.disabled ? 'disabled' : 'active';
+      }
+      if (params.activationLimit !== undefined) {
+        licenseKey.activationLimit = params.activationLimit ?? undefined;
+      }
+      if (params.expiresAt !== undefined) {
+        licenseKey.expiresAt = params.expiresAt ?? undefined;
+      }
+      return licenseKey;
     },
   };
 }

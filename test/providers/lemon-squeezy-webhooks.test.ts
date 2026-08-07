@@ -151,12 +151,43 @@ describe('lemon-squeezy parseWebhookEvent', () => {
     expect(event.order).toMatchObject({ id: '77', subscriptionId: '42', amount: 2900 });
   });
 
+  it('maps license_key_created to license.issued with the plaintext key', async () => {
+    const event = await parseWebhookEvent({
+      headers: {},
+      body: JSON.stringify({
+        meta: { event_name: 'license_key_created' },
+        data: {
+          type: 'license-keys',
+          id: '99',
+          attributes: {
+            customer_id: 7,
+            key: 'ABCD-1234-EFGH-5678',
+            status: 'inactive',
+            activation_limit: 5,
+            instances_count: 0,
+            disabled: 0,
+          },
+        },
+      }),
+    });
+    expect(event.type).toBe('license.issued');
+    expect(event.providerType).toBe('license_key_created');
+    expect(event.licenseKeyId).toBe('99');
+    expect(event.licenseKey).toMatchObject({
+      id: '99',
+      key: 'ABCD-1234-EFGH-5678',
+      status: 'active',
+      activationLimit: 5,
+      customerId: '7',
+    });
+  });
+
   it('never throws on unknown event types', async () => {
     const event = await parseWebhookEvent({
       headers: {},
-      body: JSON.stringify({ meta: { event_name: 'license_key_created' }, data: {} }),
+      body: JSON.stringify({ meta: { event_name: 'license_key_updated' }, data: {} }),
     });
     expect(event.type).toBe('unknown');
-    expect(event.providerType).toBe('license_key_created');
+    expect(event.providerType).toBe('license_key_updated');
   });
 });

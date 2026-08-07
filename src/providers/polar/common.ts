@@ -1,8 +1,12 @@
+import type { ProviderErrorInfo } from '../../http.ts';
 import type {
   BillingInterval,
   Checkout,
   CheckoutStatus,
   Customer,
+  LicenseKey,
+  LicenseKeyActivation,
+  LicenseKeyStatus,
   Order,
   Price,
   PriceModel,
@@ -12,6 +16,27 @@ import type {
   SubscriptionStatus,
 } from '../../types.ts';
 import { toDate, toMetadata } from '../shared.ts';
+
+const PRODUCTION_BASE_URL = 'https://api.polar.sh';
+const SANDBOX_BASE_URL = 'https://sandbox-api.polar.sh';
+
+export function toBaseUrl(options: {
+  server?: 'production' | 'sandbox';
+  baseUrl?: string;
+}): string {
+  return options.baseUrl ?? (options.server === 'sandbox' ? SANDBOX_BASE_URL : PRODUCTION_BASE_URL);
+}
+
+export function mapError(status: number, body: unknown): ProviderErrorInfo {
+  if (body === null || typeof body !== 'object') {
+    return {};
+  }
+  const { error, detail } = body as { error?: unknown; detail?: unknown };
+  if (typeof detail === 'string') {
+    return { message: typeof error === 'string' ? `${error}: ${detail}` : detail };
+  }
+  return {};
+}
 
 export interface PolarListResponse<T> {
   items: T[];
@@ -86,6 +111,23 @@ export interface PolarSubscription {
   ended_at?: string | null;
   meters?: PolarSubscriptionMeter[] | null;
   metadata?: Record<string, unknown> | null;
+}
+
+export interface PolarLicenseKeyActivation {
+  id: string;
+  label: string;
+  created_at: string;
+}
+
+export interface PolarLicenseKey {
+  id: string;
+  key: string;
+  status: string;
+  customer_id: string;
+  limit_activations?: number | null;
+  expires_at?: string | null;
+  /** Only returned when reading a single key; list responses omit it. */
+  activations?: PolarLicenseKeyActivation[];
 }
 
 export interface PolarOrder {
@@ -258,5 +300,42 @@ export function toOrder(order: PolarOrder): Order {
     subscriptionId: order.subscription_id ?? undefined,
     metadata: toMetadata(order.metadata),
     raw: order,
+  };
+}
+
+function toLicenseKeyStatus(status: string, expiresAt: Date | undefined): LicenseKeyStatus {
+  // `revoked` is set by Polar when the granting benefit is revoked; `disabled` is the
+  // merchant's own switch. Both mean the key no longer validates.
+  if (status !== 'granted') {
+    return 'disabled';
+  }
+  // Polar has no `expired` status — expiry lives only in `expires_at`. The derivation uses the
+  // local clock, but Polar rejects expired keys server-side, so validation stays authoritative.
+  return expiresAt !== undefined && expiresAt.getTime() <= Date.now() ? 'expired' : 'active';
+}
+
+export function toLicenseKey(licenseKey: PolarLicenseKey): LicenseKey {
+  const expiresAt = toDate(licenseKey.expires_at);
+  return {
+    id: licenseKey.id,
+    key: licenseKey.key,
+    status: toLicenseKeyStatus(licenseKey.status, expiresAt),
+    activationLimit: licenseKey.limit_activations ?? undefined,
+    activationCount: licenseKey.activations?.length,
+    expiresAt,
+    customerId: licenseKey.customer_id,
+    // `productId` stays unset: a Polar key hangs off a benefit, not a product (`benefit_id` in `raw`).
+    raw: licenseKey,
+  };
+}
+
+export function toLicenseKeyActivation(
+  activation: PolarLicenseKeyActivation,
+): LicenseKeyActivation {
+  return {
+    id: activation.id,
+    label: activation.label,
+    createdAt: toDate(activation.created_at),
+    raw: activation,
   };
 }

@@ -116,8 +116,8 @@ a forged payload, because parsing and authentication are deliberately separate c
 parses first and verifies later has already trusted attacker-controlled input.
 
 The normalized event carries `type` (one of `subscription.created`, `subscription.updated`,
-`subscription.canceled`, `order.paid`, `checkout.completed`, or `unknown`), `providerType` with the
-provider's original string, and `raw` with the untouched envelope. Unrecognized provider events come back
+`subscription.canceled`, `order.paid`, `checkout.completed`, `license.issued`, or `unknown`),
+`providerType` with the provider's original string, and `raw` with the untouched envelope. Unrecognized provider events come back
 as `unknown` instead of throwing, which matters because every provider adds event types over time. The
 full mapping is in [Webhook events](/docs/reference/webhook-events).
 

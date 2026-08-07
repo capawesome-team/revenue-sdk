@@ -51,12 +51,23 @@ describe('paddle', () => {
     expect(provider.capabilities.checkoutSuccessUrl).toBe(false);
     expect(provider.capabilities.cancellationReason).toBe(false);
     expect(provider.capabilities.usageReporting).toBe(false);
+    expect(provider.capabilities.licenseKeys).toBe(false);
   });
 
   it('rejects usage reporting', async () => {
     const { provider } = setup(() => ({ json: { data: [] } }));
     await expectRevenueError(
       provider.reportUsage({ customerId: 'ctm_1', eventName: 'api' }),
+      'unsupported',
+    );
+  });
+
+  it('rejects license key operations', async () => {
+    const { provider } = setup(() => ({ json: { data: [] } }));
+    await expectRevenueError(provider.listLicenseKeys({}), 'unsupported');
+    await expectRevenueError(provider.getLicenseKey({ id: 'lic_1' }), 'unsupported');
+    await expectRevenueError(
+      provider.updateLicenseKey({ id: 'lic_1', disabled: true }),
       'unsupported',
     );
   });

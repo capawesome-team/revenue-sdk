@@ -36,6 +36,10 @@ Every provider exposes a `capabilities` object, also surfaced on `client.capabil
       type: 'boolean',
       description: 'Whether checkouts.create returns a ready-to-use provider-hosted URL. false for Paddle, which needs your own Paddle.js page.',
     },
+    licenseKeys: {
+      type: 'boolean',
+      description: 'Whether the licenseKeys namespace is supported. false for Stripe and Paddle. Validating and activating keys needs no client — see License keys.',
+    },
     listSubscriptionsByCustomer: {
       type: 'boolean',
       description: 'Whether subscriptions.list accepts a customerId filter. false for Lemon Squeezy.',
@@ -113,6 +117,7 @@ The client gates on:
 - `subscriptions.changePlan({ prorationBehavior })` — the value must be in `prorationBehaviors`
 - `customerPortal.createSession({ returnUrl })` — requires `portalReturnUrl`
 - `usage.report` — requires `usageReporting`
+- `licenseKeys.list/listAll/get/update` — require `licenseKeys`
 
 Adapters raise `unsupported` for the finer-grained limits a boolean can't express — a Polar checkout
 with `quantity > 1`, a Lemon Squeezy checkout with more than one item or a `customerId`, a Polar or

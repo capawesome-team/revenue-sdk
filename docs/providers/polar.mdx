@@ -84,13 +84,63 @@ used **verbatim, including its `whsec_` prefix** — do not strip or base64-deco
 
 Events worth subscribing to: `subscription.created`, `subscription.updated`, `subscription.active`,
 `subscription.canceled`, `subscription.uncanceled`, `subscription.revoked`, `subscription.cycled`,
-`order.paid`, `checkout.updated`.
+`order.paid`, `checkout.updated`, and — if you sell license keys — `benefit_grant.created`.
 
 :::warning
 Polar emits `subscription.canceled` when a cancellation is merely **scheduled**; the terminal event is
 `subscription.revoked`. `revenue-sdk` normalizes them to `subscription.updated` and
 `subscription.canceled` respectively — see [Webhooks](/docs/concepts/webhooks).
 :::
+
+## License keys
+
+Validating, activating, and deactivating a key needs **no credential**, so those three functions are
+standalone exports rather than client methods — safe to ship inside a desktop, mobile, or CLI app.
+
+```ts
+import { activateLicenseKey, deactivateLicenseKey, validateLicenseKey } from 'revenue-sdk/polar';
+
+const { valid, licenseKey } = await validateLicenseKey({
+  key: 'POLAR-KEY-0001',
+  organizationId: 'ORGANIZATION_ID',
+  activationId: 'ACTIVATION_ID', // optional — narrows the check to one device
+});
+
+const activation = await activateLicenseKey({
+  key: 'POLAR-KEY-0001',
+  organizationId: 'ORGANIZATION_ID',
+  label: 'MacBook Pro',
+});
+
+await deactivateLicenseKey({
+  key: 'POLAR-KEY-0001',
+  organizationId: 'ORGANIZATION_ID',
+  activationId: activation.id,
+});
+```
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'The license key as the customer received it.' },
+    organizationId: {
+      type: 'string',
+      description: 'Your Polar organization ID. Required — it scopes the check server-side. A public identifier, safe to ship inside an application.',
+    },
+    activationId: {
+      type: 'string',
+      required: false,
+      description: 'Optional on validate (narrows the check and returns the activation); required on deactivate.',
+    },
+    label: { type: 'string', description: 'Activate only. Names the device or instance.' },
+    server: { type: "'production' | 'sandbox'", default: 'production', required: false, description: 'Same hosts as the factory.' },
+    baseUrl: { type: 'string', required: false, description: 'Overrides server; used verbatim.' },
+    fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
+  }}
+/>
+
+Merchant-side management — `client.licenseKeys.list/listAll/get/update` — does need the access token and
+reads `/v1/license-keys`. See [License keys](/docs/concepts/license-keys).
 
 ## Capabilities
 
@@ -101,6 +151,7 @@ Polar emits `subscription.canceled` when a cancellation is merely **scheduled**;
 | `checkoutSuccessUrl`          | `true`                       |
 | `endTrial`                    | `true`                       |
 | `hostedCheckout`              | `true`                       |
+| `licenseKeys`                 | `true`                       |
 | `listSubscriptionsByCustomer` | `true`                       |
 | `pause`                       | `true`                       |
 | `pauseBehaviors`              | `['period_end']`             |
@@ -141,6 +192,25 @@ Polar emits `subscription.canceled` when a cancellation is merely **scheduled**;
   and string values at 500. See [Usage-based billing](/docs/concepts/usage-based-billing).
 - **Meters are returned inline on the subscription.** Polar is the only provider that populates
   `Subscription.meters` with the current period's consumed units, credited units, and accrued amount.
+- **License validation must be unauthenticated.** The customer-portal license routes answer
+  `401 invalid_token` when **any** `Authorization` header is present, which is why `validateLicenseKey`,
+  `activateLicenseKey`, and `deactivateLicenseKey` are standalone subpath exports that send no
+  credential. `organizationId` takes the place of the credential and is a public identifier.
+- **A 404 from validate means every kind of rejection** — unknown key, revoked, disabled, expired, or an
+  activation that doesn't match. The SDK maps it to `valid: false` instead of throwing; any other error
+  status still throws.
+- **Activate returns 403 for two different reasons**: the activation limit is reached, *or* the key has
+  no activation limit configured at all. Both surface as `RevenueError { code: 'forbidden' }`.
+- **`LicenseKey.productId` is never set.** A Polar key hangs off a *benefit*, not a product — `raw`
+  carries `benefit_id`, and a benefit ID is not something `products.get` accepts.
+- **`activationCount` only comes from `licenseKeys.get`.** The list and PATCH responses carry no
+  `activations` array, so the field stays `undefined` there.
+- **`update({ disabled: true })` writes Polar's `disabled` status, not `revoked`.** `revoked` belongs to
+  Polar's benefit lifecycle and is flipped back to `granted` on the next grant cycle; `disabled` is the
+  merchant switch Polar never touches. `disabled: false` writes `granted`.
+- **No `expired` license status.** Expiry lives only in `expires_at`, so the SDK derives
+  `status: 'expired'` from it. Polar rejects expired keys server-side on validate, so a validation
+  verdict can never contradict the derivation.
 - **`Retry-After` on 429**, so the client's bounded rate-limit retry works out of the box.
 - **Trial length** is normalized to `Price.trialDays` only for day- and week-based trials; month- and
   year-based trials have no exact day count and are left `undefined` — read `raw`.

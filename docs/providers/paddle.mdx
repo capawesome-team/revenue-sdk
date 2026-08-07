@@ -140,6 +140,7 @@ that `transaction.completed` is the single "money received" signal and payments 
 | `checkoutSuccessUrl`          | `false`                                |
 | `endTrial`                    | `true`                                 |
 | `hostedCheckout`              | `false`                                |
+| `licenseKeys`                 | `false`                                |
 | `listSubscriptionsByCustomer` | `true`                                 |
 | `pause`                       | `true`                                 |
 | `pauseBehaviors`              | `['immediately', 'period_end']`        |
@@ -174,6 +175,11 @@ that `transaction.completed` is the single "money received" signal and payments 
   (OpenMeter, m3ter, or your own store) and bill the result as a one-time charge —
   `POST /subscriptions/{id}/charge` with a price you compute yourself. See
   [Usage-based billing](/docs/concepts/usage-based-billing).
+- **No license keys.** Paddle Classic generated and activated them
+  (`POST /api/2.0/product/generate_license`), but Billing v1 dropped the feature with no equivalent —
+  Paddle's own migration matrix lists license keys as Classic-only — and Classic takes no new signups.
+  `licenseKeys` is `false` and all four `client.licenseKeys` methods throw `unsupported`. See
+  [License keys](/docs/concepts/license-keys).
 - **`management_urls` is absent from webhook payloads**, so portal links must come from
   `customerPortal.createSession` (`POST /customers/{id}/portal-sessions`). `returnUrl` is unsupported.
 

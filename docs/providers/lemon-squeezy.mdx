@@ -69,12 +69,61 @@ There is **no timestamp**, so there is no replay window to enforce — de-duplic
 
 Events worth subscribing to: `subscription_created`, `subscription_updated`, `subscription_cancelled`,
 `subscription_resumed`, `subscription_paused`, `subscription_unpaused`, `subscription_expired`,
-`order_created`, `subscription_payment_success`.
+`order_created`, `subscription_payment_success`, and — if you sell license keys — `license_key_created`.
 
 :::note
 Checkout custom data arrives **only** in `meta.custom_data` on the webhook envelope, never on the
 resource. This is the only place `Subscription.metadata` gets populated on Lemon Squeezy.
 :::
+
+## License keys
+
+The public license API needs **no credential**, so validate, activate, and deactivate are standalone
+exports rather than client methods — safe to ship inside a desktop, mobile, or CLI app.
+
+```ts
+import {
+  activateLicenseKey,
+  deactivateLicenseKey,
+  validateLicenseKey,
+} from 'revenue-sdk/lemon-squeezy';
+
+const expect = { storeId: 76833, variantId: 1615641 };
+
+const validation = await validateLicenseKey({ key: 'LICENSE-KEY', expect });
+const activated = await activateLicenseKey({ key: 'LICENSE-KEY', expect, label: 'MacBook Pro' });
+await deactivateLicenseKey({ key: 'LICENSE-KEY', expect, activationId: activated.id });
+```
+
+<TypeTable
+  type={{
+    key: { type: 'string', description: 'The license key as the customer received it.' },
+    expect: {
+      type: '{ storeId: string | number; productId?: string | number; variantId?: string | number }',
+      description: 'Required. Asserted against the response meta on every call — see the quirk below. IDs are compared as strings.',
+    },
+    activationId: {
+      type: 'string',
+      required: false,
+      description: 'Lemon Squeezy calls this an instance. Optional on validate, required on deactivate.',
+    },
+    label: { type: 'string', description: 'Activate only. Sent as instance_name; required by Lemon Squeezy.' },
+    baseUrl: { type: 'string', required: false, description: 'Used verbatim; defaults to https://api.lemonsqueezy.com.' },
+    fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
+  }}
+/>
+
+Return types match the other subpaths: `validateLicenseKey` resolves to a `LicenseKeyValidation`,
+`activateLicenseKey` to a `LicenseKeyActivation`, `deactivateLicenseKey` to `void`. Lemon Squeezy
+answers all three routes with one envelope, so the SDK normalizes it away. Because activation and
+deactivation report their outcome through the return type alone, a refusal throws rather than
+returning a false verdict — a reached activation limit surfaces as `validation`, and a key belonging
+to another store as `not_found`. Only `validateLicenseKey` reports a rejection as `valid: false`.
+
+Merchant-side management — `client.licenseKeys.list/listAll/get/update` — uses the API key and reads
+`/v1/license-keys`, filtered by the factory's `storeId`. See
+[License keys](/docs/concepts/license-keys).
 
 ## Capabilities
 
@@ -85,6 +134,7 @@ resource. This is the only place `Subscription.metadata` gets populated on Lemon
 | `checkoutSuccessUrl`          | `true`                                 |
 | `endTrial`                    | `true`                                 |
 | `hostedCheckout`              | `true`                                 |
+| `licenseKeys`                 | `true`                                 |
 | `listSubscriptionsByCustomer` | `false`                                |
 | `pause`                       | `true`                                 |
 | `pauseBehaviors`              | `['immediately']`                      |
@@ -125,6 +175,23 @@ resource. This is the only place `Subscription.metadata` gets populated on Lemon
   keys on a **subscription-item ID** rather than a customer — an extra lookup that is ambiguous as soon
   as a customer has several subscriptions — and it has no idempotency at all with `increment` semantics,
   so a single replay double-bills. See [Usage-based billing](/docs/concepts/usage-based-billing).
+- **The public license API is unscoped, so `expect` is required.** It takes only the key, which means
+  *any* Lemon Squeezy merchant's key validates against it. The SDK asserts `expect` against the response
+  `meta` on all three calls; a foreign key comes back `valid: false` with `licenseKey` and `activation`
+  left `undefined`, and a response without `meta` fails closed. See
+  [License keys](/docs/concepts/license-keys).
+- **Test and live keys share one host.** Unlike the merchant API, the license API is not scoped by an
+  API key, so a test-mode key validates against production. `license_key.test_mode` on `raw` is the only
+  discriminator — check it if you ship test keys.
+- **A non-OK response can still be a verdict.** Activate answers
+  `400 {"activated":false,"error":"License key activation limit reached."}`, and an unknown key answers
+  `404 {"valid":false,…}`. Any 4XX carrying the verdict field is returned as `valid: false`; anything
+  else re-throws as a `RevenueError`.
+- **`LicenseKey.productId` depends on the path.** On merchant reads it is `undefined`: Lemon Squeezy's
+  `product_id` names the LS *product*, while the unified `Product` is a *variant*, so the ID would not
+  work with `products.get`. On the public license path the SDK reports `meta.variant_id` instead.
+- **`disabled` arrives as a boolean or a number** depending on the endpoint; any truthy value maps to
+  `status: 'disabled'`.
 - **PayPal subscriptions ignore `PATCH /subscriptions`** — Lemon Squeezy silently no-ops. Plan changes,
   uncancel, pause, and resume therefore do nothing for PayPal-paid subscriptions; re-read the
   subscription and check before reporting success to the customer.

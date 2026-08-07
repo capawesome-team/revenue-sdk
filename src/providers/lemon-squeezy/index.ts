@@ -3,12 +3,15 @@ import { HttpClient, type ProviderErrorInfo } from '../../http.ts';
 import { clampLimit, decodeCursor, encodeCursor } from '../../pagination.ts';
 import type { Product, RevenueCapabilities, RevenueProvider } from '../../types.ts';
 import {
+  BASE_URL,
   toCheckout,
   toCustomer,
+  toLicenseKey,
   toProduct,
   toSubscription,
   type LsCheckoutAttributes,
   type LsCustomerAttributes,
+  type LsLicenseKeyAttributes,
   type LsListResponse,
   type LsPriceAttributes,
   type LsSingleResponse,
@@ -16,7 +19,6 @@ import {
   type LsVariantAttributes,
 } from './common.ts';
 
-const BASE_URL = 'https://api.lemonsqueezy.com';
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 100;
 
@@ -26,6 +28,7 @@ const CAPABILITIES: RevenueCapabilities = {
   checkoutSuccessUrl: true,
   endTrial: true,
   hostedCheckout: true,
+  licenseKeys: true,
   // Subscriptions are filterable by store/product/variant/email only, not by customer ID.
   listSubscriptionsByCustomer: false,
   pause: true,
@@ -341,6 +344,45 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
 
     async reportUsage() {
       throw unsupported('usage reporting');
+    },
+
+    async listLicenseKeys(params) {
+      const { page, query } = pageQuery(params.cursor, params.limit);
+      const { data } = await http.json<LsListResponse<LsLicenseKeyAttributes>>('/v1/license-keys', {
+        query: { ...query, 'filter[store_id]': storeId },
+        signal: params.signal,
+      });
+      return { items: data.data.map(toLicenseKey), cursor: nextCursor(page, data) };
+    },
+
+    async getLicenseKey(params) {
+      const { data } = await http.json<LsSingleResponse<LsLicenseKeyAttributes>>(
+        `/v1/license-keys/${params.id}`,
+        { signal: params.signal },
+      );
+      return toLicenseKey(data.data);
+    },
+
+    async updateLicenseKey(params) {
+      const attributes: Record<string, unknown> = {};
+      if (params.disabled !== undefined) {
+        attributes.disabled = params.disabled;
+      }
+      if (params.activationLimit !== undefined) {
+        attributes.activation_limit = params.activationLimit;
+      }
+      if (params.expiresAt !== undefined) {
+        attributes.expires_at = params.expiresAt === null ? null : params.expiresAt.toISOString();
+      }
+      const { data } = await http.json<LsSingleResponse<LsLicenseKeyAttributes>>(
+        `/v1/license-keys/${params.id}`,
+        {
+          method: 'PATCH',
+          body: { data: { type: 'license-keys', id: params.id, attributes } },
+          signal: params.signal,
+        },
+      );
+      return toLicenseKey(data.data);
     },
   };
 }

@@ -47,6 +47,24 @@ const SUBSCRIPTION = {
   metadata: { organization_id: 'org_1' },
 };
 
+const LICENSE_KEY = {
+  id: 'lk-uuid-1',
+  organization_id: 'org-uuid-1',
+  customer_id: 'cus-uuid-1',
+  benefit_id: 'ben-uuid-1',
+  key: 'POLAR-TEST-KEY-0001',
+  display_key: '****-0001',
+  status: 'granted',
+  limit_activations: 3,
+  usage: 0,
+  limit_usage: null,
+  validations: 1,
+  last_validated_at: null,
+  expires_at: '2027-01-01T00:00:00Z',
+  created_at: '2026-08-01T00:00:00Z',
+  modified_at: null,
+};
+
 async function expectRevenueError(promise: Promise<unknown>, code: string): Promise<void> {
   try {
     await promise;
@@ -66,6 +84,7 @@ describe('polar', () => {
     expect(provider.capabilities.pause).toBe(true);
     expect(provider.capabilities.pauseBehaviors).toEqual(['period_end']);
     expect(provider.capabilities.usageReporting).toBe(true);
+    expect(provider.capabilities.licenseKeys).toBe(true);
   });
 
   it('uses the sandbox base URL when configured', async () => {
@@ -454,6 +473,92 @@ describe('polar', () => {
             metadata: { model: 'sonnet', value: 77 },
           },
         ],
+      });
+    });
+  });
+
+  describe('license keys', () => {
+    it('lists the collection with its trailing slash and maps keys', async () => {
+      const { provider, stub } = setup(() => ({ json: emptyPage([LICENSE_KEY], 2) }));
+      const page = await provider.listLicenseKeys({ limit: 50 });
+      const request = stub.requests[0]!;
+      expect(request.url).toBe('https://api.polar.sh/v1/license-keys/?page=1&limit=50');
+      expect(request.headers['authorization']).toBe(`Bearer ${TOKEN}`);
+      expect(page.cursor).toBeDefined();
+      expect(page.items[0]).toMatchObject({
+        id: 'lk-uuid-1',
+        key: 'POLAR-TEST-KEY-0001',
+        status: 'active',
+        activationLimit: 3,
+        customerId: 'cus-uuid-1',
+        expiresAt: new Date('2027-01-01T00:00:00Z'),
+      });
+      expect(page.items[0]!.activationCount).toBeUndefined();
+    });
+
+    it('gets a key and counts its activations', async () => {
+      const { provider, stub } = setup(() => ({
+        json: {
+          ...LICENSE_KEY,
+          activations: [
+            { id: 'act-uuid-1', license_key_id: 'lk-uuid-1', label: 'Laptop', meta: {} },
+          ],
+        },
+      }));
+      const licenseKey = await provider.getLicenseKey({ id: 'lk-uuid-1' });
+      expect(stub.requests[0]!.url).toBe('https://api.polar.sh/v1/license-keys/lk-uuid-1');
+      expect(licenseKey.activationCount).toBe(1);
+    });
+
+    it('maps a revoked key and an elapsed expiry onto the unified statuses', async () => {
+      const { provider } = setup(() => ({
+        json: emptyPage([
+          { ...LICENSE_KEY, status: 'revoked' },
+          { ...LICENSE_KEY, expires_at: '2020-01-01T00:00:00Z' },
+          { ...LICENSE_KEY, limit_activations: null, expires_at: null },
+        ]),
+      }));
+      const page = await provider.listLicenseKeys({});
+      expect(page.items.map((item) => item.status)).toEqual(['disabled', 'expired', 'active']);
+      expect(page.items[2]!.activationLimit).toBeUndefined();
+      expect(page.items[2]!.expiresAt).toBeUndefined();
+    });
+
+    it('disables a key via the merchant-owned disabled status', async () => {
+      const { provider, stub } = setup(() => ({ json: { ...LICENSE_KEY, status: 'disabled' } }));
+      const licenseKey = await provider.updateLicenseKey({ id: 'lk-uuid-1', disabled: true });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('PATCH');
+      expect(request.url).toBe('https://api.polar.sh/v1/license-keys/lk-uuid-1');
+      expect(JSON.parse(request.body!)).toEqual({ status: 'disabled' });
+      expect(licenseKey.status).toBe('disabled');
+    });
+
+    it('re-enables a key and updates the limit and expiry', async () => {
+      const { provider, stub } = setup(() => ({ json: LICENSE_KEY }));
+      await provider.updateLicenseKey({
+        id: 'lk-uuid-1',
+        disabled: false,
+        activationLimit: 5,
+        expiresAt: new Date('2027-06-01T00:00:00Z'),
+      });
+      expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
+        status: 'granted',
+        limit_activations: 5,
+        expires_at: '2027-06-01T00:00:00.000Z',
+      });
+    });
+
+    it('sends explicit nulls to clear the limit and expiry and omits untouched fields', async () => {
+      const { provider, stub } = setup(() => ({ json: LICENSE_KEY }));
+      await provider.updateLicenseKey({
+        id: 'lk-uuid-1',
+        activationLimit: null,
+        expiresAt: null,
+      });
+      expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
+        limit_activations: null,
+        expires_at: null,
       });
     });
   });

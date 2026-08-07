@@ -134,6 +134,42 @@ export interface CustomerPortalSession {
   raw: unknown;
 }
 
+/** Polar reports `granted`/`revoked` instead; Lemon Squeezy's never-activated `inactive` is `active` here. */
+export type LicenseKeyStatus = 'active' | 'disabled' | 'expired';
+
+export interface LicenseKey {
+  id: string;
+  /** The key itself. Merchant reads may return a masked form — see `raw` for the provider's exact value. */
+  key: string;
+  status: LicenseKeyStatus;
+  /** Maximum simultaneous activations; absent when unlimited. */
+  activationLimit?: number;
+  /** Activations currently in use. */
+  activationCount?: number;
+  expiresAt?: Date;
+  customerId?: string;
+  productId?: string;
+  raw: unknown;
+}
+
+export interface LicenseKeyActivation {
+  id: string;
+  /** The instance name supplied at activation time. */
+  label?: string;
+  createdAt?: Date;
+  raw: unknown;
+}
+
+export interface LicenseKeyValidation {
+  /** The provider's verdict — always authoritative, unlike the locally derived `status`. */
+  valid: boolean;
+  /** Absent on Dodo Payments, whose validate response carries nothing but a boolean. */
+  licenseKey?: LicenseKey;
+  /** The matched activation, when the call supplied an activation id. */
+  activation?: LicenseKeyActivation;
+  raw: unknown;
+}
+
 export type CancellationReason =
   | 'customer_service'
   | 'low_quality'
@@ -150,6 +186,7 @@ export type ProrationBehavior = 'invoice_now' | 'none' | 'prorate';
 
 export type WebhookEventType =
   | 'checkout.completed'
+  | 'license.issued'
   | 'order.paid'
   | 'subscription.canceled'
   | 'subscription.created'
@@ -164,6 +201,10 @@ export interface WebhookEvent {
   subscription?: Subscription;
   order?: Order;
   checkout?: Checkout;
+  /** Which key a `license.issued` event refers to. Always set on that event, even when `licenseKey` is not. */
+  licenseKeyId?: string;
+  /** The issued key. Absent on Polar, which sends only a masked form — fetch it with `licenseKeys.get`. */
+  licenseKey?: LicenseKey;
   raw: unknown;
 }
 
@@ -178,6 +219,8 @@ export interface RevenueCapabilities {
   endTrial: boolean;
   /** Whether `checkouts.create` returns a ready-to-use provider-hosted URL. Paddle requires a merchant-hosted Paddle.js page instead. */
   hostedCheckout: boolean;
+  /** Whether the `licenseKeys` namespace is supported. Validating and activating keys needs no client — see the provider subpath. */
+  licenseKeys: boolean;
   /** Whether `subscriptions.list` supports the `customerId` filter. */
   listSubscriptionsByCustomer: boolean;
   /** Whether `subscriptions.pause` and `subscriptions.resume` are supported. */
@@ -289,6 +332,25 @@ export interface CreateCustomerPortalSessionParams extends BaseParams {
   returnUrl?: string;
 }
 
+export interface ListLicenseKeysParams extends BaseParams {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface GetLicenseKeyParams extends BaseParams {
+  id: string;
+}
+
+export interface UpdateLicenseKeyParams extends BaseParams {
+  id: string;
+  /** Revokes the key while leaving it in place; `false` re-enables it. */
+  disabled?: boolean;
+  /** `null` removes the limit. */
+  activationLimit?: number | null;
+  /** `null` removes the expiry. */
+  expiresAt?: Date | null;
+}
+
 export interface ReportUsageParams extends BaseParams {
   /** The provider's customer identifier. */
   customerId: string;
@@ -326,4 +388,7 @@ export interface RevenueProvider {
     params: CreateCustomerPortalSessionParams,
   ): Promise<CustomerPortalSession>;
   reportUsage(params: ReportUsageParams): Promise<void>;
+  listLicenseKeys(params: ListLicenseKeysParams): Promise<Page<LicenseKey>>;
+  getLicenseKey(params: GetLicenseKeyParams): Promise<LicenseKey>;
+  updateLicenseKey(params: UpdateLicenseKeyParams): Promise<LicenseKey>;
 }

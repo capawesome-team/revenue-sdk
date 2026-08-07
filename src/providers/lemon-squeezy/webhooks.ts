@@ -10,9 +10,11 @@ import {
 } from '../../webhooks/verify.ts';
 import { toMetadata } from '../shared.ts';
 import {
+  toLicenseKey,
   toOrderFromInvoice,
   toOrderFromOrder,
   toSubscription,
+  type LsLicenseKeyAttributes,
   type LsOrderAttributes,
   type LsResource,
   type LsSubscriptionAttributes,
@@ -108,6 +110,16 @@ export async function parseWebhookEvent(input: WebhookInput): Promise<WebhookEve
       type: 'order.paid',
       providerType,
       order: toOrderFromInvoice(envelope.data as LsResource<LsSubscriptionInvoiceAttributes>),
+      raw: envelope,
+    };
+  }
+  if (providerType === 'license_key_created') {
+    const licenseKey = toLicenseKey(envelope.data as LsResource<LsLicenseKeyAttributes>);
+    return {
+      type: 'license.issued',
+      providerType,
+      licenseKeyId: licenseKey.id,
+      licenseKey,
       raw: envelope,
     };
   }

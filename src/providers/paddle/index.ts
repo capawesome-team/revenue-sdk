@@ -34,6 +34,9 @@ const CAPABILITIES: RevenueCapabilities = {
   // The returned checkout URL requires the merchant's own Paddle.js page (default payment
   // link) — there is no Paddle-hosted checkout via the API.
   hostedCheckout: false,
+  // Paddle Classic generated and activated license keys; Billing v1 dropped them with no
+  // equivalent, and Classic takes no new signups.
+  licenseKeys: false,
   listSubscriptionsByCustomer: true,
   pause: true,
   pauseBehaviors: ['immediately', 'period_end'],
@@ -374,6 +377,18 @@ export function paddle(options: PaddleProviderOptions): RevenueProvider {
 
     async reportUsage() {
       throw unsupported('usage reporting');
+    },
+
+    async listLicenseKeys() {
+      throw unsupported('license keys');
+    },
+
+    async getLicenseKey() {
+      throw unsupported('license keys');
+    },
+
+    async updateLicenseKey() {
+      throw unsupported('license keys');
     },
   };
 }

@@ -1,22 +1,24 @@
 import { RevenueError } from '../../errors.ts';
-import { HttpClient, type ProviderErrorInfo } from '../../http.ts';
+import { HttpClient } from '../../http.ts';
 import { clampLimit, decodeCursor, encodeCursor } from '../../pagination.ts';
 import type { ProrationBehavior, RevenueCapabilities, RevenueProvider } from '../../types.ts';
 import { toUsagePayload } from '../shared.ts';
 import {
+  mapError,
+  toBaseUrl,
   toCheckout,
   toCustomer,
+  toLicenseKey,
   toProduct,
   toSubscription,
   type PolarCheckout,
   type PolarCustomer,
+  type PolarLicenseKey,
   type PolarListResponse,
   type PolarProduct,
   type PolarSubscription,
 } from './common.ts';
 
-const PRODUCTION_BASE_URL = 'https://api.polar.sh';
-const SANDBOX_BASE_URL = 'https://sandbox-api.polar.sh';
 const DEFAULT_PAGE_LIMIT = 10;
 const MAX_PAGE_LIMIT = 100;
 
@@ -26,6 +28,7 @@ const CAPABILITIES: RevenueCapabilities = {
   checkoutSuccessUrl: true,
   endTrial: true,
   hostedCheckout: true,
+  licenseKeys: true,
   listSubscriptionsByCustomer: true,
   pause: true,
   pauseBehaviors: ['period_end'],
@@ -55,15 +58,17 @@ interface PolarCustomerSession {
   customer_portal_url: string;
 }
 
-function mapError(status: number, body: unknown): ProviderErrorInfo {
-  if (body === null || typeof body !== 'object') {
-    return {};
+function toLicenseKeyUpdateStatus(disabled: boolean | undefined): string | undefined {
+  if (disabled === undefined) {
+    return undefined;
   }
-  const { error, detail } = body as { error?: unknown; detail?: unknown };
-  if (typeof detail === 'string') {
-    return { message: typeof error === 'string' ? `${error}: ${detail}` : detail };
-  }
-  return {};
+  // Polar's benefit lifecycle owns `revoked` and re-grants such keys automatically on renewal;
+  // `disabled` is the merchant-controlled state it never touches.
+  return disabled ? 'disabled' : 'granted';
+}
+
+function toLicenseKeyExpiresAt(expiresAt: Date | null | undefined): string | null | undefined {
+  return expiresAt === null ? null : expiresAt?.toISOString();
 }
 
 function toProrationBehavior(behavior: ProrationBehavior | undefined): string | undefined {
@@ -83,11 +88,9 @@ function toProrationBehavior(behavior: ProrationBehavior | undefined): string | 
 }
 
 export function polar(options: PolarProviderOptions): RevenueProvider {
-  const baseUrl =
-    options.baseUrl ?? (options.server === 'sandbox' ? SANDBOX_BASE_URL : PRODUCTION_BASE_URL);
   const http = new HttpClient({
     provider: 'polar',
-    baseUrl,
+    baseUrl: toBaseUrl(options),
     fetchImpl: options.fetch,
     authHeaders: () => ({ Authorization: `Bearer ${options.accessToken}` }),
     mapError,
@@ -304,6 +307,38 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
         },
         signal: params.signal,
       });
+    },
+
+    async listLicenseKeys(params) {
+      const { page, limit } = pageQuery(params.cursor, params.limit);
+      const { data } = await http.json<PolarListResponse<PolarLicenseKey>>('/v1/license-keys/', {
+        query: { page, limit },
+        signal: params.signal,
+      });
+      return {
+        items: data.items.map(toLicenseKey),
+        cursor: nextCursor(page, data.pagination.max_page),
+      };
+    },
+
+    async getLicenseKey(params) {
+      const { data } = await http.json<PolarLicenseKey>(`/v1/license-keys/${params.id}`, {
+        signal: params.signal,
+      });
+      return toLicenseKey(data);
+    },
+
+    async updateLicenseKey(params) {
+      const { data } = await http.json<PolarLicenseKey>(`/v1/license-keys/${params.id}`, {
+        method: 'PATCH',
+        body: {
+          status: toLicenseKeyUpdateStatus(params.disabled),
+          limit_activations: params.activationLimit,
+          expires_at: toLicenseKeyExpiresAt(params.expiresAt),
+        },
+        signal: params.signal,
+      });
+      return toLicenseKey(data);
     },
   };
 }

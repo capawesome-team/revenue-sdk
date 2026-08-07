@@ -35,6 +35,10 @@ const CAPABILITIES: RevenueCapabilities = {
   checkoutSuccessUrl: true,
   endTrial: true,
   hostedCheckout: true,
+  // Stripe has no license-key API. Billing Entitlements is not a substitute: it is a derived
+  // per-customer feature boolean with no key string, activation count, or device identity, and
+  // `/v1/entitlements/active_entitlements` is secret-key-only — an app cannot check its own license.
+  licenseKeys: false,
   listSubscriptionsByCustomer: true,
   pause: true,
   // `pause_collection` takes effect immediately; a period-end pause would require Subscription
@@ -59,6 +63,13 @@ export interface StripeProviderOptions {
 
 interface CursorState {
   after: string;
+}
+
+function unsupported(feature: string): RevenueError {
+  return new RevenueError(`Stripe does not support ${feature}`, {
+    code: 'unsupported',
+    provider: 'stripe',
+  });
 }
 
 function mapError(status: number, body: unknown): ProviderErrorInfo {
@@ -358,6 +369,18 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
         }),
         signal: params.signal,
       });
+    },
+
+    async listLicenseKeys() {
+      throw unsupported('license keys');
+    },
+
+    async getLicenseKey() {
+      throw unsupported('license keys');
+    },
+
+    async updateLicenseKey() {
+      throw unsupported('license keys');
     },
   };
 }
