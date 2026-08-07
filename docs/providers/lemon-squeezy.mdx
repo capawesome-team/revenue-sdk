@@ -110,6 +110,7 @@ await deactivateLicenseKey({ key: 'LICENSE-KEY', expect, activationId: activated
     label: { type: 'string', description: 'Activate only. Sent as instance_name; required by Lemon Squeezy.' },
     baseUrl: { type: 'string', required: false, description: 'Used verbatim; defaults to https://api.lemonsqueezy.com.' },
     fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
   }}
 />
 

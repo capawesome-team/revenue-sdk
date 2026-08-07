@@ -147,6 +147,7 @@ Common parameters:
     label: { type: 'string', description: 'Activate only. Names the device or instance being activated.' },
     baseUrl: { type: 'string', required: false, description: 'Used verbatim; overrides server where a server option exists.' },
     fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
   }}
 />
 
