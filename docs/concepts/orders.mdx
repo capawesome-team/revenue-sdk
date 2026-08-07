@@ -239,7 +239,9 @@ interface HistoryRow {
 }
 
 function formatMoney(amount: number, currency: string): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount / 100);
+  // Minor units per major unit vary by currency — 100 for USD, 1 for JPY, 1000 for KWD.
+  const format = new Intl.NumberFormat('en-US', { style: 'currency', currency });
+  return format.format(amount / 10 ** format.resolvedOptions().maximumFractionDigits);
 }
 
 function describe(order: Order): string {
