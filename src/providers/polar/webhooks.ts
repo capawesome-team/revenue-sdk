@@ -1,14 +1,16 @@
 import { bytesToBase64 } from '../../base64.ts';
 import { RevenueError } from '../../errors.ts';
-import type { WebhookEvent } from '../../types.ts';
+import type { SubscriptionChange, WebhookEvent } from '../../types.ts';
 import {
   hmacSha256,
   isTimestampWithinTolerance,
+  sha256Hex,
   timingSafeEqual,
   toIncomingWebhook,
   type VerifyWebhookParams,
   type WebhookInput,
 } from '../../webhooks/verify.ts';
+import { toDate } from '../shared.ts';
 import {
   toCheckout,
   toOrder,
@@ -56,8 +58,17 @@ export async function verifyWebhook(params: VerifyWebhookParams): Promise<boolea
 
 interface PolarWebhookEnvelope {
   type?: string;
+  timestamp?: string;
   data?: unknown;
 }
+
+const SUBSCRIPTION_CHANGES: Record<string, SubscriptionChange> = {
+  'subscription.canceled': 'cancel_scheduled',
+  'subscription.past_due': 'past_due',
+  'subscription.paused': 'paused',
+  'subscription.resumed': 'resumed',
+  'subscription.uncanceled': 'uncanceled',
+};
 
 /** The license-keys member of Polar's 8-way `BenefitGrantWebhook` union, narrowed to what is read. */
 interface PolarBenefitGrant {
@@ -70,7 +81,7 @@ interface PolarBenefitGrant {
  * `verifyWebhook` first.
  */
 export async function parseWebhookEvent(input: WebhookInput): Promise<WebhookEvent> {
-  const { body } = await toIncomingWebhook(input);
+  const { headers, body } = await toIncomingWebhook(input);
   let envelope: PolarWebhookEnvelope;
   try {
     envelope = JSON.parse(body) as PolarWebhookEnvelope;
@@ -82,13 +93,21 @@ export async function parseWebhookEvent(input: WebhookInput): Promise<WebhookEve
     });
   }
   const providerType = envelope.type ?? 'unknown';
+  const id = headers['webhook-id'];
+  const base = {
+    providerType,
+    idempotencyKey: id ? `polar:${id}` : `polar:sha256:${await sha256Hex(body)}`,
+    // The envelope timestamp is when the event occurred. The `webhook-timestamp` header is the
+    // delivery ATTEMPT time and moves with every retry.
+    createdAt: toDate(envelope.timestamp),
+    raw: envelope,
+  };
   switch (providerType) {
     case 'subscription.created':
       return {
+        ...base,
         type: 'subscription.created',
-        providerType,
         subscription: toSubscription(envelope.data as PolarSubscription),
-        raw: envelope,
       };
     // `subscription.canceled` fires when a cancellation is merely scheduled; the terminal
     // state arrives as `subscription.revoked`.
@@ -101,47 +120,41 @@ export async function parseWebhookEvent(input: WebhookInput): Promise<WebhookEve
     case 'subscription.uncanceled':
     case 'subscription.updated':
       return {
+        ...base,
         type: 'subscription.updated',
-        providerType,
         subscription: toSubscription(envelope.data as PolarSubscription),
-        raw: envelope,
+        subscriptionChange: SUBSCRIPTION_CHANGES[providerType],
       };
     case 'subscription.revoked':
       return {
+        ...base,
         type: 'subscription.canceled',
-        providerType,
         subscription: toSubscription(envelope.data as PolarSubscription),
-        raw: envelope,
       };
     case 'order.paid':
-      return {
-        type: 'order.paid',
-        providerType,
-        order: toOrder(envelope.data as PolarOrder),
-        raw: envelope,
-      };
+      return { ...base, type: 'order.paid', order: toOrder(envelope.data as PolarOrder) };
     case 'checkout.updated': {
       const checkout = toCheckout(envelope.data as PolarCheckout);
       if (checkout.status === 'complete') {
-        return { type: 'checkout.completed', providerType, checkout, raw: envelope };
+        return { ...base, type: 'checkout.completed', checkout };
       }
-      return { type: 'unknown', providerType, checkout, raw: envelope };
+      return { ...base, type: 'unknown', checkout };
     }
-    // Polar has no license webhook — license keys are delivered as a benefit grant, so this is
-    // the only normalized type that depends on inspecting the payload rather than the event
-    // string: `benefit.type` is a per-benefit const in Polar's schema, and every other benefit
-    // type (Discord, downloadables, meter credits, ...) falls through to `unknown`.
+    // Polar has no license webhook — license keys are delivered as a benefit grant, so this
+    // mapping reads the payload rather than the event string: `benefit.type` is a per-benefit
+    // const in Polar's schema, and every other benefit type (Discord, downloadables, meter
+    // credits, ...) falls through to `unknown`.
     case 'benefit_grant.created': {
       const grant = envelope.data as PolarBenefitGrant;
       const licenseKeyId = grant.properties?.license_key_id;
       if (grant.benefit?.type !== 'license_keys' || !licenseKeyId) {
-        return { type: 'unknown', providerType, raw: envelope };
+        return { ...base, type: 'unknown' };
       }
       // No `licenseKey`: the grant carries only `display_key`, a masked form that must never be
       // presented as the key. Fetch the plaintext key with `licenseKeys.get`.
-      return { type: 'license.issued', providerType, licenseKeyId, raw: envelope };
+      return { ...base, type: 'license.issued', licenseKeyId };
     }
     default:
-      return { type: 'unknown', providerType, raw: envelope };
+      return { ...base, type: 'unknown' };
   }
 }

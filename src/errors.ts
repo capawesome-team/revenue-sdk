@@ -20,6 +20,8 @@ export interface RevenueErrorOptions {
   retryAfter?: number;
   retryable?: boolean;
   cause?: unknown;
+  /** The provider's parsed error response body. Never redacted — see `RevenueError.responseBody`. */
+  responseBody?: unknown;
   /** Secret values redacted from the error message. */
   secrets?: readonly string[];
 }
@@ -42,6 +44,14 @@ export class RevenueError extends Error {
   readonly status?: number;
   readonly retryAfter?: number;
   readonly retryable: boolean;
+  /**
+   * The provider's parsed error response body, kept verbatim and never redacted — it routinely
+   * carries customer PII and, on the license routes, the license key itself. The property is
+   * non-enumerable so it stays out of `console.error`, `util.inspect`, `JSON.stringify` and error
+   * reporters, which means reading it is always a deliberate act. `declare` keeps TypeScript from
+   * emitting an enumerable class field over it.
+   */
+  declare readonly responseBody?: unknown;
 
   constructor(message: string, options: RevenueErrorOptions) {
     super(redactSecrets(message, options.secrets ?? []), { cause: options.cause });
@@ -54,5 +64,10 @@ export class RevenueError extends Error {
       options.retryable ??
       (RETRYABLE_CODES.has(options.code) ||
         (options.status !== undefined && options.status >= 500));
+    Object.defineProperty(this, 'responseBody', {
+      value: options.responseBody,
+      enumerable: false,
+      configurable: true,
+    });
   }
 }

@@ -128,7 +128,12 @@ const provider = createInMemoryProvider(
   {},
   {
     name: 'paddle',
-    capabilities: { hostedCheckout: false, checkoutSuccessUrl: false, revoke: false },
+    capabilities: {
+      hostedCheckout: false,
+      checkoutSuccessUrl: false,
+      checkoutExpiresAt: false,
+      revoke: false,
+    },
   },
 );
 const client = createClient({ provider });
@@ -298,7 +303,7 @@ or `deactivateLicenseKey`. Those are subpath exports rather than `RevenueProvide
 
 | Call                          | Effect on state                                                                  |
 | ----------------------------- | --------------------------------------------------------------------------------- |
-| `checkouts.create`            | Appends a `Checkout` with a generated ID, `status: 'open'`, and a fake URL.        |
+| `checkouts.create`            | Appends a `Checkout` with a generated ID, `status: 'open'`, a fake URL, and `expiresAt` carried through from the params. |
 | `subscriptions.cancel`        | Sets `cancelAtPeriodEnd: true` and `endsAt = currentPeriodEnd`. Status unchanged.  |
 | `subscriptions.uncancel`      | Clears `cancelAtPeriodEnd` and `endsAt`.                                          |
 | `subscriptions.changePlan`    | Sets `productId` to `params.product`, and `quantity` when given.                   |

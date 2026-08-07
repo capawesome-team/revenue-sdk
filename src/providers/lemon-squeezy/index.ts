@@ -29,6 +29,7 @@ const MAX_PAGE_SIZE = 100;
 
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: false,
+  checkoutExpiresAt: true,
   checkoutStatus: false,
   checkoutSuccessUrl: true,
   endTrial: true,
@@ -150,6 +151,26 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     return toProduct(variant, data.data, await getStoreCurrency(signal));
   }
 
+  /**
+   * Lemon Squeezy documents that `PATCH /v1/subscriptions/{id}` "will not modify the subscription"
+   * when its payment processor is PayPal — the request answers 200 with the record unchanged, so
+   * returning it would report a success that never happened. The processor is on the response
+   * itself, so the no-op is detected without a preflight request.
+   *
+   * This covers every PATCH-backed operation: plan changes, uncancel, pause, resume and endTrial
+   * (the last one is not documented upstream, but goes through the same endpoint). Narrowing the
+   * guard to plan changes alone is a one-line change here if live testing shows LS honors some
+   * fields after all.
+   */
+  function assertPatchApplied(subscription: LsResource<LsSubscriptionAttributes>): void {
+    if (subscription.attributes.payment_processor === 'paypal') {
+      throw unsupported(
+        'updating a subscription paid through PayPal; the request succeeded but nothing changed — ' +
+          'send the customer to the customer portal to manage the subscription instead',
+      );
+    }
+  }
+
   async function patchSubscription(
     id: string,
     attributes: Record<string, unknown>,
@@ -163,6 +184,7 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
         signal,
       },
     );
+    assertPatchApplied(data.data);
     return toSubscription(data.data);
   }
 
@@ -248,6 +270,9 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
             type: 'checkouts',
             attributes: {
               ...(Object.keys(checkoutData).length > 0 ? { checkout_data: checkoutData } : {}),
+              ...(params.expiresAt !== undefined
+                ? { expires_at: params.expiresAt.toISOString() }
+                : {}),
               product_options: {
                 enabled_variants: [Number(item.product)],
                 ...(params.successUrl !== undefined ? { redirect_url: params.successUrl } : {}),

@@ -133,6 +133,11 @@ describe('dodoPayments', () => {
   });
 
   describe('checkouts', () => {
+    it('does not advertise a configurable checkout expiry', () => {
+      const { provider } = setup(() => ({ json: {} }));
+      expect(provider.capabilities.checkoutExpiresAt).toBe(false);
+    });
+
     it('creates a checkout session', async () => {
       const { provider, stub } = setup(() => ({
         json: {

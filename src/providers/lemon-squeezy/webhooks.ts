@@ -1,7 +1,8 @@
 import { RevenueError } from '../../errors.ts';
-import type { WebhookEvent } from '../../types.ts';
+import type { SubscriptionChange, WebhookEvent } from '../../types.ts';
 import {
   hmacSha256,
+  sha256Hex,
   timingSafeEqual,
   toHex,
   toIncomingWebhook,
@@ -51,6 +52,15 @@ const SUBSCRIPTION_UPDATE_EVENTS = new Set([
   'subscription_updated',
 ]);
 
+const SUBSCRIPTION_CHANGES: Record<string, SubscriptionChange> = {
+  subscription_cancelled: 'cancel_scheduled',
+  subscription_paused: 'paused',
+  // `subscription_resumed` means un-CANCELED, not un-paused: Lemon Squeezy names the reversal of
+  // `subscription_cancelled` "resumed" and the reversal of `subscription_paused` "unpaused".
+  subscription_resumed: 'uncanceled',
+  subscription_unpaused: 'resumed',
+};
+
 /**
  * Parses a Lemon Squeezy webhook into a normalized event. Does NOT verify the signature —
  * call `verifyWebhook` first.
@@ -70,58 +80,55 @@ export async function parseWebhookEvent(input: WebhookInput): Promise<WebhookEve
   const providerType = envelope.meta?.event_name ?? 'unknown';
   // Checkout custom data only travels in `meta.custom_data`, never on the resource itself.
   const metadata = toMetadata(envelope.meta?.custom_data);
+  const base = {
+    providerType,
+    // Lemon Squeezy publishes no event id — neither in the headers nor in the body — so the raw
+    // body is the only stable delivery identity. It sends no event timestamp either.
+    idempotencyKey: `lemon-squeezy:sha256:${await sha256Hex(body)}`,
+    raw: envelope,
+  };
 
   if (providerType === 'subscription_created') {
     return {
+      ...base,
       type: 'subscription.created',
-      providerType,
       subscription: toSubscription(envelope.data as LsResource<LsSubscriptionAttributes>, metadata),
-      raw: envelope,
     };
   }
   if (SUBSCRIPTION_UPDATE_EVENTS.has(providerType)) {
     return {
+      ...base,
       type: 'subscription.updated',
-      providerType,
       subscription: toSubscription(envelope.data as LsResource<LsSubscriptionAttributes>, metadata),
-      raw: envelope,
+      subscriptionChange: SUBSCRIPTION_CHANGES[providerType],
     };
   }
   if (providerType === 'subscription_expired') {
     return {
+      ...base,
       type: 'subscription.canceled',
-      providerType,
       subscription: toSubscription(envelope.data as LsResource<LsSubscriptionAttributes>, metadata),
-      raw: envelope,
     };
   }
   if (providerType === 'order_created') {
     return {
+      ...base,
       type: 'order.paid',
-      providerType,
       order: toOrderFromOrder(envelope.data as LsResource<LsOrderAttributes>, metadata),
-      raw: envelope,
     };
   }
   // Renewal payments never emit order_created; the invoice-carrying payment event is the
   // uniform "money received" signal.
   if (providerType === 'subscription_payment_success') {
     return {
+      ...base,
       type: 'order.paid',
-      providerType,
       order: toOrderFromInvoice(envelope.data as LsResource<LsSubscriptionInvoiceAttributes>),
-      raw: envelope,
     };
   }
   if (providerType === 'license_key_created') {
     const licenseKey = toLicenseKey(envelope.data as LsResource<LsLicenseKeyAttributes>);
-    return {
-      type: 'license.issued',
-      providerType,
-      licenseKeyId: licenseKey.id,
-      licenseKey,
-      raw: envelope,
-    };
+    return { ...base, type: 'license.issued', licenseKeyId: licenseKey.id, licenseKey };
   }
-  return { type: 'unknown', providerType, raw: envelope };
+  return { ...base, type: 'unknown' };
 }

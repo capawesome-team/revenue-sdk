@@ -140,12 +140,12 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
     return new Response('invalid signature', { status: 401 });
   }
 
-  const deliveryId = headers.get('webhook-id');
-  if (deliveryId && (await env.PROCESSED.get(deliveryId)) !== null) {
+  // `idempotencyKey` is always set and stable across the provider's retries.
+  const event = await parseWebhookEvent({ headers, body });
+  if ((await env.PROCESSED.get(event.idempotencyKey)) !== null) {
     return new Response(null, { status: 204 });
   }
 
-  const event = await parseWebhookEvent({ headers, body });
   switch (event.type) {
     case 'subscription.created':
     case 'subscription.updated':
@@ -157,9 +157,7 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
       break;
   }
 
-  if (deliveryId) {
-    await env.PROCESSED.put(deliveryId, '1', { expirationTtl: DEDUPE_TTL_SECONDS });
-  }
+  await env.PROCESSED.put(event.idempotencyKey, '1', { expirationTtl: DEDUPE_TTL_SECONDS });
 
   // Non-critical follow-up work, after the response.
   ctx.waitUntil(notifySlack(event));
@@ -218,6 +216,11 @@ An abort rejects with the original `AbortError`, so it is distinguishable from a
   request — cache the catalog in KV rather than listing it on every page view.
 - **Cursors are opaque strings**, so they round-trip safely through KV, a query string, or a Durable
   Object.
+- **Concurrent deliveries land in separate isolates**, sharing no lock. Deduping on
+  `event.idempotencyKey` stops the *same* event being processed twice, but two different events for one
+  state change can still interleave — keep the read and the write of subscription state in one
+  conditional statement, or behind a Durable Object. See
+  [the read-then-upsert race](/docs/guides/webhook-handler#3-persist--upsert-by-subscription-id).
 
 <CardGroup cols={2}>
   <Card title="Client & providers" icon="layers" href="/docs/concepts/client-and-providers">

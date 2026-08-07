@@ -103,6 +103,7 @@ describe('stripe', () => {
     const { provider } = setup(() => ({ json: {} }));
     expect(provider.name).toBe('stripe');
     expect(provider.capabilities.hostedCheckout).toBe(true);
+    expect(provider.capabilities.checkoutExpiresAt).toBe(true);
     expect(provider.capabilities.usageReporting).toBe(true);
     expect(provider.capabilities.licenseKeys).toBe(false);
     expect(provider.capabilities.listOrdersByCustomer).toBe(true);
@@ -265,6 +266,21 @@ describe('stripe', () => {
       expect(form.get('subscription_data[metadata][org_id]')).toBeNull();
       // Without an invoice a one-off purchase never reaches `orders.list` or `order.paid`.
       expect(form.get('invoice_creation[enabled]')).toBe('true');
+    });
+
+    it('sends expires_at as unix seconds', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/prices/price_1': RECURRING_PRICE,
+          '/v1/checkout/sessions': { id: 'cs_test_4', url: 'https://x', status: 'open' },
+        }),
+      );
+      await provider.createCheckout({
+        items: [{ product: 'price_1' }],
+        expiresAt: new Date('2026-08-08T00:00:00Z'),
+      });
+      const form = new URLSearchParams(stub.requests[1]!.body);
+      expect(form.get('expires_at')).toBe('1786147200');
     });
 
     it('prefers an existing customer over customer_email', async () => {

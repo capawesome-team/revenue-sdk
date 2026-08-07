@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseWebhookEvent, verifyWebhook } from '../../src/providers/stripe/webhooks.ts';
-import { hmacSha256, toHex } from '../../src/webhooks/verify.ts';
+import { hmacSha256, sha256Hex, toHex } from '../../src/webhooks/verify.ts';
 
 const SECRET = 'whsec_wRNftLajMZNeslQOP6vEPm4iVx5NlZ6z';
 
@@ -72,64 +72,135 @@ describe('stripe parseWebhookEvent', () => {
     },
   };
 
+  const CREATED = 1754481600;
+
   it('maps customer.subscription.created', async () => {
     const event = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
+        id: 'evt_1',
         type: 'customer.subscription.created',
+        created: CREATED,
         data: { object: subscriptionObject },
       }),
     });
     expect(event.type).toBe('subscription.created');
     expect(event.subscription?.id).toBe('sub_1');
+    expect(event.idempotencyKey).toBe('stripe:evt_1');
+    expect(event.createdAt).toEqual(new Date(CREATED * 1000));
+    expect(event.subscriptionChange).toBeUndefined();
+  });
+
+  it('falls back to a body digest when the envelope carries no id', async () => {
+    const body = JSON.stringify({
+      type: 'customer.subscription.updated',
+      data: { object: subscriptionObject },
+    });
+    const event = await parseWebhookEvent({ headers: {}, body });
+    expect(event.idempotencyKey).toBe(`stripe:sha256:${await sha256Hex(body)}`);
+    expect(event.createdAt).toBeUndefined();
+  });
+
+  it.each([
+    ['customer.subscription.paused', 'paused'],
+    ['customer.subscription.resumed', 'resumed'],
+  ])('reports the transition named by %s', async (providerType, subscriptionChange) => {
+    const event = await parseWebhookEvent({
+      headers: {},
+      body: JSON.stringify({
+        id: 'evt_1',
+        type: providerType,
+        created: CREATED,
+        data: { object: subscriptionObject },
+      }),
+    });
+    expect(event.type).toBe('subscription.updated');
+    expect(event.subscriptionChange).toBe(subscriptionChange);
+  });
+
+  it.each([
+    'customer.subscription.pending_update_applied',
+    'customer.subscription.pending_update_expired',
+    'customer.subscription.updated',
+  ])('maps %s to subscription.updated without naming a transition', async (providerType) => {
+    const event = await parseWebhookEvent({
+      headers: {},
+      body: JSON.stringify({
+        id: 'evt_1',
+        type: providerType,
+        created: CREATED,
+        data: { object: subscriptionObject },
+      }),
+    });
+    expect(event.type).toBe('subscription.updated');
+    expect(event.providerType).toBe(providerType);
+    expect(event.subscription?.id).toBe('sub_1');
+    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('maps customer.subscription.deleted to the terminal subscription.canceled', async () => {
     const event = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
+        id: 'evt_1',
         type: 'customer.subscription.deleted',
+        created: CREATED,
         data: { object: { ...subscriptionObject, status: 'canceled', ended_at: 1754438400 } },
       }),
     });
     expect(event.type).toBe('subscription.canceled');
     expect(event.subscription?.status).toBe('canceled');
+    expect(event.idempotencyKey).toBe('stripe:evt_1');
+    expect(event.createdAt).toEqual(new Date(CREATED * 1000));
+    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('maps checkout.session.completed to checkout.completed only when paid', async () => {
     const paid = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
+        id: 'evt_1',
         type: 'checkout.session.completed',
+        created: CREATED,
         data: { object: { id: 'cs_1', status: 'complete', payment_status: 'paid' } },
       }),
     });
     expect(paid.type).toBe('checkout.completed');
+    expect(paid.idempotencyKey).toBe('stripe:evt_1');
+    expect(paid.createdAt).toEqual(new Date(CREATED * 1000));
 
     const unpaid = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
+        id: 'evt_2',
         type: 'checkout.session.completed',
+        created: CREATED,
         data: { object: { id: 'cs_1', status: 'complete', payment_status: 'unpaid' } },
       }),
     });
     expect(unpaid.type).toBe('unknown');
+    expect(unpaid.idempotencyKey).toBe('stripe:evt_2');
 
     const asyncPaid = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
+        id: 'evt_3',
         type: 'checkout.session.async_payment_succeeded',
+        created: CREATED,
         data: { object: { id: 'cs_1', status: 'complete', payment_status: 'paid' } },
       }),
     });
     expect(asyncPaid.type).toBe('checkout.completed');
+    expect(asyncPaid.idempotencyKey).toBe('stripe:evt_3');
   });
 
   it('maps invoice.paid to order.paid with the parent subscription', async () => {
     const event = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
+        id: 'evt_1',
         type: 'invoice.paid',
+        created: CREATED,
         data: {
           object: {
             id: 'in_1',
@@ -158,14 +229,23 @@ describe('stripe parseWebhookEvent', () => {
       createdAt: new Date(1754006400 * 1000),
       metadata: { org_id: 'org_1' },
     });
+    expect(event.idempotencyKey).toBe('stripe:evt_1');
+    expect(event.createdAt).toEqual(new Date(CREATED * 1000));
   });
 
   it('never throws on unknown event types', async () => {
     const event = await parseWebhookEvent({
       headers: {},
-      body: JSON.stringify({ type: 'payment_intent.created', data: { object: {} } }),
+      body: JSON.stringify({
+        id: 'evt_1',
+        type: 'payment_intent.created',
+        created: CREATED,
+        data: { object: {} },
+      }),
     });
     expect(event.type).toBe('unknown');
     expect(event.providerType).toBe('payment_intent.created');
+    expect(event.idempotencyKey).toBe('stripe:evt_1');
+    expect(event.createdAt).toEqual(new Date(CREATED * 1000));
   });
 });

@@ -83,14 +83,37 @@ Polar uses [Standard Webhooks](https://www.standardwebhooks.com/) headers (`webh
 used **verbatim, including its `whsec_` prefix** — do not strip or base64-decode it.
 
 Events worth subscribing to: `subscription.created`, `subscription.updated`, `subscription.active`,
-`subscription.canceled`, `subscription.uncanceled`, `subscription.revoked`, `subscription.cycled`,
-`order.paid`, `checkout.updated`, and — if you sell license keys — `benefit_grant.created`.
+`subscription.canceled`, `subscription.uncanceled`, `subscription.past_due`, `subscription.paused`,
+`subscription.resumed`, `subscription.revoked`, `subscription.cycled`, `order.paid`,
+`checkout.updated`, and — if you sell license keys — `benefit_grant.created`.
 
 :::warning
 Polar emits `subscription.canceled` when a cancellation is merely **scheduled**; the terminal event is
 `subscription.revoked`. `revenue-sdk` normalizes them to `subscription.updated` and
 `subscription.canceled` respectively — see [Webhooks](/docs/concepts/webhooks).
 :::
+
+Polar is the only provider that names **every** transition `subscriptionChange` covers, so all five
+values can occur:
+
+| `event.subscriptionChange` | Polar event               |
+| -------------------------- | ------------------------- |
+| `cancel_scheduled`         | `subscription.canceled`   |
+| `past_due`                 | `subscription.past_due`   |
+| `paused`                   | `subscription.paused`     |
+| `resumed`                  | `subscription.resumed`    |
+| `uncanceled`               | `subscription.uncanceled` |
+
+`subscription.active`, `subscription.cycled`, and `subscription.updated` name no transition and leave
+`subscriptionChange` `undefined`. Polar's `subscription.updated` is a documented catch-all that fires
+*alongside* the specific event, so one state change reaches you as **two events with two different
+`idempotencyKey`s** — dedupe cannot collapse those, which is another reason to branch on
+`subscriptionChange` rather than react to every update.
+
+`event.idempotencyKey` is `polar:<webhook-id header>`, and `event.createdAt` comes from the envelope's
+`timestamp` — never the `webhook-timestamp` header, which is the delivery attempt time and moves on
+every retry. Pass the headers to `parseWebhookEvent`; without them the key falls back to
+`polar:sha256:<hex of the body>`.
 
 ## License keys
 
@@ -173,6 +196,7 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
 | Capability                    | Value                        |
 | ----------------------------- | ---------------------------- |
 | `cancellationReason`          | `true`                       |
+| `checkoutExpiresAt`           | `false`                      |
 | `checkoutStatus`              | `true`                       |
 | `checkoutSuccessUrl`          | `true`                       |
 | `endTrial`                    | `true`                       |
@@ -194,6 +218,9 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   take `products: string[]`, not price IDs.
 - **No item quantities.** A checkout item with `quantity` other than `1` throws `unsupported`; so does a
   plan change with a quantity.
+- **Checkout expiry is fixed at 24 hours.** Polar applies it server-side and accepts no override, so
+  `checkoutExpiresAt` is `false` and `checkouts.create({ expiresAt })` throws `unsupported`. The
+  resulting `Checkout.expiresAt` is still populated on the read side.
 - **No `none` proration.** Polar's `next_period` defers the plan change itself and `reset` restarts the
   billing anchor — neither means "switch now, bill nothing extra", so the SDK refuses rather than pick a
   lookalike.

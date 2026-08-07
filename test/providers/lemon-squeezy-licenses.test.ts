@@ -290,6 +290,36 @@ describe('lemon-squeezy activateLicenseKey', () => {
     }
   });
 
+  it('keeps the license key out of the logged error surface', async () => {
+    const stub = createFetchStub(() => ({
+      json: {
+        activated: false,
+        error: 'License key has expired.',
+        license_key: LICENSE,
+        meta: META,
+      },
+    }));
+    try {
+      await activateLicenseKey({
+        key: KEY,
+        label: 'MacBook Pro',
+        expect: EXPECTATION,
+        fetch: stub.fetch,
+      });
+      expect.unreachable('expected RevenueError');
+    } catch (error) {
+      const revenueError = error as RevenueError;
+      // The verdict body carries the full key, so it must not ride along on `cause` — anything
+      // enumerable or on `cause` ends up in `console.error` and error reporters verbatim.
+      expect(revenueError.cause).toBeUndefined();
+      expect(Object.keys(revenueError)).not.toContain('responseBody');
+      expect(JSON.stringify(revenueError)).not.toContain(KEY);
+      expect(revenueError.message).not.toContain(KEY);
+      // Still reachable for a caller who asks for it.
+      expect(revenueError.responseBody).toMatchObject({ license_key: { key: KEY } });
+    }
+  });
+
   it('throws when the activation carries no instance', async () => {
     const stub = createFetchStub(() => ({
       json: { activated: true, license_key: LICENSE, meta: META },

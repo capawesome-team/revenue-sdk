@@ -77,7 +77,7 @@ export async function validateLicenseKey(
     licenseKey = data;
   } catch (error) {
     if (error instanceof RevenueError && error.code === 'not_found') {
-      return { valid: false, raw: error.cause };
+      return { valid: false, raw: error.responseBody };
     }
     throw error;
   }

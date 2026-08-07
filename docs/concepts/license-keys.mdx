@@ -413,9 +413,10 @@ if (event.type === 'license.issued') {
 ```
 
 :::warning
-**Polar has no license webhook.** A key is delivered as a *benefit grant*, which makes `license.issued`
-the one normalized event type the SDK derives from the payload rather than the provider's event string.
-A `benefit_grant.created` for a Discord, downloadable, or meter-credit benefit stays `unknown`.
+**Polar has no license webhook.** A key is delivered as a *benefit grant*, so `license.issued` is
+decided from `data.benefit.type` rather than from Polar's event string — one of the few mappings in the
+SDK that reads the payload at all. A `benefit_grant.created` for a Discord, downloadable, or
+meter-credit benefit stays `unknown`.
 :::
 
 On Lemon Squeezy the mapped `licenseKey` carries no `productId`, for the reason described in the model
@@ -484,12 +485,20 @@ switch (event.type) {
     await markLicensesRevoked(event.subscription!.customerId);
     break;
   case 'subscription.updated':
-    if (event.subscription!.cancelAtPeriodEnd) {
+    // subscriptionChange is the transition the provider named, so this fires once.
+    // cancelAtPeriodEnd stays true for the rest of the period and would fire on
+    // every later update event.
+    if (event.subscriptionChange === 'cancel_scheduled') {
       await scheduleRevocationNotice(event.subscription!);
     }
     break;
 }
 ```
+
+`cancel_scheduled` is named by **Polar and Lemon Squeezy only** — Stripe, Paddle, and Dodo Payments
+report a scheduled cancellation as a bare `subscription.updated`. Fall back to
+`event.subscription!.cancelAtPeriodEnd` there, guarded by your own stored state. See
+[Subscription lifecycle](/docs/concepts/subscription-lifecycle).
 
 Your database learns why access ended; the app learns *that* it ended from its next validate call.
 

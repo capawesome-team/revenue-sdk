@@ -30,6 +30,8 @@ const MAX_TRANSACTION_PAGE_LIMIT = 30;
 
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: false,
+  // Transactions carry no checkout expiry field.
+  checkoutExpiresAt: false,
   checkoutStatus: true,
   // Success redirects are configured in Paddle.js on the merchant's checkout page.
   checkoutSuccessUrl: false,

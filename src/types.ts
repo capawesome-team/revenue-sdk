@@ -201,11 +201,34 @@ export type WebhookEventType =
   | 'subscription.updated'
   | 'unknown';
 
+/**
+ * A subscription lifecycle transition the provider named in its event string. Never inferred from
+ * payload state: fields like `cancelAtPeriodEnd` stay set for the rest of the period, so reading them
+ * would report the same transition on every later event.
+ */
+export type SubscriptionChange =
+  'cancel_scheduled' | 'past_due' | 'paused' | 'resumed' | 'uncanceled';
+
 export interface WebhookEvent {
   /** Normalized event type; `unknown` for provider events outside the normalized set. */
   type: WebhookEventType;
   /** The provider's original event type string. */
   providerType: string;
+  /**
+   * Provider-namespaced key for de-duplicating deliveries (`<provider>:<id>`). Stable across the
+   * provider's retries and dashboard replays. Lemon Squeezy publishes no event id, so its key is a
+   * SHA-256 of the raw body — as is any Polar or Dodo Payments delivery parsed without its headers.
+   *
+   * Deduplicates redeliveries of one event, not a provider's several events for one state change.
+   */
+  idempotencyKey: string;
+  /**
+   * Which lifecycle transition the provider named, when it named one. Absent where the provider has no
+   * dedicated event — see the webhook events reference for per-provider coverage.
+   */
+  subscriptionChange?: SubscriptionChange;
+  /** When the event occurred, per the provider's envelope. Absent on Lemon Squeezy, which sends none. */
+  createdAt?: Date;
   subscription?: Subscription;
   order?: Order;
   checkout?: Checkout;
@@ -219,6 +242,8 @@ export interface WebhookEvent {
 export interface RevenueCapabilities {
   /** Whether `subscriptions.cancel` forwards `reason`/`comment` to the provider. */
   cancellationReason: boolean;
+  /** Whether `checkouts.create` supports `expiresAt`. The others expire checkouts on a fixed schedule. */
+  checkoutExpiresAt: boolean;
   /** Whether `Checkout.status` is populated. */
   checkoutStatus: boolean;
   /** Whether `checkouts.create` supports `successUrl`. Paddle configures redirects in Paddle.js instead. */
@@ -272,6 +297,12 @@ export interface CreateCheckoutParams extends BaseParams {
   customerEmail?: string;
   /** Copied onto the resulting order/subscription where the provider supports it. */
   metadata?: Metadata;
+  /**
+   * When the checkout link stops working. Requires the `checkoutExpiresAt` capability — the other
+   * providers apply a fixed lifetime instead. Stripe accepts 30 minutes to 24 hours from creation and
+   * rejects anything outside that window itself.
+   */
+  expiresAt?: Date;
 }
 
 export interface GetCheckoutParams extends BaseParams {

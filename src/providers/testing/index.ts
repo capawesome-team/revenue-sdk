@@ -26,6 +26,7 @@ const PAGE_SIZE = 2;
 
 const DEFAULT_CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
+  checkoutExpiresAt: true,
   checkoutStatus: true,
   checkoutSuccessUrl: true,
   endTrial: true,
@@ -303,6 +304,7 @@ export function createInMemoryProvider(
         customerId: params.customerId,
         customerEmail: params.customerEmail,
         metadata: params.metadata,
+        expiresAt: params.expiresAt,
         raw: params,
       };
       state.checkouts.push(checkout);

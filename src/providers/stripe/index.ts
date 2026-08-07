@@ -33,6 +33,7 @@ const PRICES_PER_PRODUCT_LIMIT = 100;
 
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
+  checkoutExpiresAt: true,
   checkoutStatus: true,
   checkoutSuccessUrl: true,
   endTrial: true,
@@ -201,6 +202,7 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
             quantity: item.quantity ?? 1,
           })),
           success_url: params.successUrl,
+          expires_at: params.expiresAt,
           customer: params.customerId,
           customer_email: params.customerId === undefined ? params.customerEmail : undefined,
           // Stripe only draws up an Invoice for a one-off payment when the session asks for one,

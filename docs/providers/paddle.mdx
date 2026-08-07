@@ -122,13 +122,33 @@ secret rotation, and any match is accepted. Deliveries older than 300 seconds ar
 bound than Paddle's own 5-second default, which is hostile to serverless clock skew and retries.
 
 Events worth subscribing to: `subscription.created`, `subscription.activated`, `subscription.updated`,
-`subscription.trialing`, `subscription.past_due`, `subscription.paused`, `subscription.resumed`,
-`subscription.canceled`, `transaction.completed`.
+`subscription.imported`, `subscription.trialing`, `subscription.past_due`, `subscription.paused`,
+`subscription.resumed`, `subscription.canceled`, `transaction.completed`.
 
 :::note
 Scheduling a cancellation emits `subscription.updated` (carrying `scheduled_change`), **never**
 `subscription.canceled` — that only fires on the effective date. `transaction.paid` is left unmapped so
 that `transaction.completed` is the single "money received" signal and payments don't fire twice.
+`subscription.imported` covers subscriptions migrated in from another system and normalizes to
+`subscription.updated` — upsert, don't insert.
+:::
+
+Paddle names three of the five transitions `subscriptionChange` covers:
+
+| `event.subscriptionChange` | Paddle event            |
+| -------------------------- | ----------------------- |
+| `past_due`                 | `subscription.past_due` |
+| `paused`                   | `subscription.paused`   |
+| `resumed`                  | `subscription.resumed`  |
+
+Scheduling a cancellation and undoing one both arrive as `subscription.updated` with
+`subscriptionChange` `undefined`, so `cancel_scheduled` and `uncanceled` never occur on Paddle — read
+`event.subscription.cancelAtPeriodEnd` instead.
+
+:::warning
+`event.idempotencyKey` is built from the envelope's **`event_id`**, not `notification_id`. The latter
+identifies one *delivery* to one destination and a dashboard replay mints a new one, so keying dedupe on
+it would let every replay through. `event.createdAt` comes from `occurred_at`.
 :::
 
 ## Orders
@@ -160,6 +180,7 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
 | Capability                    | Value                                  |
 | ----------------------------- | -------------------------------------- |
 | `cancellationReason`          | `false`                                |
+| `checkoutExpiresAt`           | `false`                                |
 | `checkoutStatus`              | `true`                                 |
 | `checkoutSuccessUrl`          | `false`                                |
 | `endTrial`                    | `true`                                 |
@@ -180,6 +201,9 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
 - **`Price.checkoutRef` is the price ID** (`pri_…`), not the product ID. `Product.id` is the `pro_…`.
 - **A unified `Checkout` is a Paddle transaction.** `checkouts.get({ id })` reads
   `GET /transactions/{id}`.
+- **No checkout expiry.** A transaction carries no expiry field at all, so `checkoutExpiresAt` is
+  `false`, `checkouts.create({ expiresAt })` throws `unsupported`, and `Checkout.expiresAt` is always
+  `undefined`.
 - **Amounts are string integers** on the wire (`"2499"`) and are parsed into numbers in minor units.
 - **`customerEmail` resolves to a customer.** Paddle transactions take a `customer_id`, so the SDK looks
   the email up and creates the customer if it doesn't exist. That costs one or two extra requests.

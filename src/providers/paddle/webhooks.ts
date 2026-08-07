@@ -1,14 +1,16 @@
 import { RevenueError } from '../../errors.ts';
-import type { WebhookEvent } from '../../types.ts';
+import type { SubscriptionChange, WebhookEvent } from '../../types.ts';
 import {
   hmacSha256,
   isTimestampWithinTolerance,
+  sha256Hex,
   timingSafeEqual,
   toHex,
   toIncomingWebhook,
   type VerifyWebhookParams,
   type WebhookInput,
 } from '../../webhooks/verify.ts';
+import { toDate } from '../shared.ts';
 import {
   toOrderFromTransaction,
   toSubscription,
@@ -71,12 +73,19 @@ interface PaddleEventEnvelope {
 
 const SUBSCRIPTION_UPDATE_EVENTS = new Set([
   'subscription.activated',
+  'subscription.imported',
   'subscription.past_due',
   'subscription.paused',
   'subscription.resumed',
   'subscription.trialing',
   'subscription.updated',
 ]);
+
+const SUBSCRIPTION_CHANGES: Record<string, SubscriptionChange> = {
+  'subscription.past_due': 'past_due',
+  'subscription.paused': 'paused',
+  'subscription.resumed': 'resumed',
+};
 
 /**
  * Parses a Paddle webhook into a normalized event. Does NOT verify the signature — call
@@ -96,39 +105,46 @@ export async function parseWebhookEvent(input: WebhookInput): Promise<WebhookEve
     });
   }
   const providerType = envelope.event_type ?? 'unknown';
+  const base = {
+    providerType,
+    // `event_id` identifies the event itself. The payload's `notification_id` identifies one
+    // DELIVERY — a dashboard replay mints a new one — so it would defeat de-duplication.
+    idempotencyKey: envelope.event_id
+      ? `paddle:${envelope.event_id}`
+      : `paddle:sha256:${await sha256Hex(body)}`,
+    createdAt: toDate(envelope.occurred_at),
+    raw: envelope,
+  };
   if (providerType === 'subscription.created') {
     return {
+      ...base,
       type: 'subscription.created',
-      providerType,
       subscription: toSubscription(envelope.data as PaddleSubscription),
-      raw: envelope,
     };
   }
   if (SUBSCRIPTION_UPDATE_EVENTS.has(providerType)) {
     return {
+      ...base,
       type: 'subscription.updated',
-      providerType,
       subscription: toSubscription(envelope.data as PaddleSubscription),
-      raw: envelope,
+      subscriptionChange: SUBSCRIPTION_CHANGES[providerType],
     };
   }
   if (providerType === 'subscription.canceled') {
     return {
+      ...base,
       type: 'subscription.canceled',
-      providerType,
       subscription: toSubscription(envelope.data as PaddleSubscription),
-      raw: envelope,
     };
   }
   // `transaction.completed` marks full processing; `transaction.paid` precedes it and is
   // left unmapped to avoid double-firing.
   if (providerType === 'transaction.completed') {
     return {
+      ...base,
       type: 'order.paid',
-      providerType,
       order: toOrderFromTransaction(envelope.data as PaddleTransaction),
-      raw: envelope,
     };
   }
-  return { type: 'unknown', providerType, raw: envelope };
+  return { ...base, type: 'unknown' };
 }

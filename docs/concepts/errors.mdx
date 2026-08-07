@@ -22,7 +22,8 @@ try {
     error.status; // HTTP status, when the failure came from a response
     error.retryable; // whether retrying may succeed
     error.retryAfter; // seconds, when the provider sent Retry-After
-    error.cause; // the parsed provider body, or the underlying fetch error
+    error.cause; // the underlying JS error (fetch TypeError, JSON SyntaxError)
+    error.responseBody; // the provider's parsed error body — non-enumerable
   }
 }
 ```
@@ -34,9 +35,31 @@ try {
     status: { type: 'number', required: false, description: 'HTTP status, when the failure came from a response.' },
     retryable: { type: 'boolean', description: 'Whether retrying the operation may succeed.' },
     retryAfter: { type: 'number', required: false, description: 'Seconds to wait, parsed from the provider Retry-After header (numeric or HTTP-date).' },
-    cause: { type: 'unknown', required: false, description: 'The parsed provider response body, or the underlying error.' },
+    cause: { type: 'unknown', required: false, description: 'The underlying JavaScript error — a fetch TypeError, or a SyntaxError from an unparseable body. Never the provider payload.' },
+    responseBody: { type: 'unknown', required: false, description: "The provider's parsed error response body. Non-enumerable, and never redacted." },
   }}
 />
+
+### `cause` carries the JS error, `responseBody` carries the provider's
+
+`cause` is the ordinary `Error` chain: the `TypeError` `fetch` throws on a dead connection, or the
+`SyntaxError` from a response that wasn't JSON. The provider's own error payload lives on
+`responseBody`, installed as a **non-enumerable** property — `console.error(error)`, `util.inspect`,
+`JSON.stringify(error)` and error reporters such as Sentry all skip it, so a provider body never lands in
+your logs by accident, while `error.responseBody` reads it whenever you actually want it.
+
+```ts
+if (error.code === 'validation') {
+  // Deliberate read — this is the only way the body reaches you.
+  logger.debug({ detail: error.responseBody });
+}
+```
+
+:::warning
+**This is a change.** `cause` used to hold the provider body, and it reached logs only because Node
+hard-codes `cause` in its inspector. If you read `error.cause` to inspect a provider response, switch to
+`error.responseBody`.
+:::
 
 ## The code union
 
@@ -79,13 +102,15 @@ switch (error.code) {
 Both are frequently raised **before any HTTP request is made**:
 
 - **`validation`** — an empty `id`, an empty `items` array, an empty `items[].product`, a `quantity`
-  that isn't a positive integer, an empty `customerId` or `eventName` on `usage.report`, a usage
-  `value` — or any numeric `metadata` entry — that isn't a finite number, or a
-  `licenseKeys.update({ activationLimit })` that is neither `null` nor a positive integer.
-- **`unsupported`** — capability gating: `successUrl` on Paddle, `returnUrl` on Lemon Squeezy or
-  Paddle, `customerId` on a Lemon Squeezy subscription list, `reason`/`comment` on a provider without
-  `cancellationReason`, `uncancel`/`endTrial`/`pause`/`resume`/`revoke` where unsupported, `usage.report`
-  on Lemon Squeezy or Paddle, all four `licenseKeys` methods on Stripe or Paddle, a `behavior` outside
+  that isn't a positive integer, a checkout `expiresAt` that is an invalid `Date` or isn't in the future,
+  an empty `customerId` or `eventName` on `usage.report`, a usage `value` — or any numeric `metadata`
+  entry — that isn't a finite number, or a `licenseKeys.update({ activationLimit })` that is neither
+  `null` nor a positive integer.
+- **`unsupported`** — capability gating: `successUrl` on Paddle, `expiresAt` on Polar, Paddle or Dodo
+  Payments, `returnUrl` on Lemon Squeezy or Paddle, `customerId` on a Lemon Squeezy subscription list,
+  `reason`/`comment` on a provider without `cancellationReason`,
+  `uncancel`/`endTrial`/`pause`/`resume`/`revoke` where unsupported, `usage.report` on Lemon Squeezy or
+  Paddle, all four `licenseKeys` methods on Stripe or Paddle, a `behavior` outside
   `capabilities.pauseBehaviors`, and a `prorationBehavior` outside `capabilities.prorationBehaviors`.
 
 Adapters raise `unsupported` for the finer-grained cases the capability object can't express — a Polar
@@ -106,7 +131,10 @@ if (error.retryable) {
 
 Provider notes:
 
-- **Polar** sends `Retry-After` on 429.
+- **Polar** sends `Retry-After` on 429. It also runs FastAPI, so a `422` answers with `detail` as an
+  array of validation entries; the adapter summarizes them as `loc.path: msg` (up to three, then
+  `(+N more)`) so `error.message` names the failing fields. Each entry's echoed `input` is left out of
+  the message — read `error.responseBody` for the untouched array.
 - **Stripe** does not send `Retry-After`; it signals retryability via `Stripe-Should-Retry`. Expect
   `retryAfter` to be `undefined` on Stripe rate limits and use your own back-off.
 - **Paddle** reports authentication failures as HTTP **403**. The adapter inspects the error code and
@@ -153,11 +181,27 @@ bubbles into your logs or error tracker won't leak the credential that produced 
 error.message; // "… Bearer [redacted] …"
 ```
 
+Redaction covers the **message**, and only the message.
+
+### Why `responseBody` is never redacted
+
+`error.responseBody` holds the provider's body verbatim, and that is a decision rather than an oversight.
+The `secrets` hook already covers secrets; what remains in an error body is customer PII — Stripe's
+`billing_details` on a `402`, Polar's echoed values on a `422` — and no secrets list can enumerate that.
+Redacting would also corrupt the same payload where the SDK hands it back as data — a rejected license
+validation carries it as `LicenseKeyValidation.raw` — and it would ship a false assurance that the field
+is safe to log. Non-enumerability is the actual protection: the body stays out of logs unless you reach
+for it.
+
 :::warning
-Redaction covers the error **message**. `error.cause` holds the parsed provider response body verbatim —
-attach it to a bug report deliberately, not to every log line. And some values are secrets by design:
-a customer portal URL is a signed, ready-to-use link into someone's billing account. Never log those.
+The same PII consideration applies to the enumerable `raw` field on every model. `Customer.raw`,
+`Subscription.raw`, and `Order.raw` are untouched provider payloads, they serialize with
+`JSON.stringify`, and they appear on **success**, not only on failure — so if you have a no-PII-in-logs
+rule, `raw` is the larger surface, not `responseBody`.
 :::
+
+Some values are secrets by design: a customer portal URL is a signed, ready-to-use link into someone's
+billing account. Never log those.
 
 ## Handling errors
 

@@ -62,6 +62,7 @@ describe('paddle', () => {
     const { provider } = setup(() => ({ json: { data: [] } }));
     expect(provider.capabilities.hostedCheckout).toBe(false);
     expect(provider.capabilities.checkoutSuccessUrl).toBe(false);
+    expect(provider.capabilities.checkoutExpiresAt).toBe(false);
     expect(provider.capabilities.cancellationReason).toBe(false);
     expect(provider.capabilities.usageReporting).toBe(false);
     expect(provider.capabilities.licenseKeys).toBe(false);

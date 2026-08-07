@@ -55,6 +55,11 @@ export function toHex(bytes: Uint8Array): string {
   return hex;
 }
 
+export async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+  return toHex(new Uint8Array(digest));
+}
+
 export function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) {
     return false;

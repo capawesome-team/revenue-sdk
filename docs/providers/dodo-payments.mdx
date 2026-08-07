@@ -71,15 +71,29 @@ its own secret to its own `verifyWebhook`.
 :::
 
 Events worth subscribing to: `subscription.active`, `subscription.updated`, `subscription.renewed`,
-`subscription.plan_changed`, `subscription.on_hold`, `subscription.paused`, `subscription.cancelled`,
-`subscription.expired`, `subscription.failed`, `payment.succeeded`, and — if you sell license keys —
-`license_key.created`.
+`subscription.plan_changed`, `subscription.update_payment_method`, `subscription.on_hold`,
+`subscription.cancelled`, `subscription.expired`, `subscription.failed`, `payment.succeeded`, and — if
+you sell license keys — `license_key.created`.
 
 :::note
 Dodo Payments has **no `subscription.created` event**. The first signal for a new subscription is
 `subscription.active`, which also fires after recovery from `on_hold`. Every subscription event
 normalizes to `subscription.updated` (or `subscription.canceled`), so **upsert** rather than insert.
 :::
+
+Dodo names exactly one of the transitions `subscriptionChange` covers: `subscription.on_hold` →
+`past_due`. Everything else leaves `subscriptionChange` `undefined`, including `cancel_scheduled` —
+read `event.subscription.cancelAtPeriodEnd` for that.
+
+:::warning
+**`subscription.paused` is deliberately not mapped** and normalizes to `unknown`. Dodo has no pause
+endpoint and no paused subscription status (`pause: false`), so nothing upstream can produce it —
+handling it would imply a capability that does not exist.
+:::
+
+`event.idempotencyKey` is `dodo-payments:<webhook-id header>` (falling back to a SHA-256 of the body
+when the headers are not passed to `parseWebhookEvent`), and `event.createdAt` comes from the
+envelope's `timestamp` — never the `webhook-timestamp` header, which is the delivery attempt time.
 
 ## License keys
 
@@ -150,6 +164,7 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
 | Capability                    | Value                       |
 | ----------------------------- | --------------------------- |
 | `cancellationReason`          | `true`                      |
+| `checkoutExpiresAt`           | `false`                     |
 | `checkoutStatus`              | `true`                      |
 | `checkoutSuccessUrl`          | `true`                      |
 | `endTrial`                    | `false`                     |
@@ -198,6 +213,9 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   [Usage-based billing](/docs/concepts/usage-based-billing).
 - **`checkouts.get` returns no URL.** The status endpoint omits it, so a `Checkout` read back has
   `url: ''`. Persist the URL from `checkouts.create`.
+- **Checkout expiry is fixed at 24 hours** — 15 minutes when the session is created with `confirm=true`
+  — and cannot be overridden, so `checkoutExpiresAt` is `false` and `checkouts.create({ expiresAt })`
+  throws `unsupported`.
 - **Validate cannot be scoped.** `POST /licenses/validate` answers with literally `{ "valid": boolean }`
   — no product, business, customer, or expiry — so a key from any Dodo Payments merchant for any product
   validates as `true`, and `LicenseKeyValidation.licenseKey` is **always `undefined`**. Only

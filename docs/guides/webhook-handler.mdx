@@ -23,21 +23,19 @@ export async function POST(request: Request): Promise<Response> {
     return new Response('invalid signature', { status: 401 });
   }
 
-  // 3. Drop repeats.
-  const deliveryId = headers.get('webhook-id');
-  if (deliveryId && (await alreadyProcessed(deliveryId))) {
+  // 3. Parse. Cheap, and it produces the dedupe key.
+  const event = await parseWebhookEvent({ headers, body });
+
+  // 4. Drop repeats.
+  if (await alreadyProcessed(event.idempotencyKey)) {
     return new Response(null, { status: 204 });
   }
 
-  // 4. Parse and persist.
-  const event = await parseWebhookEvent({ headers, body });
+  // 5. Persist.
   await handle(event);
+  await markProcessed(event.idempotencyKey);
 
-  if (deliveryId) {
-    await markProcessed(deliveryId);
-  }
-
-  // 5. Acknowledge.
+  // 6. Acknowledge.
   return new Response(null, { status: 204 });
 }
 ```
@@ -55,43 +53,36 @@ Express, mount `express.raw({ type: '*/*' })` on the webhook route specifically.
 
 ## 2. Dedupe
 
-Providers retry deliveries, sometimes for days. Store the delivery ID with a TTL:
+Providers retry deliveries, sometimes for days. Every parsed event carries `idempotencyKey` — a
+required, provider-namespaced `<provider>:<id>` string that is stable across retries and dashboard
+replays — so there is nothing to derive. Store it with a TTL:
 
 ```ts
 const DEDUPE_TTL_SECONDS = 60 * 60 * 24 * 3;
 
-async function alreadyProcessed(id: string): Promise<boolean> {
-  return (await kv.get(`webhook:${id}`)) !== null;
+async function alreadyProcessed(key: string): Promise<boolean> {
+  return (await kv.get(`webhook:${key}`)) !== null;
 }
 
-async function markProcessed(id: string): Promise<void> {
-  await kv.put(`webhook:${id}`, '1', { expirationTtl: DEDUPE_TTL_SECONDS });
-}
-```
-
-Where the delivery ID lives, per provider:
-
-| Provider          | Dedupe key                                                                   |
-| ----------------- | ----------------------------------------------------------------------------- |
-| **Polar**         | `webhook-id` header                                                          |
-| **Dodo Payments** | `webhook-id` header                                                          |
-| **Stripe**        | `id` on the envelope — `(event.raw as { id: string }).id`                    |
-| **Paddle**        | `event_id` on the envelope — `(event.raw as { event_id: string }).event_id`   |
-| **Lemon Squeezy** | none — derive one from `providerType` + resource ID + the resource's `updated_at` |
-
-```ts
-function dedupeKey(event: WebhookEvent, headers: Headers): string | undefined {
-  const header = headers.get('webhook-id');
-  if (header) return header;
-
-  const raw = event.raw as { id?: string; event_id?: string };
-  return raw.id ?? raw.event_id;
+async function markProcessed(key: string): Promise<void> {
+  await kv.put(`webhook:${key}`, '1', { expirationTtl: DEDUPE_TTL_SECONDS });
 }
 ```
+
+It works the same on every provider, including Lemon Squeezy, which publishes no event id and gets a
+SHA-256 of the raw body instead — see
+[where the key comes from](/docs/concepts/webhooks#where-the-key-comes-from).
 
 :::note
 Mark the delivery processed **after** the work succeeds, not before. If persistence throws, you want the
 provider's retry to find no dedupe entry and try again.
+:::
+
+:::warning
+`idempotencyKey` dedupes **redeliveries of one event**. It does not collapse a provider's several events
+for one state change — Polar and Dodo Payments emit both `subscription.active` and
+`subscription.updated` for a single activation, two events with two distinct keys — and it cannot fix a
+race inside your own handler. The next section is where that bites.
 :::
 
 ## 3. Persist — upsert by subscription ID
@@ -147,6 +138,35 @@ async function upsertSubscription(subscription: Subscription): Promise<void> {
 }
 ```
 
+:::warning
+**The read-then-upsert above is a race, and event dedupe cannot save you from it.** `upsertSubscription`
+reads the stored row, then writes in a second statement. Two deliveries handled concurrently can both
+read the old row before either writes, so both pass the staleness guard, both see the same "change", and
+any side effect hanging off that diff — a plan-changed email, a provisioning call, a credit grant — fires
+twice. Their `idempotencyKey`s differ by construction, because they are two different events, so
+`alreadyProcessed` never sees a duplicate. This is the trap: event-id dedupe *looks* like it solves
+exactly this, and it does not.
+
+Make the read and the write **one statement**, and drive side effects off the row the write returns
+rather than a snapshot you read earlier:
+
+```sql
+UPDATE subscriptions
+   SET status = $2, cancel_at_period_end = $3, current_period_end = $4
+ WHERE provider_subscription_id = $1
+   AND status IS DISTINCT FROM $2
+RETURNING id, status;
+```
+
+Exactly one of the two concurrent deliveries gets a row back; that one sends the email. The other gets
+an empty result, which means "somebody else already applied this state" — do nothing and return `204`.
+Any store with a conditional write does this: a `WHERE`-guarded `UPDATE … RETURNING`, a Mongo
+`findOneAndUpdate` with the old value in the filter, a DynamoDB conditional update, a Durable Object.
+
+This is especially likely on edge runtimes, where concurrent deliveries land in **separate isolates** and
+share no in-process lock, so a single-instance mutex or a "check the cache first" guard buys you nothing.
+:::
+
 Three things this gets right:
 
 - **`subscription.created` is not special.** Dodo Payments never emits it, and providers re-send updates
@@ -157,6 +177,13 @@ Three things this gets right:
   from both `order_created` and `subscription_payment_success`, because renewals emit no order. The
   attached `Order` is the same shape `client.orders.list` returns, so a delivery you dropped can be
   reconciled later by ID — see [Orders](/docs/concepts/orders).
+
+Where a side effect really is about a *transition* rather than a state, prefer
+`event.subscriptionChange` — `'past_due'`, `'paused'`, `'uncanceled'` and friends — over diffing rows
+yourself. It is an edge the provider named, it is deduped by `idempotencyKey` like any other event, and
+it never re-fires on a later `subscription.updated` the way a payload field such as `cancelAtPeriodEnd`
+would. Coverage is uneven across providers, so check
+[the matrix](/docs/reference/webhook-events#subscription-changes) before relying on it.
 
 ## 4. Return 2xx fast
 

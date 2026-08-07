@@ -95,6 +95,7 @@ describe('polar', () => {
     const { provider } = setup(() => ({ json: emptyPage() }));
     expect(provider.name).toBe('polar');
     expect(provider.capabilities.hostedCheckout).toBe(true);
+    expect(provider.capabilities.checkoutExpiresAt).toBe(false);
     expect(provider.capabilities.prorationBehaviors).toEqual(['invoice_now', 'prorate']);
     expect(provider.capabilities.pause).toBe(true);
     expect(provider.capabilities.pauseBehaviors).toEqual(['period_end']);

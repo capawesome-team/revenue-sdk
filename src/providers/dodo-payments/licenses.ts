@@ -72,7 +72,7 @@ export async function validateLicenseKey(
     // An unknown key answers `200 { "valid": false }`; a 404 carries the same meaning, so
     // callers never have to branch on it.
     if (error instanceof RevenueError && error.code === 'not_found') {
-      return { valid: false, raw: error.cause };
+      return { valid: false, raw: error.responseBody };
     }
     throw error;
   }

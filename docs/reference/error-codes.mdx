@@ -25,12 +25,38 @@ and its retry semantics. For the conceptual overview see [Errors](/docs/concepts
       required: false,
       description: 'Seconds to wait, parsed from Retry-After (numeric seconds or an HTTP date).',
     },
-    cause: { type: 'unknown', required: false, description: 'The parsed provider response body, or the underlying fetch error.' },
+    cause: {
+      type: 'unknown',
+      required: false,
+      description: 'The underlying JavaScript error — a fetch TypeError, or a SyntaxError from an unparseable body. Never the provider payload.',
+    },
+    responseBody: {
+      type: 'unknown',
+      required: false,
+      description: "The provider's parsed error response body. Non-enumerable, and never redacted.",
+    },
   }}
 />
 
 `RevenueError` extends `Error`, so `error instanceof RevenueError` and `error.message` work as usual.
 `name` is always `'RevenueError'`.
+
+### `cause` vs `responseBody`
+
+Two fields, and the split is the point:
+
+- **`cause`** carries only the underlying JavaScript error — the `TypeError` `fetch` throws on a dead
+  connection, or the `SyntaxError` from a response that wasn't JSON. Plain `Error` semantics.
+- **`responseBody`** carries the provider's parsed error payload: a `422` validation detail, a `402`
+  decline. It is installed with `Object.defineProperty` as **non-enumerable**, so `console.error(error)`,
+  `util.inspect`, `JSON.stringify(error)` and error reporters such as Sentry all skip it, while
+  `error.responseBody` still reads it. Getting at the body is a deliberate act.
+
+:::warning
+**This is a change.** `cause` used to hold the provider body, and it reached logs only because Node
+hard-codes `cause` in its inspector. If you read `error.cause` to inspect a provider response, read
+`error.responseBody` instead.
+:::
 
 ## The code union
 
@@ -58,6 +84,15 @@ and re-maps `authentication_malformed`, `authentication_missing`, and `invalid_t
 so a bad API key doesn't look like a permissions problem.
 :::
 
+:::note
+**Polar reports validation errors as a list.** Polar runs FastAPI, so a `422` answers with `detail` as an
+array of Pydantic entries rather than a string. The adapter summarizes each entry as `loc.path: msg`,
+joins them with `; `, and caps the message at three with a `(+N more)` suffix — so `error.message` names
+the fields that failed instead of reading "polar request failed with status 422". Each entry's `input`
+echoes the value you submitted and is deliberately left out, because messages get logged; read
+`error.responseBody` for the untouched array.
+:::
+
 ## Errors raised before any request
 
 These never touch the network:
@@ -66,9 +101,10 @@ These never touch the network:
 | ------------- | -------------------------------------------------------------------------------------------------------------- |
 | `validation`  | An empty `id`, `customerId`, `product`, or `items[].product`; an empty `items` array; a `quantity` that isn't a positive integer |
 | `validation`  | An empty `customerId` or `eventName` on `usage.report`, or a usage `value` or numeric `metadata` entry that isn't finite |
+| `validation`  | An `expiresAt` on `checkouts.create` that is an invalid `Date`, or is not in the future                        |
 | `validation`  | A malformed pagination cursor, a cursor from another provider, or a cursor URL on a different origin           |
 | `validation`  | An empty `id` on `licenseKeys.get`/`update`, or a `licenseKeys.update` `activationLimit` that is neither `null` nor a positive integer |
-| `unsupported` | Capability gating — `successUrl`, `returnUrl`, `customerId` on a subscription list, `reason`/`comment`, `uncancel`, `endTrial`, `pause`, `resume`, `revoke`, `usage.report`, `licenseKeys.list`/`listAll`/`get`/`update`, a `behavior` outside `capabilities.pauseBehaviors`, and a `prorationBehavior` outside `capabilities.prorationBehaviors` |
+| `unsupported` | Capability gating — `successUrl`, `expiresAt`, `returnUrl`, `customerId` on a subscription list, `reason`/`comment`, `uncancel`, `endTrial`, `pause`, `resume`, `revoke`, `usage.report`, `licenseKeys.list`/`listAll`/`get`/`update`, a `behavior` outside `capabilities.pauseBehaviors`, and a `prorationBehavior` outside `capabilities.prorationBehaviors` |
 
 Adapters raise `unsupported` at call time for the finer-grained limits a capability boolean can't
 express — see [the capability matrix](/docs/reference/capability-matrix#beyond-the-capability-object).
@@ -116,9 +152,17 @@ never retried because a replay is deduplicated only when you passed an `idempote
 `RevenueError` redacts the configured API key or access token from its **message** before construction,
 replacing it with `[redacted]`.
 
+Redaction covers the message only. `error.responseBody` holds the provider's response body verbatim and
+is **not** redacted, on purpose: the `secrets` hook already covers secrets, and what remains is customer
+PII — Stripe's `billing_details` on a `402`, Polar's echoed values on a `422` — which no secrets list can
+enumerate. Redacting it would also corrupt the same payload where the SDK returns it as data — a rejected
+license validation carries it as `LicenseKeyValidation.raw` — and would imply the field is safe to log.
+Non-enumerability is what keeps it out of logs; attach it to a bug report deliberately.
+
 :::warning
-`error.cause` holds the provider's response body verbatim and is **not** redacted. Attach it to a bug
-report deliberately, not to every log line.
+The same applies to the enumerable `raw` field on every model. `Customer.raw`, `Subscription.raw`, and
+`Order.raw` are untouched provider payloads, they serialize with `JSON.stringify`, and they show up on
+**success**, not only on failure. If you have a no-PII-in-logs rule, `raw` is the larger surface.
 :::
 
 ## Handling errors

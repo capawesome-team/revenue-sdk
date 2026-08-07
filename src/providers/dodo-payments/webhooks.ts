@@ -1,14 +1,16 @@
 import { base64ToBytes, bytesToBase64 } from '../../base64.ts';
 import { RevenueError } from '../../errors.ts';
-import type { WebhookEvent } from '../../types.ts';
+import type { SubscriptionChange, WebhookEvent } from '../../types.ts';
 import {
   hmacSha256,
   isTimestampWithinTolerance,
+  sha256Hex,
   timingSafeEqual,
   toIncomingWebhook,
   type VerifyWebhookParams,
   type WebhookInput,
 } from '../../webhooks/verify.ts';
+import { toDate } from '../shared.ts';
 import {
   toLicenseKey,
   toOrderFromPayment,
@@ -77,9 +79,9 @@ const SUBSCRIPTION_UPDATE_EVENTS = new Set([
   // recovery, so all lifecycle events normalize to updates — consumers should upsert.
   'subscription.active',
   'subscription.on_hold',
-  'subscription.paused',
   'subscription.plan_changed',
   'subscription.renewed',
+  'subscription.update_payment_method',
   'subscription.updated',
 ]);
 
@@ -89,12 +91,16 @@ const SUBSCRIPTION_CANCELED_EVENTS = new Set([
   'subscription.failed',
 ]);
 
+const SUBSCRIPTION_CHANGES: Record<string, SubscriptionChange> = {
+  'subscription.on_hold': 'past_due',
+};
+
 /**
  * Parses a Dodo Payments webhook into a normalized event. Does NOT verify the signature —
  * call `verifyWebhook` first.
  */
 export async function parseWebhookEvent(input: WebhookInput): Promise<WebhookEvent> {
-  const { body } = await toIncomingWebhook(input);
+  const { headers, body } = await toIncomingWebhook(input);
   let envelope: DodoWebhookEnvelope;
   try {
     envelope = JSON.parse(body) as DodoWebhookEnvelope;
@@ -106,39 +112,36 @@ export async function parseWebhookEvent(input: WebhookInput): Promise<WebhookEve
     });
   }
   const providerType = envelope.type ?? 'unknown';
+  const id = headers['webhook-id'];
+  const base = {
+    providerType,
+    idempotencyKey: id ? `dodo-payments:${id}` : `dodo-payments:sha256:${await sha256Hex(body)}`,
+    // The envelope timestamp is when the event occurred. The `webhook-timestamp` header is the
+    // delivery ATTEMPT time and moves with every retry.
+    createdAt: toDate(envelope.timestamp),
+    raw: envelope,
+  };
   if (SUBSCRIPTION_UPDATE_EVENTS.has(providerType)) {
     return {
+      ...base,
       type: 'subscription.updated',
-      providerType,
       subscription: toSubscription(envelope.data as DodoSubscription),
-      raw: envelope,
+      subscriptionChange: SUBSCRIPTION_CHANGES[providerType],
     };
   }
   if (SUBSCRIPTION_CANCELED_EVENTS.has(providerType)) {
     return {
+      ...base,
       type: 'subscription.canceled',
-      providerType,
       subscription: toSubscription(envelope.data as DodoSubscription),
-      raw: envelope,
     };
   }
   if (providerType === 'payment.succeeded') {
-    return {
-      type: 'order.paid',
-      providerType,
-      order: toOrderFromPayment(envelope.data as DodoPayment),
-      raw: envelope,
-    };
+    return { ...base, type: 'order.paid', order: toOrderFromPayment(envelope.data as DodoPayment) };
   }
   if (providerType === 'license_key.created') {
     const licenseKey = toLicenseKey(envelope.data as DodoLicenseKey);
-    return {
-      type: 'license.issued',
-      providerType,
-      licenseKeyId: licenseKey.id,
-      licenseKey,
-      raw: envelope,
-    };
+    return { ...base, type: 'license.issued', licenseKeyId: licenseKey.id, licenseKey };
   }
-  return { type: 'unknown', providerType, raw: envelope };
+  return { ...base, type: 'unknown' };
 }

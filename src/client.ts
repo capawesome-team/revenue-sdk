@@ -137,6 +137,23 @@ export function createClient(options: CreateClientOptions): RevenueClient {
     }
   }
 
+  // Stripe's own 30-minute-to-24-hour window is deliberately NOT enforced here: it is a single
+  // provider's rule, it is evaluated against Stripe's clock (so skew would reject valid dates near
+  // the boundary), and clamping would silently rewrite the caller's intent. Stripe rejects an
+  // out-of-range date itself and that 400 already surfaces as `validation`.
+  function checkExpiresAt(expiresAt: Date | undefined): void {
+    if (expiresAt === undefined) {
+      return;
+    }
+    // `new Date(NaN).toISOString()` throws a RangeError, which would escape as a non-RevenueError.
+    if (Number.isNaN(expiresAt.getTime())) {
+      fail('validation', 'The expiresAt parameter must be a valid date');
+    }
+    if (expiresAt.getTime() <= Date.now()) {
+      fail('validation', 'The expiresAt parameter must be in the future');
+    }
+  }
+
   function checkOrderCustomerFilter(customerId: string | undefined): void {
     if (customerId !== undefined && !provider.capabilities.listOrdersByCustomer) {
       fail('unsupported', `${provider.name} cannot filter orders by customer`);
@@ -217,6 +234,10 @@ export function createClient(options: CreateClientOptions): RevenueClient {
         if (params.successUrl !== undefined && !provider.capabilities.checkoutSuccessUrl) {
           fail('unsupported', `${provider.name} does not support a checkout success URL`);
         }
+        if (params.expiresAt !== undefined && !provider.capabilities.checkoutExpiresAt) {
+          fail('unsupported', `${provider.name} does not support a checkout expiry`);
+        }
+        checkExpiresAt(params.expiresAt);
         return withRetry(() => provider.createCheckout(params));
       },
       get: async (params) => {

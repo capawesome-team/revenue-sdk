@@ -107,6 +107,35 @@ date. Only once the pause takes effect does `status` become `paused`.
 For the reasoning behind this split, and the entitlement bugs it prevents, see
 [how to normalize subscription status across billing providers](/blog/normalize-subscription-status-across-providers).
 
+### The flags are levels; webhooks also carry the edge
+
+`status`, `cancelAtPeriodEnd`, and `pauseAtPeriodEnd` describe where a subscription **is**. They cannot
+tell you when it got there — `cancelAtPeriodEnd` stays `true` for the rest of the period, so a handler
+that keys off it re-sends its "your plan ends soon" email on every later update event for that
+subscription. Diffing against your stored copy misses transitions too: if anything else mutated the row
+first, the diff is empty.
+
+That is what `WebhookEvent.subscriptionChange` is for. It names the transition **the provider named**,
+derived from the event string alone and never from payload state, so it appears exactly once:
+
+```ts
+switch (event.type) {
+  case 'subscription.updated':
+    await upsert(event.subscription!); // the level — always
+    if (event.subscriptionChange === 'cancel_scheduled') {
+      await sendWinBackEmail(event.subscription!); // the edge — once
+    }
+    break;
+}
+```
+
+`SubscriptionChange` is `'cancel_scheduled' | 'past_due' | 'paused' | 'resumed' | 'uncanceled'`, and it
+is `undefined` wherever the provider has no dedicated event — Stripe names none of the five for a
+pause set through `subscriptions.pause`, and Dodo Payments names only `past_due`. Entitlement must
+therefore keep reading the status; the edge is for side effects. The coverage table is in
+[Status mapping](/docs/reference/status-mapping#subscriptionchange-the-edge-not-the-level), the event
+strings in [Webhook events](/docs/reference/webhook-events).
+
 ## A lifecycle timeline
 
 <Steps>

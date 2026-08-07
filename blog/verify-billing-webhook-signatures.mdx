@@ -21,7 +21,7 @@ rule that breaks verification on every provider at once, and a single endpoint t
 - Every provider signs with HMAC-SHA256, but the signed string differs: `{id}.{timestamp}.{body}`, `{timestamp}.{body}`, `{timestamp}:{body}`, or just the body.
 - Stripe, Paddle, and Lemon Squeezy encode the digest as **hex**; Polar and Dodo Payments encode it as **base64**.
 - Polar and Dodo look identical on the wire and still need different HMAC keys — Polar uses the secret verbatim, Dodo base64-decodes it.
-- Compare in constant time, enforce a timestamp tolerance, and dedupe deliveries — providers retry for days.
+- Compare in constant time, enforce a timestamp tolerance, and dedupe on the event's ID — providers retry for days, and Lemon Squeezy publishes no ID at all.
 
 ## Why must webhook signatures be verified against the raw body?
 
@@ -117,9 +117,10 @@ parses first and verifies later has already trusted attacker-controlled input.
 
 The normalized event carries `type` (one of `subscription.created`, `subscription.updated`,
 `subscription.canceled`, `order.paid`, `checkout.completed`, `license.issued`, or `unknown`),
-`providerType` with the provider's original string, and `raw` with the untouched envelope. Unrecognized provider events come back
-as `unknown` instead of throwing, which matters because every provider adds event types over time. The
-full mapping is in [Webhook events](/docs/reference/webhook-events).
+`providerType` with the provider's original string, `idempotencyKey` for de-duplication, `createdAt`
+where the provider timestamps its envelope, and `raw` with the untouched envelope. Unrecognized provider
+events come back as `unknown` instead of throwing, which matters because every provider adds event types
+over time. The full mapping is in [Webhook events](/docs/reference/webhook-events).
 
 ## How do you handle all five providers on one endpoint?
 
@@ -166,13 +167,48 @@ Verification is necessary but not sufficient. Three more things separate a demo 
 production one:
 
 - **A replay window.** `revenue-sdk` rejects deliveries whose timestamp is more than 300 seconds from now, in either direction, for Stripe, Polar, Paddle, and Dodo Payments. (Paddle's own SDKs default to 5 seconds, which is hostile to legitimate retries.) Lemon Squeezy sends no timestamp, so no window can be enforced.
-- **Idempotency.** Providers retry deliveries, sometimes for days, and a `500` from your handler guarantees a repeat. Store the delivery ID with a TTL and drop repeats: `webhook-id` on Polar and Dodo, `id` on the Stripe envelope, `event_id` on the Paddle envelope. Lemon Squeezy has no delivery ID — derive one from the event type, resource ID, and the resource's `updated_at`.
+- **Idempotency.** Providers retry deliveries, sometimes for days, and a `500` from your handler guarantees a repeat. The parsed event carries `idempotencyKey` — a provider-namespaced `<provider>:<id>` string that is always set — so storing it with a TTL and dropping repeats is a two-line check. See the next section for where each provider's ID comes from.
 - **A fast `2xx`.** Acknowledge first, do slow work asynchronously. Providers time out and retry, which turns a slow handler into a duplicate-processing problem.
 
 The full walkthrough — verify, dedupe, persist, acknowledge — is in the
 [production webhook handler guide](/docs/guides/webhook-handler). If you are deploying to the edge, the
 [Cloudflare Workers guide](/docs/guides/cloudflare-workers) covers doing this without `nodejs_compat`,
 since `crypto.subtle` is available natively there.
+
+## How do you deduplicate billing webhook deliveries?
+
+Store the event's ID the first time you see it and drop anything you have stored already — but only four
+of the five providers give you one. `revenue-sdk` normalizes that into `event.idempotencyKey`, always
+set, always prefixed with the provider name:
+
+```ts
+const event = await parseWebhookEvent({ headers, body });
+
+// e.g. "stripe:evt_1Ox…", "lemon-squeezy:sha256:9f2c…"
+if (!(await claim(event.idempotencyKey, { ttlDays: 30 }))) {
+  return new Response(null, { status: 204 }); // already processed
+}
+```
+
+| Provider          | Source                     | Key                                    |
+| ----------------- | -------------------------- | -------------------------------------- |
+| **Polar**         | `webhook-id` header        | `polar:<id>`                           |
+| **Dodo Payments** | `webhook-id` header        | `dodo-payments:<id>`                   |
+| **Stripe**        | envelope `id`              | `stripe:evt_…`                         |
+| **Paddle**        | envelope `event_id`        | `paddle:evt_…`                         |
+| **Lemon Squeezy** | SHA-256 of the raw body    | `lemon-squeezy:sha256:<hex>`           |
+
+Three details in that table are load-bearing:
+
+1. **Paddle's `event_id`, never `notification_id`.** `notification_id` identifies one *delivery* to one destination, and a replay from the Paddle dashboard mints a fresh one — key on it and every replay sails through.
+2. **Lemon Squeezy publishes no event ID.** Not in the headers, not in the body. The `meta.webhook_id` seen in blog posts is undocumented and absent from LS's own example payloads, and the "webhook ID" in its API belongs to the endpoint *configuration*, so it is constant per endpoint. Hashing the raw body is the only identity that is stable across retries and distinct between events.
+3. **The prefix matters if you route several providers to one endpoint.** Provider ID spaces can collide in principle; namespacing removes the question without an extra column.
+
+De-duplication has limits worth knowing. It suppresses **redeliveries of one event**, not a provider's
+several events for one state change — Polar's `subscription.updated` catch-all fires alongside the
+specific event, and Stripe documents distinct `evt_` IDs describing the same change. And it cannot fix a
+read-then-upsert race inside your own handler, where two concurrent deliveries carry two different IDs
+by construction. Make the write itself idempotent as well.
 
 ## Frequently asked questions
 

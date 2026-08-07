@@ -91,7 +91,7 @@ signature — `revenue-sdk` implements each exactly.
 
 Polar, Dodo Payments, Stripe, and Paddle deliveries carry a timestamp and are rejected outside a
 **300-second** tolerance, which bounds replay attacks. Lemon Squeezy sends no timestamp, so replay
-protection has to come from your own de-duplication.
+protection has to come from de-duplication — see [Idempotency](#idempotency).
 
 If you are implementing verification by hand rather than using these helpers, the blog post on
 [verifying webhook signatures across all five providers](/blog/verify-billing-webhook-signatures) walks
@@ -116,6 +116,9 @@ type WebhookEventType =
   type={{
     type: { type: 'WebhookEventType', description: 'The normalized event type.' },
     providerType: { type: 'string', description: "The provider's original event type string, always preserved." },
+    idempotencyKey: { type: 'string', description: 'Provider-namespaced dedupe key (<provider>:<id>). Always set, stable across retries and dashboard replays.' },
+    subscriptionChange: { type: 'SubscriptionChange', required: false, description: 'Which lifecycle transition the provider named, when it named one. Only ever set on subscription.updated.' },
+    createdAt: { type: 'Date', required: false, description: "When the event occurred, from the provider's envelope. Absent on Lemon Squeezy, which sends none." },
     subscription: { type: 'Subscription', required: false, description: 'Set on subscription.* events.' },
     order: { type: 'Order', required: false, description: 'Set on order.paid. Fully mapped — including status, createdAt, and refundStatus.' },
     checkout: { type: 'Checkout', required: false, description: 'Set on checkout.completed (and on not-yet-complete checkout events, which report unknown).' },
@@ -124,6 +127,10 @@ type WebhookEventType =
     raw: { type: 'unknown', description: 'The untouched provider envelope.' },
   }}
 />
+
+`createdAt` comes from the envelope's own field — Polar and Dodo Payments `timestamp`, Stripe `created`,
+Paddle `occurred_at` — and never from the `webhook-timestamp` header, which is the delivery *attempt*
+time and moves on every retry. Lemon Squeezy sends neither, so it is `undefined` there.
 
 ### What each type means
 
@@ -154,6 +161,26 @@ disagree loudly here: Polar emits `subscription.canceled` when a cancellation is
 `event.subscription.cancelAtPeriodEnd`, never the provider's event name.
 :::
 
+### The transition the provider named
+
+Alongside `type`, an event reports which lifecycle transition the provider's own event string named —
+and leaves the field `undefined` where the provider names none:
+
+```ts
+type SubscriptionChange = 'cancel_scheduled' | 'past_due' | 'paused' | 'resumed' | 'uncanceled';
+```
+
+This is a **sibling field, not extra `WebhookEventType` members.** The union above still has exactly
+those seven members, so a `switch` written before `subscriptionChange` existed keeps compiling and keeps
+routing the same events; reading the new field is opt-in.
+
+It is derived **only from the provider's event string, never from payload state** — `cancelAtPeriodEnd`
+stays `true` for the rest of the period, so a payload-derived transition would re-report a fresh
+"cancellation scheduled" on every later event. Transitions are edges; payload fields are levels.
+Coverage is therefore uneven by design (no provider names every transition, and Stripe and Dodo Payments
+name almost none) — the per-provider matrix and the three traps it encodes are in
+[the webhook events reference](/docs/reference/webhook-events#subscription-changes).
+
 ### Unknown events never throw
 
 Provider event catalogs grow. Anything outside the mapped set comes back as
@@ -163,9 +190,15 @@ case that *does* throw is an unparseable body — a `RevenueError` with code `va
 ```ts
 switch (event.type) {
   case 'subscription.created':
-  case 'subscription.updated':
   case 'subscription.canceled':
     await upsertSubscription(event.subscription!);
+    break;
+  case 'subscription.updated':
+    await upsertSubscription(event.subscription!);
+    // Opt-in: react to the transition, where the provider named one.
+    if (event.subscriptionChange === 'past_due') {
+      await warnAboutFailedPayment(event.subscription!);
+    }
     break;
   case 'order.paid':
     await recordPayment(event.order!);
@@ -251,13 +284,11 @@ export default {
       return new Response('invalid signature', { status: 401 });
     }
 
-    // Standard Webhooks: webhook-id is the delivery id.
-    const deliveryId = headers.get('webhook-id');
-    if (deliveryId && (await env.PROCESSED.get(deliveryId)) !== null) {
+    const event = await parseWebhookEvent({ headers, body });
+    if ((await env.PROCESSED.get(event.idempotencyKey)) !== null) {
       return new Response(null, { status: 204 }); // already handled
     }
 
-    const event = await parseWebhookEvent({ headers, body });
     switch (event.type) {
       case 'subscription.created':
       case 'subscription.updated':
@@ -269,9 +300,7 @@ export default {
         break;
     }
 
-    if (deliveryId) {
-      await env.PROCESSED.put(deliveryId, '1', { expirationTtl: 60 * 60 * 24 * 3 });
-    }
+    await env.PROCESSED.put(event.idempotencyKey, '1', { expirationTtl: 60 * 60 * 24 * 3 });
     return new Response(null, { status: 204 });
   },
 };
@@ -282,15 +311,15 @@ export default {
 Every provider retries deliveries, and several send overlapping events for one state change. Assume
 **at-least-once, out-of-order** delivery:
 
-1. **Dedupe on the delivery ID.** Store it with a TTL and drop repeats:
+1. **Dedupe on `event.idempotencyKey`.** Every parsed event carries one — required, never empty, and
+   stable across the provider's retries and dashboard replays. Store it with a TTL and drop repeats:
 
-   | Provider          | Delivery ID                                                     |
-   | ----------------- | ---------------------------------------------------------------- |
-   | **Polar**         | `webhook-id` header                                              |
-   | **Dodo Payments** | `webhook-id` header                                              |
-   | **Stripe**        | `id` on the event envelope (`raw.id`)                            |
-   | **Paddle**        | `event_id` on the envelope (`raw.event_id`)                      |
-   | **Lemon Squeezy** | no delivery ID — dedupe on `(providerType, subscription/order id, updated timestamp)` |
+   ```ts
+   const event = await parseWebhookEvent({ headers, body });
+   if ((await kv.get(event.idempotencyKey)) !== null) {
+     return new Response(null, { status: 204 });
+   }
+   ```
 
 2. **Upsert, never insert.** Key subscription state on `event.subscription.id`. Reordered events then
    converge instead of conflicting.
@@ -298,6 +327,40 @@ Every provider retries deliveries, and several send overlapping events for one s
    `currentPeriodEnd`) and skip anything older than what you have stored.
 4. **Return 2xx fast.** Acknowledge within a couple of seconds and move slow work off the request — see
    [the webhook handler guide](/docs/guides/webhook-handler).
+
+### Where the key comes from
+
+The key is `<provider>:<id>`, namespaced because `detectWebhookProvider` makes one endpoint for several
+providers a supported setup — a bare id would only be safe next to an out-of-band provider column.
+
+| Provider          | Source                                | Key                        |
+| ----------------- | ------------------------------------- | -------------------------- |
+| **Polar**         | `webhook-id` header                   | `polar:<id>`               |
+| **Dodo Payments** | `webhook-id` header                   | `dodo-payments:<id>`       |
+| **Stripe**        | `id` on the envelope                  | `stripe:evt_…`             |
+| **Paddle**        | `event_id` on the envelope            | `paddle:evt_…`             |
+| **Lemon Squeezy** | SHA-256 of the raw body               | `lemon-squeezy:sha256:<hex>` |
+
+Two details worth knowing:
+
+- **Paddle's key is `event_id`, not `notification_id`.** The latter identifies one *delivery* — a
+  dashboard replay mints a new one — so it would defeat de-duplication entirely.
+- **Lemon Squeezy publishes no event id at all**, in headers or body, so the raw body is the only stable
+  delivery identity. A redelivery is byte-identical and hashes the same, which is what you need; the cost
+  is that two genuinely distinct deliveries with byte-identical bodies would be indistinguishable. Any
+  provider whose id is missing falls back to the same `sha256:` form — a Polar or Dodo Payments delivery
+  parsed from `{ headers: {}, body }`, for instance — so a derived key is always self-evident in a log.
+
+:::warning
+**This dedupes redeliveries of one event. It does not collapse several events describing one change.**
+Polar and Dodo Payments fan out: a single activation emits both `subscription.active` and
+`subscription.updated`, two distinct events with two distinct keys. Stripe documents the same class of
+separate `evt_` ids describing one underlying change. So the key protects you from processing the *same*
+event twice — it is not a "one state change, one callback" guarantee. Converge on state (upsert plus the
+staleness guard above) rather than assuming each key is a change worth reacting to, and see
+[the webhook handler guide](/docs/guides/webhook-handler#3-persist--upsert-by-subscription-id) for the
+read-then-upsert race that event-id dedupe *cannot* fix.
+:::
 
 <CardGroup cols={2}>
   <Card title="Next: Pagination" icon="list" href="/docs/concepts/pagination">

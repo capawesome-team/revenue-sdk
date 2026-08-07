@@ -96,7 +96,7 @@ async function postLicenseRequest(
  * `{"valid":false,"error":"license_key not found."}`), which is an answer, not a failure.
  */
 function toVerdictBody(error: unknown): LsLicenseResponse | undefined {
-  const body = error instanceof RevenueError ? error.cause : undefined;
+  const body = error instanceof RevenueError ? error.responseBody : undefined;
   return typeof body === 'object' && body !== null && 'valid' in body
     ? (body as LsLicenseResponse)
     : undefined;
@@ -132,7 +132,7 @@ function assertOwnedVerdict(
     throw new RevenueError(payload.error || fallbackMessage, {
       code: 'validation',
       provider: 'lemon-squeezy',
-      cause: payload,
+      responseBody: payload,
       secrets: [params.key],
     });
   }

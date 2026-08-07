@@ -15,6 +15,7 @@ and throws `unsupported` rather than silently dropping an option — see
 | Capability                    | Type                     | Polar                        | Lemon Squeezy                        | Stripe                               | Paddle                               | Dodo Payments             |
 | ----------------------------- | ------------------------ | ---------------------------- | ------------------------------------ | ------------------------------------ | ------------------------------------ | ------------------------- |
 | `cancellationReason`          | `boolean`                | `true`                       | `false`                              | `true`                               | `false`                              | `true`                    |
+| `checkoutExpiresAt`           | `boolean`                | `false`                      | `true`                               | `true`                               | `false`                              | `false`                   |
 | `checkoutStatus`              | `boolean`                | `true`                       | `false`                              | `true`                               | `true`                               | `true`                    |
 | `checkoutSuccessUrl`          | `boolean`                | `true`                       | `true`                               | `true`                               | `false`                              | `true`                    |
 | `endTrial`                    | `boolean`                | `true`                       | `true`                               | `true`                               | `true`                               | `false`                   |
@@ -42,6 +43,11 @@ see [Testing provider](/docs/providers/testing).
       type: 'boolean',
       description:
         'Whether subscriptions.cancel forwards reason/comment. Passing either without support throws unsupported.',
+    },
+    checkoutExpiresAt: {
+      type: 'boolean',
+      description:
+        'Whether checkouts.create accepts expiresAt. Passing it without support throws unsupported — Polar, Paddle, and Dodo Payments apply a fixed lifetime instead.',
     },
     checkoutStatus: {
       type: 'boolean',

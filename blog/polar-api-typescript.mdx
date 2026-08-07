@@ -210,8 +210,9 @@ export async function POST(request: Request): Promise<Response> {
 ```
 
 Events worth subscribing to: `subscription.created`, `subscription.updated`, `subscription.active`,
-`subscription.canceled`, `subscription.uncanceled`, `subscription.revoked`, `subscription.cycled`,
-`order.paid`, and `checkout.updated`.
+`subscription.canceled`, `subscription.uncanceled`, `subscription.past_due`, `subscription.paused`,
+`subscription.resumed`, `subscription.revoked`, `subscription.cycled`, `order.paid`, and
+`checkout.updated`.
 
 :::warning
 Polar emits `subscription.canceled` when a cancellation is merely **scheduled**. The terminal event is
@@ -250,8 +251,11 @@ where the purchasable unit is a variant.
 
 ### Does Polar support idempotency keys?
 
-No. The Polar API has no idempotency-key mechanism, so a retried write may create a duplicate resource.
-Retry reads freely; guard writes such as checkout creation with your own deduplication.
+No, not on writes. The Polar API has no idempotency-key mechanism, so a retried `POST` may create a
+duplicate resource — retry reads freely, and guard writes such as checkout creation with your own
+deduplication. Two places do have one: event ingestion accepts an `external_id` that Polar enforces with
+a permanent unique index, and every webhook delivery carries a `webhook-id` header, which
+`parseWebhookEvent` surfaces as `event.idempotencyKey`.
 
 ### How do I test Polar without real payments?
 

@@ -58,6 +58,11 @@ const SUBSCRIPTION = {
   },
 };
 
+const PAYPAL_SUBSCRIPTION = {
+  ...SUBSCRIPTION,
+  attributes: { ...SUBSCRIPTION.attributes, payment_processor: 'paypal' },
+};
+
 const PAUSED_SUBSCRIPTION = {
   ...SUBSCRIPTION,
   attributes: {
@@ -94,6 +99,7 @@ describe('lemonSqueezy', () => {
     const { provider } = setup(() => ({ json: {} }));
     expect(provider.name).toBe('lemon-squeezy');
     expect(provider.capabilities.checkoutStatus).toBe(false);
+    expect(provider.capabilities.checkoutExpiresAt).toBe(true);
     expect(provider.capabilities.revoke).toBe(false);
     expect(provider.capabilities.listSubscriptionsByCustomer).toBe(false);
     expect(provider.capabilities.listOrdersByCustomer).toBe(false);
@@ -257,6 +263,36 @@ describe('lemonSqueezy', () => {
       expect(body.data.attributes.checkout_data.variant_quantities).toEqual([
         { variant_id: 1615641, quantity: 3 },
       ]);
+    });
+
+    it('sends expires_at as an ISO string beside checkout_data', async () => {
+      const { provider, stub } = setup(() => ({
+        json: {
+          data: {
+            type: 'checkouts',
+            id: 'c1',
+            attributes: { url: 'https://x', expires_at: '2026-08-08T00:00:00.000000Z' },
+          },
+        },
+      }));
+      const checkout = await provider.createCheckout({
+        items: [{ product: '1615641' }],
+        expiresAt: new Date('2026-08-08T00:00:00Z'),
+      });
+      const attributes = JSON.parse(stub.requests[0]!.body!).data.attributes;
+      expect(attributes.expires_at).toBe('2026-08-08T00:00:00.000Z');
+      // A sibling of checkout_data/product_options, never nested inside them.
+      expect(attributes.product_options.expires_at).toBeUndefined();
+      expect(checkout.expiresAt).toEqual(new Date('2026-08-08T00:00:00.000000Z'));
+    });
+
+    it('omits expires_at when no expiry is given', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { data: { type: 'checkouts', id: 'c1', attributes: { url: 'https://x' } } },
+      }));
+      await provider.createCheckout({ items: [{ product: '1615641' }] });
+      const attributes = JSON.parse(stub.requests[0]!.body!).data.attributes;
+      expect('expires_at' in attributes).toBe(false);
     });
 
     it('rejects multi-item checkouts and existing-customer attachment', async () => {
@@ -458,6 +494,49 @@ describe('lemonSqueezy', () => {
       expect(subscription.status).toBe('paused');
       expect(subscription.pauseAtPeriodEnd).toBe(false);
       expect(subscription.resumesAt).toEqual(new Date('2026-10-01T00:00:00.000000Z'));
+    });
+
+    it('throws on every PATCH-backed update of a PayPal subscription', async () => {
+      const { provider } = setup(
+        routes({
+          '/v1/variants/1615642': {
+            data: {
+              type: 'variants',
+              id: '1615642',
+              attributes: { product_id: 1030025, name: 'Pro (Yearly)' },
+            },
+          },
+          '/v1/subscriptions/42': { data: PAYPAL_SUBSCRIPTION },
+        }),
+      );
+      // Lemon Squeezy answers 200 with the subscription unchanged instead of applying the PATCH.
+      await expectRevenueError(
+        provider.changeSubscriptionPlan({ id: '42', product: '1615642' }),
+        'unsupported',
+      );
+      await expectRevenueError(provider.uncancelSubscription({ id: '42' }), 'unsupported');
+      await expectRevenueError(provider.pauseSubscription({ id: '42' }), 'unsupported');
+      await expectRevenueError(provider.resumeSubscription({ id: '42' }), 'unsupported');
+      await expectRevenueError(provider.endSubscriptionTrial({ id: '42' }), 'unsupported');
+      await expect(provider.pauseSubscription({ id: '42' })).rejects.toThrow(/PayPal/);
+    });
+
+    it('still cancels a PayPal subscription via DELETE', async () => {
+      const { provider, stub } = setup(() => ({
+        json: {
+          data: {
+            ...PAYPAL_SUBSCRIPTION,
+            attributes: {
+              ...PAYPAL_SUBSCRIPTION.attributes,
+              status: 'cancelled',
+              cancelled: true,
+            },
+          },
+        },
+      }));
+      const subscription = await provider.cancelSubscription({ id: '42' });
+      expect(stub.requests[0]!.method).toBe('DELETE');
+      expect(subscription.cancelAtPeriodEnd).toBe(true);
     });
 
     it('rejects revoke and customer-filtered listing', async () => {

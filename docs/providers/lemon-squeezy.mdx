@@ -65,11 +65,35 @@ const event = await parseWebhookEvent({ headers, body });
 ```
 
 The `X-Signature` header carries a hex HMAC-SHA256 of the raw body, keyed by the secret used verbatim.
-There is **no timestamp**, so there is no replay window to enforce — de-duplicate on your side.
+There is **no timestamp**, so there is no replay window to enforce — de-duplication on
+`event.idempotencyKey` is the only replay defense here.
 
 Events worth subscribing to: `subscription_created`, `subscription_updated`, `subscription_cancelled`,
 `subscription_resumed`, `subscription_paused`, `subscription_unpaused`, `subscription_expired`,
 `order_created`, `subscription_payment_success`, and — if you sell license keys — `license_key_created`.
+
+:::warning
+**`subscription_resumed` means un-*cancelled*, not un-*paused*.** Lemon Squeezy names the reversal of
+`subscription_cancelled` "resumed" and the reversal of `subscription_paused` "unpaused", so the SDK maps
+them the way they behave, not the way they read:
+
+| `event.subscriptionChange` | Lemon Squeezy event      |
+| -------------------------- | ------------------------ |
+| `cancel_scheduled`         | `subscription_cancelled` |
+| `paused`                   | `subscription_paused`    |
+| `resumed`                  | `subscription_unpaused`  |
+| `uncanceled`               | `subscription_resumed`   |
+
+There is no `past_due` transition: `subscription_payment_failed` carries an Invoice, not a
+Subscription, so it normalizes to `unknown`.
+:::
+
+:::note
+**Lemon Squeezy publishes no event ID** — not in the headers, not in the body — so
+`event.idempotencyKey` is `lemon-squeezy:sha256:<hex of the raw body>`. It is stable across retries of
+the same delivery, which is what dedupe needs. It also sends no event timestamp, so `event.createdAt`
+is `undefined`.
+:::
 
 :::note
 Checkout custom data arrives **only** in `meta.custom_data` on the webhook envelope, never on the
@@ -168,6 +192,7 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
 | Capability                    | Value                                  |
 | ----------------------------- | -------------------------------------- |
 | `cancellationReason`          | `false`                                |
+| `checkoutExpiresAt`           | `true`                                 |
 | `checkoutStatus`              | `false`                                |
 | `checkoutSuccessUrl`          | `true`                                 |
 | `endTrial`                    | `true`                                 |
@@ -231,9 +256,18 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   work with `products.get`. On the public license path the SDK reports `meta.variant_id` instead.
 - **`disabled` arrives as a boolean or a number** depending on the endpoint; any truthy value maps to
   `status: 'disabled'`.
-- **PayPal subscriptions ignore `PATCH /subscriptions`** — Lemon Squeezy silently no-ops. Plan changes,
-  uncancel, pause, and resume therefore do nothing for PayPal-paid subscriptions; re-read the
-  subscription and check before reporting success to the customer.
+- **PayPal subscriptions ignore `PATCH /subscriptions`, and the SDK throws rather than lie.** Lemon
+  Squeezy documents that the request "will not modify the subscription" when the payment processor is
+  PayPal — it answers `200` with the record unchanged. Every PATCH-backed operation is affected:
+  `changePlan`, `uncancel`, `pause`, `resume`, and `endTrial`. The adapter reads `payment_processor` off
+  the PATCH *response* (no extra request — the response is the subscription) and throws
+  `RevenueError { code: 'unsupported' }` instead of returning an object that claims a mutation happened.
+  Send those customers to the customer portal. `subscriptions.cancel` is deliberately **not** guarded: it
+  is a bodyless `DELETE` on a different endpoint with no PayPal caveat, and blocking it would lock PayPal
+  customers out of cancelling.
+- **Checkout expiry is settable and optional.** `checkouts.create({ expiresAt })` sends `expires_at` as
+  ISO 8601; **omitting it means the checkout never expires**, which is not true of any other provider
+  here. There is no upper bound.
 
 <CardGroup cols={2}>
   <Card title="Stripe" icon="credit-card" href="/docs/providers/stripe">

@@ -78,6 +78,12 @@ verified webhook handler, and an entitlement check.
         }
 
         const event = await parseWebhookEvent({ headers, body });
+
+        // Providers retry for days. Drop what you have already processed.
+        if (await alreadyHandled(event.idempotencyKey)) {
+          return new Response(null, { status: 204 });
+        }
+
         switch (event.type) {
           case 'subscription.created':
           case 'subscription.updated':
@@ -95,6 +101,10 @@ verified webhook handler, and an entitlement check.
       },
     };
     ```
+
+    `idempotencyKey` is provider-namespaced and always set — see
+    [Webhooks](/docs/concepts/webhooks). Events that name a lifecycle transition also carry
+    `subscriptionChange`, so a one-off side effect fires once instead of on every later update.
   </Step>
   <Step title="Check subscription status">
     A subscription grants access while its `status` is `active` or `trialing`. `canceled` is terminal;

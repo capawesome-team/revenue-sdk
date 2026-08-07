@@ -70,7 +70,22 @@ it.
 
 Events worth subscribing to: `customer.subscription.created`, `customer.subscription.updated`,
 `customer.subscription.deleted`, `customer.subscription.paused`, `customer.subscription.resumed`,
+`customer.subscription.pending_update_applied`, `customer.subscription.pending_update_expired`,
 `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `invoice.paid`.
+
+:::warning
+**A pause issued through this SDK emits no paused event.** Stripe's
+`customer.subscription.paused` / `.resumed` fire only when a subscription enters Stripe's raw
+`status: 'paused'` — a trial that ended without a payment method. `subscriptions.pause` sets
+`pause_collection`, an unrelated mechanism that Stripe reports as a plain
+`customer.subscription.updated`. So `event.subscriptionChange` is `paused` / `resumed` only for the
+trial case; an SDK-initiated pause arrives with `subscriptionChange` `undefined` and the pause visible
+on `event.subscription.status`.
+
+Stripe names no other transition either: a scheduled cancellation, a slide into `past_due`, and an
+uncancel all arrive as `customer.subscription.updated` with no `subscriptionChange`. Read
+`event.subscription` for the resulting state on Stripe.
+:::
 
 :::warning
 `checkout.session.completed` fires with `payment_status: "unpaid"` for delayed payment methods.
@@ -118,6 +133,7 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
 | Capability                    | Value                                  |
 | ----------------------------- | -------------------------------------- |
 | `cancellationReason`          | `true`                                 |
+| `checkoutExpiresAt`           | `true`                                 |
 | `checkoutStatus`              | `true`                                 |
 | `checkoutSuccessUrl`          | `true`                                 |
 | `endTrial`                    | `true`                                 |
@@ -165,6 +181,13 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   the right one — one extra request.
 - **`checkout.status === 'complete'` means paid.** A session that is `complete` but `payment_status:
   unpaid` is reported as `open`.
+- **A checkout expiry must be 30 minutes to 24 hours out.** `checkouts.create({ expiresAt })` sends
+  `expires_at` as unix seconds. The SDK deliberately does **not** enforce Stripe's window client-side: it
+  is one provider's rule, measured against Stripe's clock, so a boundary value would be rejected by
+  clock skew alone. Stripe's `400` maps to `RevenueError { code: 'validation' }`.
+- **`event.idempotencyKey` is the envelope `id`** (`stripe:evt_…`) and `event.createdAt` is the
+  envelope's `created`, converted from unix seconds. Stripe also documents distinct `evt_` IDs
+  describing the *same* change, so dedupe stops redeliveries, not fan-out.
 - **The email filter is case-sensitive and emails are not unique** — see
   [Customers & portal](/docs/concepts/customers-and-portal).
 - **A `2xx` on `usage.report` is not a confirmation.** Meter events are validated synchronously but

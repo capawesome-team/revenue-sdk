@@ -20,6 +20,10 @@ Every provider exposes a `capabilities` object, also surfaced on `client.capabil
       type: 'boolean',
       description: 'Whether subscriptions.cancel forwards reason/comment to the provider. false for Lemon Squeezy and Paddle.',
     },
+    checkoutExpiresAt: {
+      type: 'boolean',
+      description: 'Whether checkouts.create accepts expiresAt. false for Polar, Paddle, and Dodo Payments, which expire checkouts on a fixed schedule.',
+    },
     checkoutStatus: {
       type: 'boolean',
       description: 'Whether Checkout.status is populated. false for Lemon Squeezy, whose checkouts carry no lifecycle status.',
@@ -111,6 +115,7 @@ difference at integration time, in your own test suite.
 The client gates on:
 
 - `checkouts.create({ successUrl })` — requires `checkoutSuccessUrl`
+- `checkouts.create({ expiresAt })` — requires `checkoutExpiresAt`
 - `orders.list/listAll({ customerId })` — requires `listOrdersByCustomer`
 - `subscriptions.list/listAll({ customerId })` — requires `listSubscriptionsByCustomer`
 - `subscriptions.cancel({ reason | comment })` — requires `cancellationReason`

@@ -29,6 +29,8 @@ const LISTED_ORDER_STATUSES = ['pending', 'paid', 'refunded', 'partially_refunde
 
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
+  // Polar expires every checkout 24 hours after creation and accepts no override.
+  checkoutExpiresAt: false,
   checkoutStatus: true,
   checkoutSuccessUrl: true,
   endTrial: true,

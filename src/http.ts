@@ -196,7 +196,7 @@ export class HttpClient {
       provider: this.provider,
       status: response.status,
       retryAfter: parseRetryAfter(response.headers.get('retry-after')),
-      cause: body,
+      responseBody: body,
       secrets: this.secrets(),
     });
   }

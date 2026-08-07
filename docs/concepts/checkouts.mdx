@@ -32,6 +32,7 @@ redirect(checkout.url);
     customerId: { type: 'string', required: false, description: 'Attach an existing provider customer.' },
     customerEmail: { type: 'string', required: false, description: 'Prefill the email for a new customer.' },
     metadata: { type: 'Record<string, string | number | boolean>', required: false, description: 'Copied onto the resulting order/subscription where the provider supports it.' },
+    expiresAt: { type: 'Date', required: false, description: 'When the checkout link stops working. Requires the checkoutExpiresAt capability.' },
     signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
   }}
 />
@@ -92,6 +93,45 @@ await client.checkouts.create({
     : undefined,
 });
 ```
+
+## Checkout expiry
+
+Two of the five providers let you choose when a checkout link stops working; the rest apply a fixed
+lifetime. `expiresAt` is a `Date`, gated by the `checkoutExpiresAt` capability:
+
+```ts
+await client.checkouts.create({
+  items: [{ product: price.checkoutRef }],
+  expiresAt: client.capabilities.checkoutExpiresAt
+    ? new Date(Date.now() + 60 * 60 * 1000) // one hour
+    : undefined,
+});
+```
+
+| Provider          | `expiresAt` | Behavior                                                                  |
+| ----------------- | ----------- | -------------------------------------------------------------------------- |
+| **Polar**         | **no**      | Fixed 24 hours, set server-side.                                            |
+| **Lemon Squeezy** | yes         | `expires_at`, ISO 8601. Omit it and the link **never** expires.             |
+| **Stripe**        | yes         | `expires_at`, unix seconds. Stripe accepts 30 minutes to 24 hours from creation. |
+| **Paddle**        | **no**      | Transactions have no expiry field.                                          |
+| **Dodo Payments** | **no**      | Fixed 24 hours, or 15 minutes for a confirmed checkout.                     |
+
+The client checks three things before any request:
+
+- `expiresAt` on a provider without `checkoutExpiresAt` → `unsupported`.
+- An invalid `Date` (`NaN`) → `validation`.
+- A date at or before now → `validation`.
+
+:::note
+The SDK deliberately does **not** enforce Stripe's 30-minute-to-24-hour window. It is one provider's rule,
+Stripe measures it against its own clock — so near either boundary, clock skew alone would turn a valid
+date into a client-side rejection — and clamping the value would silently rewrite what you asked for.
+Stripe rejects an out-of-range date itself, and that `400` arrives as a `validation` error like any other.
+:::
+
+`Checkout.expiresAt` is the read side of the same field. It is populated on Polar, Lemon Squeezy, and
+Stripe — Polar included, which reports the expiry it picked without letting you choose it. Paddle
+transactions and Dodo Payments checkout sessions carry no expiry at all, so it stays `undefined` there.
 
 ## Metadata propagation
 
@@ -163,6 +203,38 @@ On **Dodo Payments** the checkout-status endpoint does not return the checkout U
 fetched with `checkouts.get` has `url: ''`. Persist the URL from `checkouts.create` if you need it
 later.
 :::
+
+## What gets into CreateCheckoutParams
+
+`CreateCheckoutParams` is small on purpose. A field is added when both of these hold:
+
+1. **At least two providers implement the same concept** — not merely a similar-sounding field.
+2. **The SDK's own model doesn't structurally prevent it.**
+
+Below that bar, the answer is to call the provider's endpoint directly. `checkouts.create` is a single
+POST, and nothing downstream depends on having gone through it: `Checkout.raw`, the webhook path, and
+`orders.*` all work the same on a checkout you created yourself.
+
+`expiresAt` cleared the bar on two providers, and `Checkout.expiresAt` already existed on the read side —
+it closed an asymmetry rather than introducing a concept. Three requests did not clear it:
+
+- **`embedOrigin`** — one provider out of five, and the rest are not near-misses. Polar's `embed_origin`
+  is a security allowlist: the iframe posts the session token only to a listed origin. Lemon Squeezy's
+  `checkout_options.embed` is a display toggle with no origin and no security semantics. Stripe has no
+  origin allowlist at all — embedding is a second checkout *mode* (`ui_mode` + `client_secret` +
+  `return_url`) that forbids `success_url`, so it collides with `checkoutSuccessUrl` and needs a
+  `client_secret` field on `Checkout`. That is a design, not a parameter. Paddle approves domains once in
+  the dashboard, and Dodo Payments has nothing.
+- **A per-checkout product description** — only Lemon Squeezy's `product_options.description` is usable.
+  On Stripe it is structurally impossible: `items[].product` is a catalog price ID, `price` and
+  `price_data` are mutually exclusive, so overriding the description means abandoning catalog pricing.
+  `line_items[].description` does not exist on Checkout Sessions.
+- **A `providerOptions` passthrough** — rejected outright, not merely declined. It can't be typed without
+  making `RevenueProvider` and `createClient` generic, it would freeze the private per-provider wire
+  shapes into the public API, and it voids "throw `unsupported`, never silently drop" by construction:
+  the client can't gate keys it doesn't know. It would also collide with the fields the SDK already
+  writes — `product_options.redirect_url`, `invoice_creation`, `subscription_data[metadata]`,
+  `success_url`.
 
 :::warning
 Do not fulfill from the success page alone. The customer may close the tab, and delayed payment methods

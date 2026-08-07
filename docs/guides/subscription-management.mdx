@@ -145,9 +145,13 @@ All five providers support it. It reverts a *scheduled* cancellation only — on
 the subscription is gone and the customer needs a new checkout.
 
 :::warning
-On **Lemon Squeezy**, `PATCH /subscriptions` silently no-ops for PayPal-paid subscriptions. Re-read the
-subscription and confirm `cancelAtPeriodEnd === false` before telling the customer it worked. The same
-applies to pause and resume, which go through that endpoint too.
+On **Lemon Squeezy**, `PATCH /subscriptions` silently no-ops for PayPal-paid subscriptions: the request
+answers `200` with the record unchanged. The adapter reads `payment_processor` off that response and
+throws `unsupported` rather than handing back a subscription that claims a change happened — so you get
+an error instead of a silent failure, and you don't have to re-read and diff it yourself. The guard
+covers every PATCH-backed operation: `uncancel`, `changePlan`, `pause`, `resume`, and `endTrial`.
+`cancel` is a bodyless `DELETE` on a different endpoint, has no PayPal caveat, and still works. Send
+PayPal customers to the [customer portal](/docs/concepts/customers-and-portal) for the rest.
 :::
 
 ## Pause and resume

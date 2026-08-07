@@ -21,9 +21,17 @@ type WebhookEventType =
   | 'unknown';
 ```
 
-Every parsed event also carries `providerType` — the provider's original event string — and `raw`, the
-untouched envelope. Anything not listed below comes back as `unknown`; `parseWebhookEvent` never throws
-on an unrecognized type.
+Every parsed event also carries `providerType` — the provider's original event string — `raw`, the
+untouched envelope, `idempotencyKey` (always set), and, where the provider supplies them,
+`subscriptionChange` and `createdAt`. Anything not listed below comes back as `unknown`;
+`parseWebhookEvent` never throws on an unrecognized type.
+
+:::note
+**No event types were added for the finer-grained transitions.** `WebhookEventType` still has exactly the
+seven members above; the transition a provider named lives in the separate
+[`subscriptionChange`](#subscription-changes) field. A `switch` on `type` written against an earlier
+version keeps compiling and keeps routing the same events.
+:::
 
 ## The matrix
 
@@ -43,9 +51,16 @@ on an unrecognized type.
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Polar**         | `subscription.active`, `subscription.canceled`, `subscription.cycled`, `subscription.past_due`, `subscription.paused`, `subscription.resumed`, `subscription.uncanceled`, `subscription.updated` |
 | **Lemon Squeezy** | `subscription_cancelled`, `subscription_paused`, `subscription_resumed`, `subscription_unpaused`, `subscription_updated`                          |
-| **Stripe**        | `customer.subscription.updated`, `customer.subscription.paused`, `customer.subscription.resumed`                                                   |
-| **Paddle**        | `subscription.activated`, `subscription.past_due`, `subscription.paused`, `subscription.resumed`, `subscription.trialing`, `subscription.updated`  |
-| **Dodo Payments** | `subscription.active`, `subscription.on_hold`, `subscription.paused`, `subscription.plan_changed`, `subscription.renewed`, `subscription.updated`  |
+| **Stripe**        | `customer.subscription.paused`, `customer.subscription.pending_update_applied`, `customer.subscription.pending_update_expired`, `customer.subscription.resumed`, `customer.subscription.updated` |
+| **Paddle**        | `subscription.activated`, `subscription.imported`, `subscription.past_due`, `subscription.paused`, `subscription.resumed`, `subscription.trialing`, `subscription.updated` |
+| **Dodo Payments** | `subscription.active`, `subscription.on_hold`, `subscription.plan_changed`, `subscription.renewed`, `subscription.update_payment_method`, `subscription.updated` |
+
+:::note
+**Dodo Payments' `subscription.paused` is deliberately left `unknown`.** Dodo has no paused subscription
+status, no pause or resume endpoint, and reports `pause: false` in the
+[capability matrix](/docs/reference/capability-matrix) — so there is no state the event could map onto
+and nothing an `updated` would tell a consumer to re-read.
+:::
 
 ### `subscription.canceled` (terminal)
 
@@ -95,6 +110,69 @@ take. A delivery you missed can be recovered with `orders.list`; see
 Issuance is the only normalized license event. Revocation and updates are not mapped — the three
 providers disagree too much to normalize; [License keys](/docs/concepts/license-keys#getting-notified)
 explains why and what to do instead.
+
+## Subscription changes
+
+`type` is the coarse classification that stays honest on all five providers. `subscriptionChange` is the
+finer one: which lifecycle transition the provider's event string named, or `undefined` where it named
+none. It is only ever set on `subscription.updated`.
+
+```ts
+type SubscriptionChange = 'cancel_scheduled' | 'past_due' | 'paused' | 'resumed' | 'uncanceled';
+```
+
+| Change             | Polar                     | Lemon Squeezy            | Stripe                             | Paddle                  | Dodo Payments          |
+| ------------------ | ------------------------- | ------------------------ | ---------------------------------- | ----------------------- | ---------------------- |
+| `cancel_scheduled` | `subscription.canceled`   | `subscription_cancelled` | —                                  | —                       | —                      |
+| `past_due`         | `subscription.past_due`   | —                        | —                                  | `subscription.past_due` | `subscription.on_hold` |
+| `paused`           | `subscription.paused`     | `subscription_paused`    | `customer.subscription.paused`¹    | `subscription.paused`   | —                      |
+| `resumed`          | `subscription.resumed`    | `subscription_unpaused`  | `customer.subscription.resumed`¹   | `subscription.resumed`  | —                      |
+| `uncanceled`       | `subscription.uncanceled` | `subscription_resumed`²  | —                                  | —                       | —                      |
+
+The dashes are the point: coverage is genuinely uneven, and `subscriptionChange` reports that honestly
+instead of inventing a transition. It is derived **only from the provider's event string, never from
+payload state** — `cancelAtPeriodEnd` stays `true` for the rest of the period, so a payload-derived
+transition would re-announce the same "cancellation scheduled" on every later event. Transitions are
+edges; payload fields are levels. Every event still carries the full `Subscription`, so the current
+state is always available regardless of whether a transition was named.
+
+:::warning
+**¹ Stripe's paused/resumed events are not the pause you issued.** `customer.subscription.paused` and
+`.resumed` fire only when a subscription enters Stripe's raw `status=paused` — a **trial that ended
+without a payment method**. They are *not* emitted for `pause_collection`, which is what
+`client.subscriptions.pause()` uses. An SDK-initiated Stripe pause therefore emits no paused event at
+all: it arrives as a bare `subscription.updated` with `subscriptionChange` left `undefined`, and the
+pause is visible only as `event.subscription.status === 'paused'`. Mapping the two events anyway is
+incomplete but never wrong — read the status, not the transition, if you need to know the subscription
+is paused on Stripe.
+:::
+
+:::warning
+**² Lemon Squeezy's `subscription_resumed` means un-*cancel*, not un-pause.** The reversal of
+`subscription_cancelled` is `subscription_resumed` (→ `uncanceled`); the reversal of
+`subscription_paused` is `subscription_unpaused` (→ `resumed`). Getting these backwards is the single
+easiest bug in the whole mapping — a "welcome back from your pause" flow fired on `subscription_resumed`
+would actually run for customers who un-cancelled.
+:::
+
+:::warning
+**Polar and Paddle both emit `subscription.canceled`, at opposite moments.** Polar's fires at
+*scheduling* → normalized `subscription.updated` with `subscriptionChange: 'cancel_scheduled'`.
+Paddle's fires when the cancellation *takes effect* → the terminal `subscription.canceled`, with no
+`subscriptionChange` at all. Identical event string, opposite meanings — which is why
+`subscriptionChange` exists as a normalized field and `providerType` must never be branched on across
+providers. See also [the scheduled-cancellation trap](#the-traps-this-table-encodes) below.
+:::
+
+### Why there is no `subscription.revoked`
+
+Because it would mean exactly what `subscription.canceled` already means here: terminal, access over.
+The temptation comes from Polar, whose naming is **inverted relative to this SDK's** —
+Polar `subscription.canceled` is the *scheduled* state and Polar `subscription.revoked` is the terminal
+one. Adding a `revoked` member would either duplicate `canceled` or invite renaming it, a
+same-shape/opposite-meaning change whose failure mode is silently granting access to churned customers.
+No provider event distinguishes an immediate termination from an end-of-period one anyway, and `revoke`
+is already taken by `client.subscriptions.revoke()`.
 
 ## The traps this table encodes
 
@@ -157,12 +235,23 @@ The grant also carries only `display_key`, a **masked** form of the key, so `eve
 | Normalized event         | Populated field  |
 | ------------------------ | ---------------- |
 | `subscription.created`   | `subscription`   |
-| `subscription.updated`   | `subscription`   |
+| `subscription.updated`   | `subscription`, plus `subscriptionChange` where the provider named a transition |
 | `subscription.canceled`  | `subscription`   |
 | `order.paid`             | `order` — with `status`, `createdAt`, and `refundStatus` |
 | `checkout.completed`     | `checkout`       |
 | `license.issued`         | `licenseKeyId` always; `licenseKey` on Lemon Squeezy and Dodo Payments, never on Polar |
 | `unknown`                | `checkout` for a not-yet-complete Polar/Stripe checkout event; otherwise nothing but `raw` |
+
+Independent of the type, every event carries `type`, `providerType`, `raw` and `idempotencyKey`, plus
+`createdAt` on every provider except Lemon Squeezy — see
+[Idempotency](/docs/concepts/webhooks#idempotency) for where the key comes from and what it does and
+does not protect against.
+
+| Field                | Set on                                                                   |
+| -------------------- | ------------------------------------------------------------------------ |
+| `idempotencyKey`     | every event, always — `<provider>:<id>`, or `<provider>:sha256:<hex>` of the raw body when the provider publishes no id (always Lemon Squeezy) |
+| `createdAt`          | every event except Lemon Squeezy — from the envelope's `timestamp` (Polar, Dodo Payments), `created` (Stripe) or `occurred_at` (Paddle), never the `webhook-timestamp` header |
+| `subscriptionChange` | `subscription.updated` only, and only where the provider named a transition |
 
 ## Signature schemes
 

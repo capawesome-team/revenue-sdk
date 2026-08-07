@@ -149,6 +149,8 @@ export default {
     if (!valid) return new Response('invalid signature', { status: 401 });
 
     const event = await parseWebhookEvent({ headers, body });
+    if (await seen(event.idempotencyKey)) return new Response(null, { status: 204 });
+
     if (event.type === 'subscription.updated') {
       // A scheduled cancellation arrives here, not as subscription.canceled.
       console.log(event.subscription!.status, event.subscription!.cancelAtPeriodEnd);

@@ -53,6 +53,13 @@ step.
     payment methods and invoices on one record. Lemon Squeezy is the exception: it rejects `customerId`
     on checkouts, so always pass `customerEmail` there.
     :::
+
+    :::note
+    Only Stripe and Lemon Squeezy let you set when the link stops working — `expiresAt`, gated by the
+    `checkoutExpiresAt` capability. Polar and Dodo Payments fix it at 24 hours, and Paddle transactions
+    have no expiry field. An invalid or past date throws `validation` before the request. See
+    [checkout expiry](/docs/concepts/checkouts#checkout-expiry).
+    :::
   </Step>
   <Step title="Redirect the customer">
     On Polar, Lemon Squeezy, Stripe, and Dodo Payments, `checkout.url` is a provider-hosted page you can

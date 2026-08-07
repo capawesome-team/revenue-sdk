@@ -5,6 +5,7 @@ import type { Page, RevenueCapabilities, RevenueProvider, Subscription } from '.
 
 const ALL_CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
+  checkoutExpiresAt: true,
   checkoutStatus: true,
   checkoutSuccessUrl: true,
   endTrial: true,
@@ -107,6 +108,38 @@ describe('createClient', () => {
         client.checkouts.create({ items: [{ product: 'p1', quantity: 1.5 }] }),
         'validation',
       );
+    });
+
+    it('rejects a checkout expiry when unsupported', async () => {
+      const createCheckout = vi.fn();
+      const client = createClient({
+        provider: fakeProvider({ createCheckout }, { checkoutExpiresAt: false }),
+      });
+      await expectRevenueError(
+        client.checkouts.create({
+          items: [{ product: 'p1' }],
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+        'unsupported',
+      );
+      expect(createCheckout).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid or past checkout expiry', async () => {
+      const createCheckout = vi.fn();
+      const client = createClient({ provider: fakeProvider({ createCheckout }) });
+      await expectRevenueError(
+        client.checkouts.create({ items: [{ product: 'p1' }], expiresAt: new Date(Number.NaN) }),
+        'validation',
+      );
+      await expectRevenueError(
+        client.checkouts.create({
+          items: [{ product: 'p1' }],
+          expiresAt: new Date(Date.now() - 1000),
+        }),
+        'validation',
+      );
+      expect(createCheckout).not.toHaveBeenCalled();
     });
 
     it('rejects an empty usage customer, event name, or non-finite value', async () => {

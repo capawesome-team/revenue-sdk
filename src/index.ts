@@ -52,6 +52,7 @@ export type {
   RevenueProvider,
   RevokeSubscriptionParams,
   Subscription,
+  SubscriptionChange,
   SubscriptionMeter,
   SubscriptionStatus,
   UncancelSubscriptionParams,

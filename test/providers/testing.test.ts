@@ -34,15 +34,19 @@ describe('createInMemoryProvider', () => {
 
   it('records created checkouts in state', async () => {
     const provider = createInMemoryProvider();
+    const expiresAt = new Date('2026-08-08T00:00:00Z');
     const checkout = await provider.createCheckout({
       items: [{ product: 'product-1' }],
       customerEmail: 'user@example.com',
       metadata: { org: '1' },
+      expiresAt,
     });
+    expect(provider.capabilities.checkoutExpiresAt).toBe(true);
     expect(provider.state.checkouts).toHaveLength(1);
     await expect(provider.getCheckout({ id: checkout.id })).resolves.toMatchObject({
       customerEmail: 'user@example.com',
       status: 'open',
+      expiresAt,
     });
   });
 

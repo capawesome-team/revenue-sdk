@@ -28,15 +28,68 @@ export function toBaseUrl(options: {
   return options.baseUrl ?? (options.server === 'sandbox' ? SANDBOX_BASE_URL : PRODUCTION_BASE_URL);
 }
 
+const MAX_VALIDATION_ENTRIES = 3;
+
+/**
+ * Summarizes one Pydantic validation entry as `loc.path: msg`. The entry's `input` echoes the
+ * submitted value — customer PII on most routes — and is deliberately left out, since the message
+ * ends up in logs. Read `RevenueError.responseBody` for the untouched entry.
+ */
+function toValidationEntry(entry: unknown): string | undefined {
+  if (entry === null || typeof entry !== 'object') {
+    return undefined;
+  }
+  const { loc, msg } = entry as { loc?: unknown; msg?: unknown };
+  if (typeof msg !== 'string' || msg === '') {
+    return undefined;
+  }
+  const path = Array.isArray(loc)
+    ? loc
+        .filter(
+          (part): part is number | string => typeof part === 'number' || typeof part === 'string',
+        )
+        .join('.')
+    : '';
+  return path === '' ? msg : `${path}: ${msg}`;
+}
+
+function toDetailMessage(detail: unknown): string | undefined {
+  if (typeof detail === 'string') {
+    return detail;
+  }
+  // Polar runs FastAPI, so a 422 reports `detail` as an array of Pydantic validation entries.
+  if (!Array.isArray(detail)) {
+    return undefined;
+  }
+  const summaries: string[] = [];
+  let omitted = 0;
+  for (const [index, entry] of detail.entries()) {
+    const summary = toValidationEntry(entry);
+    if (summary === undefined) {
+      continue;
+    }
+    summaries.push(summary);
+    if (summaries.length === MAX_VALIDATION_ENTRIES) {
+      omitted = detail.length - index - 1;
+      break;
+    }
+  }
+  if (summaries.length === 0) {
+    return undefined;
+  }
+  return omitted > 0 ? `${summaries.join('; ')} (+${omitted} more)` : summaries.join('; ');
+}
+
 export function mapError(status: number, body: unknown): ProviderErrorInfo {
   if (body === null || typeof body !== 'object') {
     return {};
   }
   const { error, detail } = body as { error?: unknown; detail?: unknown };
-  if (typeof detail === 'string') {
-    return { message: typeof error === 'string' ? `${error}: ${detail}` : detail };
+  const message = toDetailMessage(detail);
+  if (message === undefined) {
+    return {};
   }
-  return {};
+  return { message: typeof error === 'string' ? `${error}: ${message}` : message };
 }
 
 export interface PolarListResponse<T> {

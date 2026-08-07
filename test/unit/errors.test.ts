@@ -42,4 +42,34 @@ describe('RevenueError', () => {
     const cause = new Error('boom');
     expect(new RevenueError('x', { code: 'network_error', cause }).cause).toBe(cause);
   });
+
+  it('exposes the response body by reference', () => {
+    const responseBody = { detail: [{ msg: 'invalid', input: 'user@example.com' }] };
+    const error = new RevenueError('x', { code: 'validation', responseBody });
+    expect(error.responseBody).toBe(responseBody);
+  });
+
+  it('keeps the response body out of enumeration and serialization', () => {
+    const error = new RevenueError('x', {
+      code: 'validation',
+      responseBody: { key: 'sk_live_secret' },
+    });
+    // Non-enumerable so loggers, `util.inspect` and error reporters never pick the body up;
+    // reading it has to be deliberate.
+    expect(Object.keys(error)).not.toContain('responseBody');
+    expect(Object.prototype.propertyIsEnumerable.call(error, 'responseBody')).toBe(false);
+    expect(JSON.stringify(error)).not.toContain('sk_live_secret');
+    expect(JSON.stringify({ ...error })).not.toContain('sk_live_secret');
+  });
+
+  it('leaves the response body unredacted', () => {
+    const responseBody = { key: 'sk_test_123' };
+    const error = new RevenueError('failed for sk_test_123', {
+      code: 'validation',
+      responseBody,
+      secrets: ['sk_test_123'],
+    });
+    expect(error.message).toBe('failed for [redacted]');
+    expect(error.responseBody).toBe(responseBody);
+  });
 });

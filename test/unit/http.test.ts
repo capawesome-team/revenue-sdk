@@ -89,7 +89,10 @@ describe('HttpClient', () => {
     const error = await expectRevenueError(http.json('/v1/products/p1'), 'not_found');
     expect(error.status).toBe(404);
     expect(error.provider).toBe('polar');
-    expect(error.cause).toEqual({ error: 'ResourceNotFound' });
+    expect(error.responseBody).toEqual({ error: 'ResourceNotFound' });
+    // The body is not a JS error, so it never occupies `cause`, and it stays out of logs.
+    expect(error.cause).toBeUndefined();
+    expect(JSON.stringify(error)).not.toContain('ResourceNotFound');
   });
 
   it('lets mapError override code and message', async () => {

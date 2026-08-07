@@ -84,6 +84,43 @@ ever set it.
 `resumesAt` is the matching date field — when the subscription resumes automatically. It is absent for an
 indefinite pause.
 
+## `subscriptionChange`: the edge, not the level
+
+Everything above is a **level** — the state a subscription is in right now. A webhook event can also
+carry the **edge**, the transition the provider just named, on `WebhookEvent.subscriptionChange`:
+
+```ts
+type SubscriptionChange = 'cancel_scheduled' | 'past_due' | 'paused' | 'resumed' | 'uncanceled';
+```
+
+The two are not redundant. `cancelAtPeriodEnd` stays `true` for the rest of the period, so it cannot
+tell you *when* it was set: a handler that reacts to it fires the same "your plan ends soon" email on
+every later `subscription.updated` for that subscription. Diffing against your stored copy is not a
+substitute either — if anything else mutated the row first, the diff comes back empty and the transition
+is lost. `subscriptionChange` is derived **only from the provider's event string**, never from payload
+state, so it appears exactly once per transition.
+
+| Change             | Polar | Lemon Squeezy | Stripe | Paddle | Dodo Payments |
+| ------------------ | ----- | ------------- | ------ | ------ | ------------- |
+| `cancel_scheduled` | yes   | yes           | —      | —      | —             |
+| `past_due`         | yes   | —             | —      | yes    | yes           |
+| `paused`           | yes   | yes           | yes¹   | yes    | —             |
+| `resumed`          | yes   | yes           | yes¹   | yes    | —             |
+| `uncanceled`       | yes   | yes²          | —      | —      | —             |
+
+<small>¹ Stripe's `customer.subscription.paused` / `.resumed` fire only for its raw `paused` status — a
+trial that ended without a payment method. A pause issued through `subscriptions.pause` sets
+`pause_collection` and arrives as a plain `customer.subscription.updated` with no
+`subscriptionChange`.</small>
+
+<small>² Lemon Squeezy's `subscription_resumed` means un-*cancelled*; un-*pausing* is
+`subscription_unpaused` → `resumed`.</small>
+
+Coverage is uneven by design: `subscriptionChange` names a transition where the provider named one and
+is `undefined` otherwise. Use it to trigger side effects **once**, and keep reading the level from
+`event.subscription` for entitlement. The per-provider event strings are in
+[Webhook events](/docs/reference/webhook-events).
+
 ## Date fields
 
 | Field                | Polar                  | Lemon Squeezy                 | Stripe                              | Paddle                                | Dodo Payments                             |
