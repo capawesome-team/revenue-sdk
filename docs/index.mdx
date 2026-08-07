@@ -8,7 +8,7 @@ sidebar:
 
 `revenue-sdk` gives you a single, normalized API for five billing providers — **Polar**, **Lemon
 Squeezy**, **Stripe**, **Paddle**, and **Dodo Payments** — so you write your products, checkout,
-subscription, customer-portal, and webhook logic once instead of five times.
+subscription, customer-portal, billing-history, and webhook logic once instead of five times.
 
 It has **zero runtime dependencies** (raw `fetch` and Web Crypto only) and is **edge-compatible**: it
 runs on Node.js ≥ 22, Cloudflare Workers (without `nodejs_compat`), Deno, Bun, and any other
@@ -28,7 +28,8 @@ period. Feedback and bug reports are very welcome — please
   </Card>
   <Card title="Normalized types" icon="shapes">
     `Product`, `Price`, `Checkout`, `Customer`, `Subscription`, `Order` — every model keeps the
-    untouched payload on a `raw` escape hatch.
+    untouched payload on a `raw` escape hatch. An `Order` is one payment, with a normalized `status`,
+    readable from a webhook or from `orders.list`.
   </Card>
   <Card title="One subscription status model" icon="activity">
     Seven statuses across all five providers, with `cancelAtPeriodEnd` split out so `canceled` always
@@ -107,6 +108,6 @@ Switching providers means swapping the `provider` argument — the rest of your 
     Create a client, create a checkout, and handle your first webhook.
   </Card>
   <Card title="Concepts" icon="book-open" href="/docs/concepts/client-and-providers">
-    Clients, products, checkouts, subscriptions, webhooks, pagination, errors, capabilities.
+    Clients, products, checkouts, subscriptions, orders, webhooks, pagination, errors, capabilities.
   </Card>
 </CardGroup>

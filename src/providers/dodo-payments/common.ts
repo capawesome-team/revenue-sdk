@@ -8,6 +8,7 @@ import type {
   LicenseKeyActivation,
   LicenseKeyStatus,
   Order,
+  OrderStatus,
   Price,
   Product,
   Subscription,
@@ -102,12 +103,22 @@ export interface DodoSubscription {
   metadata?: Record<string, unknown> | null;
 }
 
+/**
+ * `GET /payments` returns a reduced shape, but every field mapped below appears on both it and
+ * the full payment from `GET /payments/{payment_id}`.
+ */
 export interface DodoPayment {
   payment_id: string;
+  /** Nullable on both shapes. */
+  status?: string | null;
+  /** Integer minor units — never `settlement_amount`, which is post-FX into the merchant balance. */
   total_amount?: number | null;
   currency?: string | null;
   subscription_id?: string | null;
   customer?: { customer_id?: string | null; email?: string | null } | null;
+  created_at?: string | null;
+  refund_status?: string | null;
+  invoice_url?: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -262,14 +273,43 @@ export function toSubscription(subscription: DodoSubscription): Subscription {
   };
 }
 
+function toOrderStatus(status: string | null | undefined): OrderStatus {
+  switch (status) {
+    case 'succeeded':
+      return 'paid';
+    // Dodo spells the terminal state the British way.
+    case 'cancelled':
+    case 'failed':
+      return 'failed';
+    // `processing` and the `requires_*` states are still in flight. The API is unversioned and
+    // additive, so an unrecognized value stays pending rather than throwing.
+    default:
+      return 'pending';
+  }
+}
+
+function toRefundStatus(status: string | null | undefined): Order['refundStatus'] {
+  switch (status) {
+    case 'full':
+      return 'full';
+    case 'partial':
+      return 'partial';
+    default:
+      return undefined;
+  }
+}
+
 export function toOrderFromPayment(payment: DodoPayment): Order {
   return {
     id: payment.payment_id,
+    status: toOrderStatus(payment.status),
     amount: payment.total_amount ?? undefined,
     currency: payment.currency?.toLowerCase(),
     customerId: payment.customer?.customer_id ?? undefined,
     customerEmail: payment.customer?.email ?? undefined,
     subscriptionId: payment.subscription_id ?? undefined,
+    createdAt: toDate(payment.created_at),
+    refundStatus: toRefundStatus(payment.refund_status),
     metadata: toMetadata(payment.metadata),
     raw: payment,
   };

@@ -29,7 +29,14 @@ if (cursor) {
   }}
 />
 
-Three resources are paginated: `products`, `customers`, and `subscriptions`.
+Five resources are paginated: `products`, `customers`, `subscriptions`, `licenseKeys`, and `orders`.
+
+:::warning
+**A short page is not the end of the list.** `orders.list` filters some rows out after the provider has
+already paged — drafts on Stripe, `initial` invoices on Lemon Squeezy — so a page can come back with
+fewer items than you asked for, or none at all, and still have a `cursor`. Loop until `cursor` is
+`undefined`, never until a page looks small. See [Orders](/docs/concepts/orders).
+:::
 
 ## `listAll` — an async iterator
 
@@ -39,6 +46,10 @@ across all pages. It takes the same parameters as `list` minus `cursor`:
 ```ts
 for await (const subscription of client.subscriptions.listAll({ customerId })) {
   console.log(subscription.id, subscription.status);
+}
+
+for await (const order of client.orders.listAll({ customerId })) {
+  console.log(order.id, order.createdAt, order.amount);
 }
 ```
 
@@ -104,6 +115,9 @@ are raised to `1`; values above the maximum are lowered to it; fractions are tru
 const { items } = await client.products.list({ limit: 1000 });
 ```
 
+Paddle is the one exception to its own row: `/transactions` rejects a `per_page` above **30**, so
+`orders.list` clamps to 30 there while every other Paddle collection allows 200.
+
 :::note
 The in-memory testing provider ignores `limit` and always returns **2 items per page**, on purpose — so
 your cursor-following code is exercised by even a small seed. See
@@ -125,6 +139,18 @@ You never see this, but it explains the differences in page counts:
 Dodo Payments is the notable one: because it reports no total or "has more" flag, the SDK treats a full
 page as "there may be more" and a short page as the end. A collection whose size is an exact multiple of
 the page size therefore costs one extra empty request.
+
+### Lemon Squeezy orders page in two phases
+
+`orders.list` on Lemon Squeezy is the only call that pages across **two** collections: a payment is
+either an order or a subscription invoice, and the two are independently paginated. The cursor therefore
+carries the phase it is in — `/v1/orders` is drained first, then `/v1/subscription-invoices` — and the
+last page of orders always hands over to the first page of invoices rather than ending the iteration.
+
+The consequence is that a Lemon Squeezy page is **not** globally chronological, where every other
+provider returns newest-first. Merge-sorting two independently paginated sources cannot be expressed in
+an opaque cursor, so `listAll` yields everything and leaves the ordering to you — see
+[Orders](/docs/concepts/orders).
 
 Pagination is one of several places the five APIs pull apart — see
 [how the Stripe, Polar, Lemon Squeezy, Paddle, and Dodo Payments APIs differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences)

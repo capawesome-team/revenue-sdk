@@ -9,18 +9,23 @@ import {
   toCheckout,
   toCustomer,
   toLicenseKey,
+  toOrder,
   toProduct,
   toSubscription,
   type PolarCheckout,
   type PolarCustomer,
   type PolarLicenseKey,
   type PolarListResponse,
+  type PolarOrder,
   type PolarProduct,
   type PolarSubscription,
 } from './common.ts';
 
 const DEFAULT_PAGE_LIMIT = 10;
 const MAX_PAGE_LIMIT = 100;
+// Polar's list applies no status filter of its own, so unbilled `draft` orders would surface.
+// The filter accepts repeated values, so drafts are excluded server-side and paging stays exact.
+const LISTED_ORDER_STATUSES = ['pending', 'paid', 'refunded', 'partially_refunded', 'void'];
 
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
@@ -29,6 +34,7 @@ const CAPABILITIES: RevenueCapabilities = {
   endTrial: true,
   hostedCheckout: true,
   licenseKeys: true,
+  listOrdersByCustomer: true,
   listSubscriptionsByCustomer: true,
   pause: true,
   pauseBehaviors: ['period_end'],
@@ -56,6 +62,10 @@ interface PageCursorState {
 
 interface PolarCustomerSession {
   customer_portal_url: string;
+}
+
+interface PolarOrderInvoice {
+  url: string;
 }
 
 function toLicenseKeyUpdateStatus(disabled: boolean | undefined): string | undefined {
@@ -307,6 +317,36 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
         },
         signal: params.signal,
       });
+    },
+
+    async listOrders(params) {
+      const { page, limit } = pageQuery(params.cursor, params.limit);
+      const { data } = await http.json<PolarListResponse<PolarOrder>>('/v1/orders/', {
+        // Polar already sorts by `-created_at`.
+        query: { page, limit, customer_id: params.customerId, status: LISTED_ORDER_STATUSES },
+        signal: params.signal,
+      });
+      return {
+        items: data.items.map(toOrder),
+        cursor: nextCursor(page, data.pagination.max_page),
+      };
+    },
+
+    async getOrder(params) {
+      const { data } = await http.json<PolarOrder>(`/v1/orders/${params.id}`, {
+        signal: params.signal,
+      });
+      return toOrder(data);
+    },
+
+    async getOrderInvoiceUrl(params) {
+      // Polar presigns the URL for 600 seconds, so it can only be read on demand. It 404s until
+      // the invoice exists; generating one (`POST /v1/orders/{id}/invoice`) is an asynchronous
+      // 202 job that this method cannot wait on, so the `not_found` is surfaced as-is.
+      const { data } = await http.json<PolarOrderInvoice>(`/v1/orders/${params.id}/invoice`, {
+        signal: params.signal,
+      });
+      return data.url;
     },
 
     async listLicenseKeys(params) {

@@ -65,6 +65,21 @@ const SUBSCRIPTION = {
   },
 };
 
+const INVOICE = {
+  id: 'in_1',
+  status: 'paid',
+  created: 1754006400,
+  amount_paid: 2900,
+  total: 2900,
+  currency: 'usd',
+  customer: 'cus_1',
+  customer_email: 'user@example.com',
+  hosted_invoice_url: 'https://invoice.stripe.com/i/acct_1/live_1',
+  invoice_pdf: 'https://pay.stripe.com/invoice/acct_1/live_1/pdf',
+  metadata: { org_id: 'org_1' },
+  parent: { subscription_details: { subscription: 'sub_1', metadata: { org_id: 'org_1' } } },
+};
+
 async function expectRevenueError(promise: Promise<unknown>, code: string): Promise<void> {
   try {
     await promise;
@@ -90,6 +105,7 @@ describe('stripe', () => {
     expect(provider.capabilities.hostedCheckout).toBe(true);
     expect(provider.capabilities.usageReporting).toBe(true);
     expect(provider.capabilities.licenseKeys).toBe(false);
+    expect(provider.capabilities.listOrdersByCustomer).toBe(true);
   });
 
   it('rejects license key operations', async () => {
@@ -228,6 +244,8 @@ describe('stripe', () => {
       expect(form.get('customer_email')).toBe('user@example.com');
       expect(form.get('metadata[org_id]')).toBe('org_1');
       expect(form.get('subscription_data[metadata][org_id]')).toBe('org_1');
+      // Subscription mode always invoices and rejects the parameter.
+      expect(form.get('invoice_creation[enabled]')).toBeNull();
       expect(checkout).toMatchObject({ id: 'cs_test_1', status: 'open' });
     });
 
@@ -245,6 +263,8 @@ describe('stripe', () => {
       const form = new URLSearchParams(stub.requests[1]!.body);
       expect(form.get('mode')).toBe('payment');
       expect(form.get('subscription_data[metadata][org_id]')).toBeNull();
+      // Without an invoice a one-off purchase never reaches `orders.list` or `order.paid`.
+      expect(form.get('invoice_creation[enabled]')).toBe('true');
     });
 
     it('prefers an existing customer over customer_email', async () => {
@@ -575,6 +595,115 @@ describe('stripe', () => {
       });
       const form = new URLSearchParams(stub.requests[0]!.body);
       expect(form.getAll('payload[value]')).toEqual(['25']);
+    });
+  });
+
+  describe('orders', () => {
+    it('lists invoices for a customer, drops drafts, and pages past them', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/invoices': {
+            data: [
+              INVOICE,
+              { ...INVOICE, id: 'in_2', status: 'open', amount_paid: 0 },
+              { ...INVOICE, id: 'in_3', status: 'draft', amount_paid: 0 },
+            ],
+            has_more: true,
+          },
+        }),
+      );
+      const page = await provider.listOrders({ limit: 25, customerId: 'cus_1' });
+      expect(stub.requests[0]!.url).toBe(
+        'https://api.stripe.com/v1/invoices?customer=cus_1&limit=25',
+      );
+      expect(page.items.map((item) => item.id)).toEqual(['in_1', 'in_2']);
+      expect(page.items.map((item) => item.status)).toEqual(['paid', 'pending']);
+      // The dropped draft is still the page's last row, so it has to carry the cursor.
+      await provider.listOrders({ cursor: page.cursor });
+      expect(stub.requests[1]!.url).toContain('starting_after=in_3');
+    });
+
+    it('maps an invoice onto the unified order', async () => {
+      const { provider, stub } = setup(routes({ '/v1/invoices/in_1': INVOICE }));
+      const order = await provider.getOrder({ id: 'in_1' });
+      expect(stub.requests[0]!.url).toBe('https://api.stripe.com/v1/invoices/in_1');
+      expect(order).toMatchObject({
+        id: 'in_1',
+        status: 'paid',
+        amount: 2900,
+        currency: 'usd',
+        customerId: 'cus_1',
+        customerEmail: 'user@example.com',
+        subscriptionId: 'sub_1',
+        createdAt: new Date(1754006400 * 1000),
+        metadata: { org_id: 'org_1' },
+      });
+      // Stripe never reports refunds on an invoice.
+      expect(order.refundStatus).toBeUndefined();
+    });
+
+    it('maps the invoice statuses and keeps the billed total on unpaid invoices', async () => {
+      const { provider } = setup(
+        routes({
+          '/v1/invoices': {
+            data: [
+              { ...INVOICE, status: 'open', amount_paid: 0 },
+              { ...INVOICE, status: 'uncollectible', amount_paid: 0 },
+              { ...INVOICE, status: 'void', amount_paid: 0 },
+              { ...INVOICE, status: 'something_new' },
+            ],
+            has_more: false,
+          },
+        }),
+      );
+      const page = await provider.listOrders({});
+      expect(page.items.map((item) => item.status)).toEqual([
+        'pending',
+        'failed',
+        'void',
+        'pending',
+      ]);
+      expect(page.items.map((item) => item.amount)).toEqual([2900, 2900, 2900, 2900]);
+      expect(page.cursor).toBeUndefined();
+    });
+
+    it('reports what was charged when a credit balance covered part of a paid invoice', async () => {
+      const { provider } = setup(
+        routes({
+          '/v1/invoices/in_1': { ...INVOICE, status: 'paid', total: 2900, amount_paid: 1900 },
+        }),
+      );
+      const order = await provider.getOrder({ id: 'in_1' });
+      expect(order.amount).toBe(1900);
+    });
+
+    it('prefers the hosted invoice url and falls back to the pdf', async () => {
+      const { provider, stub } = setup(routes({ '/v1/invoices/in_1': INVOICE }));
+      expect(await provider.getOrderInvoiceUrl({ id: 'in_1' })).toBe(
+        'https://invoice.stripe.com/i/acct_1/live_1',
+      );
+      expect(stub.requests[0]!.url).toBe('https://api.stripe.com/v1/invoices/in_1');
+
+      const pdfOnly = setup(
+        routes({ '/v1/invoices/in_1': { ...INVOICE, hosted_invoice_url: null } }),
+      );
+      expect(await pdfOnly.provider.getOrderInvoiceUrl({ id: 'in_1' })).toBe(
+        'https://pay.stripe.com/invoice/acct_1/live_1/pdf',
+      );
+    });
+
+    it('throws not_found while the invoice is not finalized', async () => {
+      const { provider } = setup(
+        routes({
+          '/v1/invoices/in_1': {
+            ...INVOICE,
+            status: 'draft',
+            hosted_invoice_url: null,
+            invoice_pdf: null,
+          },
+        }),
+      );
+      await expectRevenueError(provider.getOrderInvoiceUrl({ id: 'in_1' }), 'not_found');
     });
   });
 

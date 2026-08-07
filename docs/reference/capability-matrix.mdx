@@ -20,6 +20,7 @@ and throws `unsupported` rather than silently dropping an option — see
 | `endTrial`                    | `boolean`                | `true`                       | `true`                               | `true`                               | `true`                               | `false`                   |
 | `hostedCheckout`              | `boolean`                | `true`                       | `true`                               | `true`                               | `false`                              | `true`                    |
 | `licenseKeys`                 | `boolean`                | `true`                       | `true`                               | `false`                              | `false`                              | `true`                    |
+| `listOrdersByCustomer`        | `boolean`                | `true`                       | `false`                              | `true`                               | `true`                               | `true`                    |
 | `listSubscriptionsByCustomer` | `boolean`                | `true`                       | `false`                              | `true`                               | `true`                               | `true`                    |
 | `pause`                       | `boolean`                | `true`                       | `true`                               | `true`                               | `true`                               | `false`                   |
 | `pauseBehaviors`              | `PauseBehavior[]`        | `period_end`                 | `immediately`                        | `immediately`                        | `immediately`, `period_end`          | —                         |
@@ -65,6 +66,11 @@ see [Testing provider](/docs/providers/testing).
       type: 'boolean',
       description:
         'Whether the licenseKeys namespace is supported. Calling any of its methods without support throws unsupported (Stripe has no license API; Paddle Billing v1 dropped license keys). Validating and activating keys needs no client at all — see the provider subpath exports.',
+    },
+    listOrdersByCustomer: {
+      type: 'boolean',
+      description:
+        'Whether orders.list/listAll accept customerId. Passing it without support throws unsupported (Lemon Squeezy filters orders by store, user email, and order number only). Listing unfiltered works everywhere.',
     },
     listSubscriptionsByCustomer: {
       type: 'boolean',

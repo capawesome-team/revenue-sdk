@@ -122,6 +122,29 @@ await deactivateLicenseKey({ key: 'LICENSE-KEY', activationId: activation.id });
 Merchant-side management — `client.licenseKeys.list/listAll/get/update` — uses the API key and reads
 `/license_keys`. See [License keys](/docs/concepts/license-keys).
 
+## Orders
+
+A unified `Order` is a **Dodo Payments payment**. `orders.list` reads `/payments` and `orders.get` reads
+`/payments/{id}`.
+
+- **Only succeeded payments are listed.** The SDK sends `status=succeeded`, so every listed order is
+  `paid`; `processing`, the `requires_*` states, `failed` and `cancelled` are only visible through a
+  direct `orders.get`.
+- **The sort order is unverified.** `/payments` takes no sort parameter and Dodo documents no ordering
+  guarantee, so the sequence is whatever the API returns. Sort by `createdAt` if it matters.
+- **The list rows are a reduced shape.** Every field the SDK maps is present on both the list row and
+  the full payment, but `invoice_url` is not among them — which is why `getInvoiceUrl` re-reads
+  `/payments/{id}`.
+- **`amount` is `total_amount`**, never `settlement_amount` — the latter is post-FX into your merchant
+  balance rather than what the customer paid.
+- **`refundStatus` comes from `refund_status`** on the payment (`full` / `partial`); a refund does not
+  move the payment's own status.
+- **`invoice_url` is a field, not an endpoint.** `GET /invoices/payments/{id}` returns PDF bytes rather
+  than a URL, so `getInvoiceUrl` reads the payment and returns its `invoice_url`, throwing `not_found`
+  when there is none.
+
+See [Orders](/docs/concepts/orders) for the model and the cross-provider comparison.
+
 ## Capabilities
 
 | Capability                    | Value                       |
@@ -132,6 +155,7 @@ Merchant-side management — `client.licenseKeys.list/listAll/get/update` — us
 | `endTrial`                    | `false`                     |
 | `hostedCheckout`              | `true`                      |
 | `licenseKeys`                 | `true`                      |
+| `listOrdersByCustomer`        | `true`                      |
 | `listSubscriptionsByCustomer` | `true`                      |
 | `pause`                       | `false`                     |
 | `pauseBehaviors`              | `[]`                        |

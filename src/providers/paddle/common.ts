@@ -4,6 +4,7 @@ import type {
   CheckoutStatus,
   Customer,
   Order,
+  OrderStatus,
   Price,
   Product,
   Subscription,
@@ -60,11 +61,18 @@ export interface PaddleTransaction {
   currency_code?: string | null;
   custom_data?: Record<string, unknown> | null;
   checkout?: { url?: string | null } | null;
+  /** The statement date; `null` until the transaction is billed. */
+  billed_at?: string | null;
+  created_at?: string | null;
   details?: {
     totals?: {
       total?: string | null;
       grand_total?: string | null;
     } | null;
+  } | null;
+  /** Only present when the request asks for `include=adjustments_totals`. */
+  adjustments_totals?: {
+    breakdown?: { refund?: string | null } | null;
   } | null;
 }
 
@@ -242,15 +250,48 @@ export function toSubscription(subscription: PaddleSubscription): Subscription {
   };
 }
 
+function toOrderStatus(status: string | null | undefined): OrderStatus {
+  switch (status) {
+    case 'completed':
+      return 'paid';
+    case 'past_due':
+      return 'failed';
+    case 'canceled':
+      return 'void';
+    // `billed` and `ready` are awaiting payment; `draft` never reaches `listOrders` but can
+    // still arrive on a webhook, and unknown values stay pending rather than throwing.
+    default:
+      return 'pending';
+  }
+}
+
+/** Refunds are separate Adjustment entities — the totals only exist with `include=adjustments_totals`. */
+function toRefundStatus(
+  transaction: PaddleTransaction,
+  amount: number | undefined,
+): Order['refundStatus'] {
+  const refunded = parseAmount(transaction.adjustments_totals?.breakdown?.refund);
+  if (refunded === undefined || refunded <= 0) {
+    return undefined;
+  }
+  return amount !== undefined && refunded >= amount ? 'full' : 'partial';
+}
+
 export function toOrderFromTransaction(transaction: PaddleTransaction): Order {
+  // `grand_total` is what the customer was actually charged; `total` overstates it whenever a
+  // credit absorbed part of the bill.
+  const amount = parseAmount(
+    transaction.details?.totals?.grand_total ?? transaction.details?.totals?.total,
+  );
   return {
     id: transaction.id,
-    amount: parseAmount(
-      transaction.details?.totals?.grand_total ?? transaction.details?.totals?.total,
-    ),
+    status: toOrderStatus(transaction.status),
+    amount,
     currency: transaction.currency_code?.toLowerCase(),
     customerId: transaction.customer_id ?? undefined,
     subscriptionId: transaction.subscription_id ?? undefined,
+    createdAt: toDate(transaction.billed_at ?? transaction.created_at),
+    refundStatus: toRefundStatus(transaction, amount),
     metadata: toMetadata(transaction.custom_data),
     raw: transaction,
   };

@@ -11,10 +11,12 @@ import { toUsagePayload } from '../shared.ts';
 import {
   toCheckout,
   toCustomer,
+  toOrderFromInvoice,
   toProduct,
   toSubscription,
   type StripeCheckoutSession,
   type StripeCustomer,
+  type StripeInvoice,
   type StripeList,
   type StripePrice,
   type StripeProduct,
@@ -39,6 +41,7 @@ const CAPABILITIES: RevenueCapabilities = {
   // per-customer feature boolean with no key string, activation count, or device identity, and
   // `/v1/entitlements/active_entitlements` is secret-key-only — an app cannot check its own license.
   licenseKeys: false,
+  listOrdersByCustomer: true,
   listSubscriptionsByCustomer: true,
   pause: true,
   // `pause_collection` takes effect immediately; a period-end pause would require Subscription
@@ -131,6 +134,11 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
     return data;
   }
 
+  async function fetchInvoice(id: string, signal: AbortSignal | undefined) {
+    const { data } = await http.json<StripeInvoice>(`/v1/invoices/${id}`, { signal });
+    return data;
+  }
+
   async function fetchSubscription(id: string, signal: AbortSignal | undefined) {
     const { data } = await http.json<StripeSubscription>(`/v1/subscriptions/${id}`, { signal });
     return data;
@@ -195,6 +203,10 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
           success_url: params.successUrl,
           customer: params.customerId,
           customer_email: params.customerId === undefined ? params.customerEmail : undefined,
+          // Stripe only draws up an Invoice for a one-off payment when the session asks for one,
+          // and without it the purchase appears in neither `orders.list` nor `order.paid`.
+          // Subscription mode always invoices and rejects the parameter.
+          invoice_creation: mode === 'payment' ? { enabled: true } : undefined,
           // Session metadata does NOT propagate to the subscription — write both.
           metadata: params.metadata,
           subscription_data:
@@ -369,6 +381,39 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
         }),
         signal: params.signal,
       });
+    },
+
+    async listOrders(params) {
+      const { data } = await http.json<StripeList<StripeInvoice>>('/v1/invoices', {
+        query: { customer: params.customerId, ...pageParams(params.cursor, params.limit) },
+        signal: params.signal,
+      });
+      // Stripe's `status` filter takes a single value, so "everything except draft" cannot be
+      // expressed server-side and drafts are dropped here instead. They matter: a subscription
+      // renewal sits as an unpaid `draft` for about an hour before Stripe charges it. The cursor
+      // is taken from the unfiltered page so paging stays on Stripe's own ordering.
+      return {
+        items: data.data.filter((invoice) => invoice.status !== 'draft').map(toOrderFromInvoice),
+        cursor: nextCursor(data),
+      };
+    },
+
+    async getOrder(params) {
+      return toOrderFromInvoice(await fetchInvoice(params.id, params.signal));
+    },
+
+    async getOrderInvoiceUrl(params) {
+      const invoice = await fetchInvoice(params.id, params.signal);
+      // Both links are minted at finalization and expire 30 days after the due date (capped at
+      // 120 days) — an expired `invoice_pdf` answers with HTTP 400 — so they are read on demand.
+      const url = invoice.hosted_invoice_url ?? invoice.invoice_pdf;
+      if (!url) {
+        throw new RevenueError(`Stripe invoice ${params.id} has no URL until it is finalized`, {
+          code: 'not_found',
+          provider: 'stripe',
+        });
+      }
+      return url;
     },
 
     async listLicenseKeys() {

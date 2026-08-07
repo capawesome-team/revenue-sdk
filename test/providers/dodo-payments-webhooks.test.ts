@@ -109,10 +109,12 @@ describe('dodo-payments parseWebhookEvent', () => {
         data: {
           payload_type: 'Payment',
           payment_id: 'pay_1',
+          status: 'succeeded',
           total_amount: 2500,
           currency: 'USD',
           subscription_id: 'sub_abc',
           customer: { customer_id: 'cus_1', email: 'user@example.com' },
+          created_at: '2026-08-01T00:00:00Z',
           metadata: { org_id: 'org_1' },
         },
       }),
@@ -120,10 +122,13 @@ describe('dodo-payments parseWebhookEvent', () => {
     expect(event.type).toBe('order.paid');
     expect(event.order).toMatchObject({
       id: 'pay_1',
+      status: 'paid',
       amount: 2500,
       currency: 'usd',
       customerId: 'cus_1',
+      customerEmail: 'user@example.com',
       subscriptionId: 'sub_abc',
+      createdAt: new Date('2026-08-01T00:00:00Z'),
       metadata: { org_id: 'org_1' },
     });
   });

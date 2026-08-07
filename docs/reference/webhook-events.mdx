@@ -67,6 +67,11 @@ on an unrecognized type.
 | **Paddle**        | `transaction.completed`                               |
 | **Dodo Payments** | `payment.succeeded`                                   |
 
+The attached `Order` is mapped exactly as the `orders` namespace maps it — `status`, `createdAt`, and
+`refundStatus` included — and `order.id` is the ID `client.orders.get` and `client.orders.getInvoiceUrl`
+take. A delivery you missed can be recovered with `orders.list`; see
+[Orders](/docs/concepts/orders).
+
 ### `checkout.completed`
 
 | Provider          | Provider events                                                                       |
@@ -121,6 +126,15 @@ settlement arrives later as `checkout.session.async_payment_succeeded`. Polar be
 :::
 
 :::note
+**On Stripe, `order.paid` maps from `invoice.paid` — and a one-off payment is only invoiced on
+request.** `checkouts.create` sets `invoice_creation[enabled]` on every `payment`-mode session it
+creates, so those purchases do emit the event. A session created **outside this SDK, or before this
+version**, produces no invoice at all: its payment arrives as `charge.succeeded` /
+`payment_intent.succeeded`, both `unknown` here. Subscription payments always invoice. See
+[Orders](/docs/concepts/orders).
+:::
+
+:::note
 **Renewals never emit an order on Lemon Squeezy.** `order_created` fires for the first payment only, so
 `subscription_payment_success` (which carries a subscription invoice) is mapped to `order.paid` as well.
 On Paddle, `transaction.paid` is deliberately left unmapped so `transaction.completed` is the single
@@ -145,7 +159,7 @@ The grant also carries only `display_key`, a **masked** form of the key, so `eve
 | `subscription.created`   | `subscription`   |
 | `subscription.updated`   | `subscription`   |
 | `subscription.canceled`  | `subscription`   |
-| `order.paid`             | `order`          |
+| `order.paid`             | `order` — with `status`, `createdAt`, and `refundStatus` |
 | `checkout.completed`     | `checkout`       |
 | `license.issued`         | `licenseKeyId` always; `licenseKey` on Lemon Squeezy and Dodo Payments, never on Polar |
 | `unknown`                | `checkout` for a not-yet-complete Polar/Stripe checkout event; otherwise nothing but `raw` |

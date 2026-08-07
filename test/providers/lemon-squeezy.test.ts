@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { RevenueError } from '../../src/errors.ts';
+import { decodeCursor, encodeCursor } from '../../src/pagination.ts';
 import { lemonSqueezy } from '../../src/providers/lemon-squeezy/index.ts';
-import { createFetchStub, type StubHandler } from '../helpers/fetch-stub.ts';
+import { createFetchStub, type StubHandler, type StubResponse } from '../helpers/fetch-stub.ts';
 
 const API_KEY = 'ls_test_api_key';
 
@@ -95,6 +96,7 @@ describe('lemonSqueezy', () => {
     expect(provider.capabilities.checkoutStatus).toBe(false);
     expect(provider.capabilities.revoke).toBe(false);
     expect(provider.capabilities.listSubscriptionsByCustomer).toBe(false);
+    expect(provider.capabilities.listOrdersByCustomer).toBe(false);
     expect(provider.capabilities.pause).toBe(true);
     expect(provider.capabilities.pauseBehaviors).toEqual(['immediately']);
     expect(provider.capabilities.usageReporting).toBe(false);
@@ -506,6 +508,315 @@ describe('lemonSqueezy', () => {
         provider.createCustomerPortalSession({ customerId: '7', returnUrl: 'https://x' }),
         'unsupported',
       );
+    });
+  });
+
+  describe('orders', () => {
+    const ORDER = {
+      type: 'orders',
+      id: '11',
+      attributes: {
+        store_id: 76833,
+        customer_id: 7,
+        identifier: '5e8b546c-c561-4a2c-a586-40c18bb2a195',
+        order_number: 1,
+        user_name: 'User',
+        user_email: 'user@example.com',
+        currency: 'USD',
+        subtotal: 2900,
+        discount_total: 0,
+        tax: 0,
+        total: 2900,
+        refunded: false,
+        refunded_amount: 0,
+        refunded_at: null,
+        status: 'paid',
+        created_at: '2026-08-01T00:00:00.000000Z',
+        updated_at: '2026-08-01T00:00:00.000000Z',
+        urls: { receipt: 'https://app.lemonsqueezy.com/my-orders/5e8b546c?signature=sig' },
+        test_mode: false,
+      },
+    };
+
+    const INVOICE = {
+      type: 'subscription-invoices',
+      id: '77',
+      attributes: {
+        store_id: 76833,
+        subscription_id: 42,
+        customer_id: 7,
+        user_email: 'user@example.com',
+        billing_reason: 'renewal',
+        status: 'paid',
+        refunded: false,
+        refunded_amount: 0,
+        subtotal: 2900,
+        discount_total: 0,
+        tax: 0,
+        total: 2900,
+        currency: 'USD',
+        created_at: '2026-09-01T00:00:00.000000Z',
+        updated_at: '2026-09-01T00:00:00.000000Z',
+        urls: { invoice_url: 'https://app.lemonsqueezy.com/invoices/77.pdf?signature=sig' },
+        test_mode: false,
+      },
+    };
+
+    // The first payment of a subscription is billed as an order AND as an initial invoice.
+    const INITIAL_INVOICE = {
+      ...INVOICE,
+      id: '76',
+      attributes: { ...INVOICE.attributes, billing_reason: 'initial' },
+    };
+
+    const NOT_FOUND: StubResponse = {
+      status: 404,
+      json: { errors: [{ detail: 'No query results.', status: '404' }] },
+    };
+
+    function stubRoutes(handlers: Record<string, StubResponse>): StubHandler {
+      return (request) => {
+        const path = new URL(request.url).pathname;
+        const response = handlers[path];
+        if (response === undefined) {
+          throw new Error(`Unhandled route: ${request.method} ${path}`);
+        }
+        return response;
+      };
+    }
+
+    function cursorState(cursor: string | undefined) {
+      return decodeCursor<{ source: string; page: number }>('lemon-squeezy', cursor!);
+    }
+
+    function getOrderWith(attributes: Record<string, unknown>) {
+      const { provider } = setup(() => ({
+        json: { data: { ...ORDER, attributes: { ...ORDER.attributes, ...attributes } } },
+      }));
+      return provider.getOrder({ id: '11' });
+    }
+
+    it('lists the store orders and maps them', async () => {
+      const { provider, stub } = setup(
+        stubRoutes({
+          '/v1/orders': {
+            json: { data: [ORDER], meta: { page: { currentPage: 1, lastPage: 1 } } },
+          },
+        }),
+      );
+      const page = await provider.listOrders({});
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('GET');
+      expect(request.url).toContain('/v1/orders?');
+      expect(request.url).toContain('page%5Bnumber%5D=1');
+      expect(request.url).toContain('page%5Bsize%5D=10');
+      expect(request.url).toContain('filter%5Bstore_id%5D=76833');
+      expect(request.headers['accept']).toBe('application/vnd.api+json');
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]).toMatchObject({
+        id: '11',
+        status: 'paid',
+        amount: 2900,
+        currency: 'usd',
+        customerId: '7',
+        customerEmail: 'user@example.com',
+      });
+      expect(page.items[0]!.createdAt).toEqual(new Date('2026-08-01T00:00:00.000000Z'));
+      expect(page.items[0]!.refundStatus).toBeUndefined();
+      expect(page.items[0]!.subscriptionId).toBeUndefined();
+    });
+
+    it('keeps paginating orders while order pages remain', async () => {
+      const { provider, stub } = setup(
+        stubRoutes({
+          '/v1/orders': {
+            json: { data: [ORDER], meta: { page: { currentPage: 1, lastPage: 3 } } },
+          },
+        }),
+      );
+      const page = await provider.listOrders({ limit: 2 });
+      expect(cursorState(page.cursor)).toEqual({ source: 'orders', page: 2 });
+      await provider.listOrders({ cursor: page.cursor, limit: 2 });
+      expect(stub.requests[1]!.url).toContain('/v1/orders?');
+      expect(stub.requests[1]!.url).toContain('page%5Bnumber%5D=2');
+      expect(stub.requests[1]!.url).toContain('page%5Bsize%5D=2');
+    });
+
+    it('hands back an invoices cursor on the last page of orders', async () => {
+      const { provider } = setup(
+        stubRoutes({
+          '/v1/orders': {
+            json: { data: [ORDER], meta: { page: { currentPage: 2, lastPage: 2 } } },
+          },
+        }),
+      );
+      const page = await provider.listOrders({
+        cursor: encodeCursor('lemon-squeezy', { source: 'orders', page: 2 }),
+      });
+      expect(cursorState(page.cursor)).toEqual({ source: 'invoices', page: 1 });
+    });
+
+    it('drains the subscription invoices and drops the initial ones', async () => {
+      const { provider, stub } = setup(
+        stubRoutes({
+          '/v1/subscription-invoices': {
+            json: {
+              data: [INVOICE, INITIAL_INVOICE],
+              meta: { page: { currentPage: 1, lastPage: 1 } },
+            },
+          },
+        }),
+      );
+      const page = await provider.listOrders({
+        cursor: encodeCursor('lemon-squeezy', { source: 'invoices', page: 1 }),
+      });
+      const request = stub.requests[0]!;
+      expect(request.url).toContain('/v1/subscription-invoices?');
+      expect(request.url).toContain('page%5Bnumber%5D=1');
+      expect(request.url).toContain('filter%5Bstore_id%5D=76833');
+      // The initial invoice bills the same money as an order, so it would double-count.
+      expect(page.items.map((order) => order.id)).toEqual(['77']);
+      expect(page.items[0]).toMatchObject({ id: '77', status: 'paid', subscriptionId: '42' });
+      expect(page.items[0]!.createdAt).toEqual(new Date('2026-09-01T00:00:00.000000Z'));
+      expect(page.cursor).toBeUndefined();
+    });
+
+    it('returns a short page rather than backfilling filtered invoices', async () => {
+      const { provider } = setup(
+        stubRoutes({
+          '/v1/subscription-invoices': {
+            json: { data: [INITIAL_INVOICE], meta: { page: { currentPage: 1, lastPage: 2 } } },
+          },
+        }),
+      );
+      const page = await provider.listOrders({
+        cursor: encodeCursor('lemon-squeezy', { source: 'invoices', page: 1 }),
+      });
+      expect(page.items).toEqual([]);
+      expect(cursorState(page.cursor)).toEqual({ source: 'invoices', page: 2 });
+    });
+
+    it('rejects customer-filtered listing', async () => {
+      const { provider } = setup(() => ({ json: {} }));
+      await expectRevenueError(provider.listOrders({ customerId: '7' }), 'unsupported');
+    });
+
+    it.each([
+      ['paid', 'paid'],
+      ['pending', 'pending'],
+      ['failed', 'failed'],
+      ['fraudulent', 'failed'],
+      ['refunded', 'refunded'],
+      ['partial_refund', 'partially_refunded'],
+      ['void', 'void'],
+      ['something_new', 'pending'],
+    ])('maps the %s status to %s', async (status, expected) => {
+      expect((await getOrderWith({ status })).status).toBe(expected);
+    });
+
+    it('reports a full refund', async () => {
+      const order = await getOrderWith({
+        status: 'refunded',
+        refunded: true,
+        refunded_amount: 2900,
+      });
+      expect(order.status).toBe('refunded');
+      expect(order.refundStatus).toBe('full');
+    });
+
+    it('reports a partial refund even though the refunded flag is false', async () => {
+      const order = await getOrderWith({
+        status: 'partial_refund',
+        refunded: false,
+        refunded_amount: 500,
+      });
+      expect(order.status).toBe('partially_refunded');
+      expect(order.refundStatus).toBe('partial');
+    });
+
+    it('leaves the refund status unset when nothing was refunded', async () => {
+      expect((await getOrderWith({ refunded_amount: 0 })).refundStatus).toBeUndefined();
+    });
+
+    it('gets an order without touching the invoice endpoint', async () => {
+      const { provider, stub } = setup(stubRoutes({ '/v1/orders/11': { json: { data: ORDER } } }));
+      const order = await provider.getOrder({ id: '11' });
+      expect(stub.requests).toHaveLength(1);
+      expect(stub.requests[0]!.url).toBe('https://api.lemonsqueezy.com/v1/orders/11');
+      expect(order).toMatchObject({ id: '11', status: 'paid', amount: 2900 });
+    });
+
+    it('falls back to the subscription invoice when the order ID misses', async () => {
+      const { provider, stub } = setup(
+        stubRoutes({
+          '/v1/orders/77': NOT_FOUND,
+          '/v1/subscription-invoices/77': { json: { data: INVOICE } },
+        }),
+      );
+      const order = await provider.getOrder({ id: '77' });
+      expect(stub.requests.map((request) => new URL(request.url).pathname)).toEqual([
+        '/v1/orders/77',
+        '/v1/subscription-invoices/77',
+      ]);
+      expect(order).toMatchObject({ id: '77', status: 'paid', subscriptionId: '42' });
+    });
+
+    it('throws not_found when neither ID space has the order', async () => {
+      const { provider, stub } = setup(
+        stubRoutes({ '/v1/orders/99': NOT_FOUND, '/v1/subscription-invoices/99': NOT_FOUND }),
+      );
+      await expectRevenueError(provider.getOrder({ id: '99' }), 'not_found');
+      expect(stub.requests).toHaveLength(2);
+    });
+
+    it('does not fall back on errors other than not_found', async () => {
+      const { provider, stub } = setup(
+        stubRoutes({
+          '/v1/orders/11': { status: 401, json: { errors: [{ detail: 'Unauthenticated.' }] } },
+        }),
+      );
+      await expectRevenueError(provider.getOrder({ id: '11' }), 'unauthorized');
+      expect(stub.requests).toHaveLength(1);
+    });
+
+    it('returns the receipt URL of an order', async () => {
+      const { provider } = setup(stubRoutes({ '/v1/orders/11': { json: { data: ORDER } } }));
+      await expect(provider.getOrderInvoiceUrl({ id: '11' })).resolves.toBe(
+        'https://app.lemonsqueezy.com/my-orders/5e8b546c?signature=sig',
+      );
+    });
+
+    it('returns the signed PDF URL of a subscription invoice', async () => {
+      const { provider } = setup(
+        stubRoutes({
+          '/v1/orders/77': NOT_FOUND,
+          '/v1/subscription-invoices/77': { json: { data: INVOICE } },
+        }),
+      );
+      await expect(provider.getOrderInvoiceUrl({ id: '77' })).resolves.toBe(
+        'https://app.lemonsqueezy.com/invoices/77.pdf?signature=sig',
+      );
+    });
+
+    it('throws not_found while a pending invoice has no PDF yet', async () => {
+      const { provider } = setup(
+        stubRoutes({
+          '/v1/orders/77': NOT_FOUND,
+          '/v1/subscription-invoices/77': {
+            json: {
+              data: {
+                ...INVOICE,
+                attributes: {
+                  ...INVOICE.attributes,
+                  status: 'pending',
+                  urls: { invoice_url: null },
+                },
+              },
+            },
+          },
+        }),
+      );
+      await expectRevenueError(provider.getOrderInvoiceUrl({ id: '77' }), 'not_found');
     });
   });
 

@@ -142,6 +142,32 @@ await deactivateLicenseKey({
 Merchant-side management — `client.licenseKeys.list/listAll/get/update` — does need the access token and
 reads `/v1/license-keys`. See [License keys](/docs/concepts/license-keys).
 
+## Orders
+
+A unified `Order` is a **Polar order**. `orders.list` reads `/v1/orders/` and `orders.get` reads
+`/v1/orders/{id}`.
+
+```ts
+const { items } = await client.orders.list({ customerId: 'CUSTOMER_ID', limit: 20 });
+const invoiceUrl = await client.orders.getInvoiceUrl({ id: items[0]!.id });
+```
+
+- **Drafts are excluded server-side.** Polar's list applies no status filter of its own, so the SDK
+  sends the five statuses it wants (`pending`, `paid`, `refunded`, `partially_refunded`, `void`) as
+  repeated `status` parameters. Paging stays exact — no page is ever short. A `draft` fetched directly
+  by ID maps to `pending`.
+- **`amount` is `total_amount`** — what the customer is charged. `net_amount` excludes tax and
+  `due_amount` is only the unpaid remainder.
+- **`refundStatus` also reads `refunded_amount`.** A refund below the total does not always move the
+  status off `paid`, so any non-zero `refunded_amount` reports `partial`.
+- **Invoice URLs live for 10 minutes.** `getOrderInvoiceUrl` calls `GET /v1/orders/{id}/invoice`, whose
+  response is an S3 presign valid for 600 seconds — mint one per click, never store it.
+- **A missing invoice is a `not_found`.** Polar generates invoices through `POST /v1/orders/{id}/invoice`,
+  a `202` asynchronous job; the SDK deliberately does not trigger or poll it, so an order whose invoice
+  was never generated throws instead of blocking.
+
+See [Orders](/docs/concepts/orders) for the model and the cross-provider comparison.
+
 ## Capabilities
 
 | Capability                    | Value                        |
@@ -152,6 +178,7 @@ reads `/v1/license-keys`. See [License keys](/docs/concepts/license-keys).
 | `endTrial`                    | `true`                       |
 | `hostedCheckout`              | `true`                       |
 | `licenseKeys`                 | `true`                       |
+| `listOrdersByCustomer`        | `true`                       |
 | `listSubscriptionsByCustomer` | `true`                       |
 | `pause`                       | `true`                       |
 | `pauseBehaviors`              | `['period_end']`             |

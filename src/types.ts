@@ -117,14 +117,22 @@ export interface Subscription {
   raw: unknown;
 }
 
+/** Drafts are excluded from `orders.list` rather than reported — `void` covers cancelled bills. */
+export type OrderStatus =
+  'failed' | 'paid' | 'partially_refunded' | 'pending' | 'refunded' | 'void';
+
 export interface Order {
   id: string;
-  /** Total amount in the currency's minor units. */
+  status: OrderStatus;
+  /** Total charged to the customer in the currency's minor units — after discounts and credits, including tax. */
   amount?: number;
   currency?: string;
   customerId?: string;
   customerEmail?: string;
   subscriptionId?: string;
+  createdAt?: Date;
+  /** Set once any of the order was refunded. Stripe never reports it — a refund leaves no trace on the invoice. */
+  refundStatus?: 'full' | 'partial';
   metadata?: Metadata;
   raw: unknown;
 }
@@ -221,6 +229,8 @@ export interface RevenueCapabilities {
   hostedCheckout: boolean;
   /** Whether the `licenseKeys` namespace is supported. Validating and activating keys needs no client — see the provider subpath. */
   licenseKeys: boolean;
+  /** Whether `orders.list` supports the `customerId` filter. */
+  listOrdersByCustomer: boolean;
   /** Whether `subscriptions.list` supports the `customerId` filter. */
   listSubscriptionsByCustomer: boolean;
   /** Whether `subscriptions.pause` and `subscriptions.resume` are supported. */
@@ -332,6 +342,20 @@ export interface CreateCustomerPortalSessionParams extends BaseParams {
   returnUrl?: string;
 }
 
+export interface ListOrdersParams extends BaseParams {
+  cursor?: string;
+  limit?: number;
+  customerId?: string;
+}
+
+export interface GetOrderParams extends BaseParams {
+  id: string;
+}
+
+export interface GetOrderInvoiceUrlParams extends BaseParams {
+  id: string;
+}
+
 export interface ListLicenseKeysParams extends BaseParams {
   cursor?: string;
   limit?: number;
@@ -388,6 +412,10 @@ export interface RevenueProvider {
     params: CreateCustomerPortalSessionParams,
   ): Promise<CustomerPortalSession>;
   reportUsage(params: ReportUsageParams): Promise<void>;
+  listOrders(params: ListOrdersParams): Promise<Page<Order>>;
+  getOrder(params: GetOrderParams): Promise<Order>;
+  /** Throws `not_found` when the provider has no invoice for the order — see the orders docs. */
+  getOrderInvoiceUrl(params: GetOrderInvoiceUrlParams): Promise<string>;
   listLicenseKeys(params: ListLicenseKeysParams): Promise<Page<LicenseKey>>;
   getLicenseKey(params: GetLicenseKeyParams): Promise<LicenseKey>;
   updateLicenseKey(params: UpdateLicenseKeyParams): Promise<LicenseKey>;

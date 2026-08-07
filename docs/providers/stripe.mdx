@@ -79,6 +79,40 @@ Events worth subscribing to: `customer.subscription.created`, `customer.subscrip
 `checkout.session.async_payment_succeeded` to catch the settlement.
 :::
 
+## Orders
+
+A unified `Order` is a **Stripe Invoice**, not a Charge. `orders.list` reads `/v1/invoices` and
+`orders.get` reads `/v1/invoices/{id}`.
+
+That choice keeps one ID space: `order.paid` maps from `invoice.paid`, so `event.order.id` is an `in_…`
+and resolves through `orders.get`. Charges are a different space — and since `charge.invoice` was
+removed in `2025-03-31.basil`, a Charge could not carry `subscriptionId` at the pinned version anyway.
+
+:::warning
+**A one-off payment only becomes an Invoice when the Checkout Session asked for one.**
+`checkouts.create` now sends `invoice_creation[enabled]` on every `payment`-mode session it creates, so
+purchases made through this SDK appear in `orders.list` and emit `order.paid`. Purchases through a
+session created **outside this SDK, or before this version**, never produce an invoice and cannot be
+retrofitted. Subscription mode always invoices — and rejects the parameter, so the SDK only sends it in
+payment mode.
+:::
+
+- **Drafts are dropped client-side.** Stripe's `status` filter takes a single value, so "everything
+  except draft" cannot be expressed on the wire. The cursor comes from the unfiltered page, so a page
+  can be **short or empty and still have a cursor** — a renewal sits as a `draft` for about an hour
+  before Stripe charges it.
+- **`refundStatus` is never set.** A refund is a Charge-level object and leaves no trace on the invoice —
+  no flag, no amount — so a refunded invoice still reports `status: 'paid'`.
+- **`amount` is `amount_paid` on a settled invoice**, which is below `total` whenever a customer credit
+  balance covered part of it. An unpaid invoice reports `total`, since its `amount_paid` is `0`.
+- **`createdAt` is the invoice creation time**, not the payment time — that lives on
+  `status_transitions.paid_at` in `raw`.
+- **`getInvoiceUrl` prefers `hosted_invoice_url`** and falls back to `invoice_pdf`. Both are minted at
+  finalization and expire 30 days after the due date (capped at 120); an expired PDF link answers
+  `400`. Before finalization neither exists and the call throws `not_found`.
+
+See [Orders](/docs/concepts/orders) for the model and the cross-provider comparison.
+
 ## Capabilities
 
 | Capability                    | Value                                  |
@@ -89,6 +123,7 @@ Events worth subscribing to: `customer.subscription.created`, `customer.subscrip
 | `endTrial`                    | `true`                                 |
 | `hostedCheckout`              | `true`                                 |
 | `licenseKeys`                 | `false`                                |
+| `listOrdersByCustomer`        | `true`                                 |
 | `listSubscriptionsByCustomer` | `true`                                 |
 | `pause`                       | `true`                                 |
 | `pauseBehaviors`              | `['immediately']`                      |

@@ -31,8 +31,9 @@ The seed is optional — `createInMemoryProvider()` starts empty.
 
 ## The seed shape
 
-`products`, `customers`, `subscriptions`, and `licenseKeys` are arrays; every field is optional and gets
-a sensible default. Missing IDs are generated (`product-1`, `price-2`, `customer-3`, …).
+`products`, `customers`, `subscriptions`, `orders`, and `licenseKeys` are arrays; every field is
+optional and gets a sensible default. Missing IDs are generated (`product-1`, `price-2`, `customer-3`,
+…).
 
 <TypeTable
   type={{
@@ -51,6 +52,12 @@ a sensible default. Missing IDs are generated (`product-1`, `price-2`, `customer
       required: false,
       description:
         '{ id?, status?, cancelAtPeriodEnd?, pauseAtPeriodEnd?, customerId?, productId?, quantity?, currency?, amount?, interval?, currentPeriodEnd?, trialEndsAt?, resumesAt?, endsAt?, metadata? }.',
+    },
+    orders: {
+      type: 'InMemoryOrderSeed[]',
+      required: false,
+      description:
+        '{ id?, status?, amount?, currency?, customerId?, customerEmail?, subscriptionId?, createdAt?, refundStatus?, metadata? }. status defaults to paid.',
     },
     licenseKeys: {
       type: 'InMemoryLicenseKeySeed[]',
@@ -181,8 +188,9 @@ test('creating a checkout records it', async () => {
 ```
 
 `provider.state` is `{ products: Product[], customers: Customer[], subscriptions: Subscription[],
-licenseKeys: LicenseKey[], checkouts: Checkout[], usageEvents: InMemoryUsageEvent[] }`. Mutating
-operations write straight into it, so the seeded objects and the returned ones are the same instances.
+orders: Order[], licenseKeys: LicenseKey[], checkouts: Checkout[], usageEvents: InMemoryUsageEvent[] }`.
+Mutating operations write straight into it, so the seeded objects and the returned ones are the same
+instances.
 
 ### Reported usage events
 
@@ -226,6 +234,40 @@ test('an API call reports one unit of usage', async () => {
 The type is exported as `InMemoryUsageEvent` from `revenue-sdk/testing`. Override
 `capabilities: { usageReporting: false }` to exercise the Lemon Squeezy and Paddle fallback path — see
 [Usage-based billing](/docs/concepts/usage-based-billing).
+
+### Seeded orders
+
+`orders` seeds surface on `state.orders`, filtered by `customerId` when you pass one, and paginated like
+everything else:
+
+```ts
+test('the billing history shows the refund', async () => {
+  const provider = createInMemoryProvider({
+    orders: [
+      { id: 'ord-1', customerId: 'cus-1', amount: 2900, currency: 'usd', status: 'paid' },
+      {
+        id: 'ord-2',
+        customerId: 'cus-1',
+        amount: 2900,
+        currency: 'usd',
+        status: 'partially_refunded',
+        refundStatus: 'partial',
+      },
+    ],
+  });
+  const client = createClient({ provider });
+
+  const { items } = await client.orders.list({ customerId: 'cus-1' });
+
+  expect(items.map((order) => order.status)).toEqual(['paid', 'partially_refunded']);
+});
+```
+
+`status` defaults to `paid`; nothing else is defaulted, so an unseeded field stays `undefined` exactly
+as it would on a provider that does not report it. `orders.getInvoiceUrl` returns a deterministic fake —
+`https://invoices.example.com/<order id>` — for any seeded order, and throws `not_found` for an unknown
+one. Override `capabilities: { listOrdersByCustomer: false }` to exercise the Lemon Squeezy path, where
+`orders.list({ customerId })` throws `unsupported`.
 
 ### Seeded license keys
 

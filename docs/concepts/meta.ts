@@ -11,6 +11,7 @@ export default defineMeta({
     'usage-based-billing',
     'license-keys',
     'customers-and-portal',
+    'orders',
     'webhooks',
     'pagination',
     'errors',

@@ -47,6 +47,21 @@ const SUBSCRIPTION = {
   metadata: { organization_id: 'org_1' },
 };
 
+const ORDER = {
+  id: 'order-uuid-1',
+  status: 'paid',
+  created_at: '2026-08-01T00:00:00Z',
+  total_amount: 2900,
+  net_amount: 2700,
+  due_amount: 0,
+  refunded_amount: 0,
+  currency: 'usd',
+  customer_id: 'cus-uuid-1',
+  customer: { id: 'cus-uuid-1', email: 'user@example.com' },
+  subscription_id: 'sub-uuid-1',
+  metadata: { organization_id: 'org_1' },
+};
+
 const LICENSE_KEY = {
   id: 'lk-uuid-1',
   organization_id: 'org-uuid-1',
@@ -85,6 +100,7 @@ describe('polar', () => {
     expect(provider.capabilities.pauseBehaviors).toEqual(['period_end']);
     expect(provider.capabilities.usageReporting).toBe(true);
     expect(provider.capabilities.licenseKeys).toBe(true);
+    expect(provider.capabilities.listOrdersByCustomer).toBe(true);
   });
 
   it('uses the sandbox base URL when configured', async () => {
@@ -474,6 +490,98 @@ describe('polar', () => {
           },
         ],
       });
+    });
+  });
+
+  describe('orders', () => {
+    it('lists the collection with its trailing slash and excludes drafts', async () => {
+      const { provider, stub } = setup(() => ({ json: emptyPage([ORDER]) }));
+      const page = await provider.listOrders({ limit: 50, customerId: 'cus-uuid-1' });
+      const request = stub.requests[0]!;
+      expect(request.url).toBe(
+        'https://api.polar.sh/v1/orders/?page=1&limit=50&customer_id=cus-uuid-1' +
+          '&status=pending&status=paid&status=refunded&status=partially_refunded&status=void',
+      );
+      expect(request.headers['authorization']).toBe(`Bearer ${TOKEN}`);
+      expect(page.cursor).toBeUndefined();
+      expect(page.items[0]).toMatchObject({
+        id: 'order-uuid-1',
+        status: 'paid',
+        amount: 2900,
+        currency: 'usd',
+        customerId: 'cus-uuid-1',
+        customerEmail: 'user@example.com',
+        subscriptionId: 'sub-uuid-1',
+        createdAt: new Date('2026-08-01T00:00:00Z'),
+        metadata: { organization_id: 'org_1' },
+      });
+      expect(page.items[0]!.refundStatus).toBeUndefined();
+    });
+
+    it('pages via opaque cursors', async () => {
+      const { provider, stub } = setup(() => ({ json: emptyPage([ORDER], 3) }));
+      const first = await provider.listOrders({});
+      expect(first.cursor).toBeDefined();
+      await provider.listOrders({ cursor: first.cursor });
+      expect(stub.requests[1]!.url).toContain('page=2');
+    });
+
+    it('gets a single order', async () => {
+      const { provider, stub } = setup(() => ({ json: ORDER }));
+      const order = await provider.getOrder({ id: 'order-uuid-1' });
+      expect(stub.requests[0]!.url).toBe('https://api.polar.sh/v1/orders/order-uuid-1');
+      expect(order.status).toBe('paid');
+      expect(order.amount).toBe(2900);
+    });
+
+    it('maps the order statuses and derives the refund status', async () => {
+      const { provider } = setup(() => ({
+        json: emptyPage([
+          { ...ORDER, status: 'pending' },
+          { ...ORDER, status: 'refunded', refunded_amount: 2900 },
+          { ...ORDER, status: 'partially_refunded', refunded_amount: 500 },
+          { ...ORDER, status: 'paid', refunded_amount: 500 },
+          { ...ORDER, status: 'void' },
+          // Filtered out server-side; a directly fetched draft still needs a unified status.
+          { ...ORDER, status: 'draft' },
+        ]),
+      }));
+      const page = await provider.listOrders({});
+      expect(page.items.map((item) => item.status)).toEqual([
+        'pending',
+        'refunded',
+        'partially_refunded',
+        'paid',
+        'void',
+        'pending',
+      ]);
+      expect(page.items.map((item) => item.refundStatus)).toEqual([
+        undefined,
+        'full',
+        'partial',
+        'partial',
+        undefined,
+        undefined,
+      ]);
+    });
+
+    it('reads the presigned invoice url on demand', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { url: 'https://polar.sh/invoices/signed.pdf' },
+      }));
+      const url = await provider.getOrderInvoiceUrl({ id: 'order-uuid-1' });
+      expect(stub.requests[0]!.url).toBe('https://api.polar.sh/v1/orders/order-uuid-1/invoice');
+      expect(url).toBe('https://polar.sh/invoices/signed.pdf');
+    });
+
+    it('surfaces a missing invoice as not_found instead of generating one', async () => {
+      const { provider, stub } = setup(() => ({
+        status: 404,
+        json: { error: 'ResourceNotFound', detail: 'Invoice is not generated.' },
+      }));
+      await expectRevenueError(provider.getOrderInvoiceUrl({ id: 'order-uuid-1' }), 'not_found');
+      expect(stub.requests).toHaveLength(1);
+      expect(stub.requests[0]!.method).toBe('GET');
     });
   });
 

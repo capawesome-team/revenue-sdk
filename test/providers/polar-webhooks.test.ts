@@ -126,6 +126,8 @@ describe('polar parseWebhookEvent', () => {
         type: 'order.paid',
         data: {
           id: 'order-1',
+          status: 'paid',
+          created_at: '2026-08-01T00:00:00Z',
           total_amount: 2900,
           currency: 'usd',
           customer_id: 'cus-uuid-1',
@@ -137,10 +139,12 @@ describe('polar parseWebhookEvent', () => {
     expect(event.type).toBe('order.paid');
     expect(event.order).toMatchObject({
       id: 'order-1',
+      status: 'paid',
       amount: 2900,
       currency: 'usd',
       customerId: 'cus-uuid-1',
       subscriptionId: 'sub-uuid-1',
+      createdAt: new Date('2026-08-01T00:00:00Z'),
       metadata: { organization_id: 'org_1' },
     });
   });

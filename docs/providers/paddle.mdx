@@ -131,6 +131,30 @@ Scheduling a cancellation emits `subscription.updated` (carrying `scheduled_chan
 that `transaction.completed` is the single "money received" signal and payments don't fire twice.
 :::
 
+## Orders
+
+A unified `Order` is a **Paddle transaction** — the same entity a unified `Checkout` maps to, read at a
+later point in its life. `orders.list` reads `/transactions` and `orders.get` reads
+`/transactions/{id}`.
+
+- **Only completed transactions are listed.** `draft` and `ready` transactions are abandoned checkouts
+  and Paddle returns them by default, so the SDK sends `status=completed`. Every listed order is
+  therefore `paid`.
+- **Sorted by `billed_at[DESC]`.** Paddle's default order is `id[DESC]`, which is not chronological.
+- **`per_page` is capped at 30** on `/transactions`, unlike every other Paddle collection (200), so
+  `orders.list({ limit })` clamps to 30.
+- **`refundStatus` needs an include.** Refunds are separate Adjustment entities, so both `orders.list`
+  and `orders.get` send `include=adjustments_totals` and compare
+  `adjustments_totals.breakdown.refund` against the order amount — no extra request.
+- **`amount` is `grand_total`**, falling back to `total`. `total` overstates the charge whenever a
+  credit absorbed part of the bill.
+- **`createdAt` is `billed_at`**, falling back to `created_at`.
+- **Invoice URLs live for one hour.** `getInvoiceUrl` calls `GET /transactions/{id}/invoice` with
+  `disposition=inline`, so it is fetched per click and never stored. A transaction that was never
+  billed, or whose total is zero, has no invoice and throws `not_found`.
+
+See [Orders](/docs/concepts/orders) for the model and the cross-provider comparison.
+
 ## Capabilities
 
 | Capability                    | Value                                  |
@@ -141,6 +165,7 @@ that `transaction.completed` is the single "money received" signal and payments 
 | `endTrial`                    | `true`                                 |
 | `hostedCheckout`              | `false`                                |
 | `licenseKeys`                 | `false`                                |
+| `listOrdersByCustomer`        | `true`                                 |
 | `listSubscriptionsByCustomer` | `true`                                 |
 | `pause`                       | `true`                                 |
 | `pauseBehaviors`              | `['immediately', 'period_end']`        |

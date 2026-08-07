@@ -120,6 +120,7 @@ describe('paddle parseWebhookEvent', () => {
           subscription_id: 'sub_1',
           currency_code: 'USD',
           custom_data: { org_id: 'org_1' },
+          billed_at: '2026-08-02T00:00:00Z',
           details: { totals: { total: '2499', grand_total: '2499' } },
         },
       }),
@@ -127,10 +128,12 @@ describe('paddle parseWebhookEvent', () => {
     expect(event.type).toBe('order.paid');
     expect(event.order).toMatchObject({
       id: 'txn_1',
+      status: 'paid',
       amount: 2499,
       currency: 'usd',
       customerId: 'ctm_1',
       subscriptionId: 'sub_1',
+      createdAt: new Date('2026-08-02T00:00:00Z'),
       metadata: { org_id: 'org_1' },
     });
   });

@@ -3,6 +3,7 @@ export { createInMemoryProvider } from './providers/testing/index.ts';
 export type {
   InMemoryCustomerSeed,
   InMemoryLicenseKeySeed,
+  InMemoryOrderSeed,
   InMemoryPriceSeed,
   InMemoryProductSeed,
   InMemoryProvider,
