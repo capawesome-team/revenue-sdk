@@ -59,6 +59,12 @@ interface PolarWebhookEnvelope {
   data?: unknown;
 }
 
+/** The license-keys member of Polar's 8-way `BenefitGrantWebhook` union, narrowed to what is read. */
+interface PolarBenefitGrant {
+  benefit?: { type?: string };
+  properties?: { license_key_id?: string };
+}
+
 /**
  * Parses a Polar webhook into a normalized event. Does NOT verify the signature — call
  * `verifyWebhook` first.
@@ -120,6 +126,20 @@ export async function parseWebhookEvent(input: WebhookInput): Promise<WebhookEve
         return { type: 'checkout.completed', providerType, checkout, raw: envelope };
       }
       return { type: 'unknown', providerType, checkout, raw: envelope };
+    }
+    // Polar has no license webhook — license keys are delivered as a benefit grant, so this is
+    // the only normalized type that depends on inspecting the payload rather than the event
+    // string: `benefit.type` is a per-benefit const in Polar's schema, and every other benefit
+    // type (Discord, downloadables, meter credits, ...) falls through to `unknown`.
+    case 'benefit_grant.created': {
+      const grant = envelope.data as PolarBenefitGrant;
+      const licenseKeyId = grant.properties?.license_key_id;
+      if (grant.benefit?.type !== 'license_keys' || !licenseKeyId) {
+        return { type: 'unknown', providerType, raw: envelope };
+      }
+      // No `licenseKey`: the grant carries only `display_key`, a masked form that must never be
+      // presented as the key. Fetch the plaintext key with `licenseKeys.get`.
+      return { type: 'license.issued', providerType, licenseKeyId, raw: envelope };
     }
     default:
       return { type: 'unknown', providerType, raw: envelope };

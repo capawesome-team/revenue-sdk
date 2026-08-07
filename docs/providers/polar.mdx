@@ -84,7 +84,7 @@ used **verbatim, including its `whsec_` prefix** — do not strip or base64-deco
 
 Events worth subscribing to: `subscription.created`, `subscription.updated`, `subscription.active`,
 `subscription.canceled`, `subscription.uncanceled`, `subscription.revoked`, `subscription.cycled`,
-`order.paid`, `checkout.updated`.
+`order.paid`, `checkout.updated`, and — if you sell license keys — `benefit_grant.created`.
 
 :::warning
 Polar emits `subscription.canceled` when a cancellation is merely **scheduled**; the terminal event is

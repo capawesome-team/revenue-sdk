@@ -128,6 +128,37 @@ describe('dodo-payments parseWebhookEvent', () => {
     });
   });
 
+  it('maps license_key.created to license.issued with the plaintext key', async () => {
+    const event = await parseWebhookEvent({
+      headers: {},
+      body: JSON.stringify({
+        business_id: 'bus_1',
+        type: 'license_key.created',
+        data: {
+          payload_type: 'LicenseKey',
+          id: 'lic_1',
+          key: 'ABCD-1234-EFGH-5678',
+          status: 'active',
+          activations_limit: 5,
+          instances_count: 0,
+          customer_id: 'cus_1',
+          product_id: 'prod_1',
+        },
+      }),
+    });
+    expect(event.type).toBe('license.issued');
+    expect(event.providerType).toBe('license_key.created');
+    expect(event.licenseKeyId).toBe('lic_1');
+    expect(event.licenseKey).toMatchObject({
+      id: 'lic_1',
+      key: 'ABCD-1234-EFGH-5678',
+      status: 'active',
+      activationLimit: 5,
+      customerId: 'cus_1',
+      productId: 'prod_1',
+    });
+  });
+
   it('never throws on unknown event types', async () => {
     const event = await parseWebhookEvent({
       headers: {},

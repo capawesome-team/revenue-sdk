@@ -384,6 +384,115 @@ surfaces as `valid: false`. The derivation only ever shows up on merchant reads.
 
 When both are available, branch on `valid` — it is the provider's answer, not a local guess.
 
+## Getting notified
+
+One license event is normalized: **`license.issued`**, emitted when a provider hands a key to a
+customer.
+
+| Provider          | Provider event                                                           | `licenseKeyId` | `licenseKey`                    |
+| ----------------- | ------------------------------------------------------------------------ | -------------- | ------------------------------- |
+| **Polar**         | `benefit_grant.created`, only when `data.benefit.type` is `license_keys` | set            | — (only a masked `display_key`) |
+| **Lemon Squeezy** | `license_key_created`                                                    | set            | set, with the key itself        |
+| **Stripe**        | —                                                                        | —              | —                               |
+| **Paddle**        | —                                                                        | —              | —                               |
+| **Dodo Payments** | `license_key.created`                                                    | set            | set, with the key itself        |
+
+Two fields rather than one, on purpose. `licenseKeyId` is the uniform access path — it is set on every
+`license.issued` event, on every provider that emits one — while `licenseKey` carries the full record
+only where the provider actually sends it. That makes the follow-up fetch explicit instead of silently
+handing you a masked key:
+
+```ts
+const event = await parseWebhookEvent({ headers, body });
+
+if (event.type === 'license.issued') {
+  // Set everywhere except Polar, whose grant carries only a masked display_key.
+  const licenseKey = event.licenseKey ?? (await client.licenseKeys.get({ id: event.licenseKeyId! }));
+  await emailTheKey(licenseKey.key);
+}
+```
+
+:::warning
+**Polar has no license webhook.** A key is delivered as a *benefit grant*, which makes `license.issued`
+the one normalized event type the SDK derives from the payload rather than the provider's event string.
+A `benefit_grant.created` for a Discord, downloadable, or meter-credit benefit stays `unknown`.
+:::
+
+On Lemon Squeezy the mapped `licenseKey` carries no `productId`, for the reason described in the model
+above: LS's `product_id` names the Lemon Squeezy *product*, while the unified `Product` is a *variant*.
+Dodo Payments' does.
+
+### Why revocation is not an event
+
+Because only one provider actually reports it:
+
+- **Polar** has `benefit_grant.revoked` — a direct signal — plus `benefit_grant.updated` and
+  `benefit_grant.cycled`.
+- **Lemon Squeezy** has only a generic `license_key_updated`. A revocation would have to be *inferred*
+  by diffing `status` against what you stored.
+- **Dodo Payments** has no revocation or update event at all. `license_key.created` is its only license
+  event.
+
+One direct signal, one inference, one absence. Mapping the Lemon Squeezy update to `license.revoked`
+would report a revocation that may not have happened, and keeping it honest would mean adding a
+`license.updated` event that exists on exactly one provider. Neither is a normalization.
+
+### Enforce with `validateLicenseKey`, not with a webhook
+
+All three providers reject revoked, disabled, and expired keys **server-side** on validate — Polar's own
+service raises `ResourceNotFound` for all three — so the shipped app sees `valid: false` on its next
+check without any event being involved.
+
+That is also the only thing that reaches the machine you need to stop. A webhook notifies *your server*;
+it does not reach the customer's laptop, and it has nothing to say about a copy that was offline while
+the revocation happened and reconnects a week later. Validation covers both.
+
+```ts
+import { validateLicenseKey } from 'revenue-sdk/polar';
+
+// The same check as the desktop flow above, read as a tier decision: a revoked,
+// disabled, or expired key answers valid: false, so the app downgrades itself on
+// the first start after the revocation.
+export async function currentTier(): Promise<'pro' | 'free'> {
+  const stored = await settings.get();
+  if (!stored) {
+    return 'free';
+  }
+  const { valid } = await validateLicenseKey({
+    key: stored.key,
+    organizationId: ORGANIZATION_ID,
+    activationId: stored.activationId,
+    signal: AbortSignal.timeout(5_000),
+  });
+  return valid ? 'pro' : 'free';
+}
+```
+
+A start with no network throws `network_error` rather than returning `valid: false`, which is what makes
+the cached grace period suggested above implementable: only a real verdict downgrades the customer.
+
+### For bookkeeping, use the subscription events
+
+When a key is tied to a subscription — the usual case on all three providers — the *cause* of a
+revocation is the subscription ending. Those events are already normalized across **all five** providers,
+including Dodo Payments, where no license webhook exists at all:
+
+```ts
+switch (event.type) {
+  case 'subscription.canceled':
+    // Terminal: the subscription is over, so the keys it issued are done too.
+    await markLicensesRevoked(event.subscription!.customerId);
+    break;
+  case 'subscription.updated':
+    if (event.subscription!.cancelAtPeriodEnd) {
+      await scheduleRevocationNotice(event.subscription!);
+    }
+    break;
+}
+```
+
+Your database learns why access ended; the app learns *that* it ended from its next validate call.
+
 ## Provider support
 
 Gated by the `licenseKeys` capability:
@@ -454,8 +563,8 @@ The two surfaces above are the whole feature. Deliberately absent:
   Payments entitlement. All are dashboard settings.
 - **Polar's usage metering on keys** (`increment_usage`, `conditions`, `limit_usage`), which no other
   provider has.
-- **License-key webhook events.** `WebhookEvent` stays on the checkout, order, and subscription set —
-  see [Webhooks](/docs/concepts/webhooks).
+- **Revocation and update webhook events.** Only issuance is normalized, as `license.issued` — see
+  [Getting notified](#getting-notified).
 
 <CardGroup cols={2}>
   <Card title="Next: Customers & portal" icon="users" href="/docs/concepts/customers-and-portal">

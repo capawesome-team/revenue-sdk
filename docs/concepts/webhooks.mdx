@@ -108,6 +108,7 @@ type WebhookEventType =
   | 'subscription.canceled'
   | 'order.paid'
   | 'checkout.completed'
+  | 'license.issued'
   | 'unknown';
 ```
 
@@ -118,6 +119,8 @@ type WebhookEventType =
     subscription: { type: 'Subscription', required: false, description: 'Set on subscription.* events.' },
     order: { type: 'Order', required: false, description: 'Set on order.paid.' },
     checkout: { type: 'Checkout', required: false, description: 'Set on checkout.completed (and on not-yet-complete checkout events, which report unknown).' },
+    licenseKeyId: { type: 'string', required: false, description: 'Which key a license.issued event refers to. Always set on that event, even when licenseKey is not.' },
+    licenseKey: { type: 'LicenseKey', required: false, description: 'The issued key. Absent on Polar, which sends only a masked form — fetch it with licenseKeys.get.' },
     raw: { type: 'unknown', description: 'The untouched provider envelope.' },
   }}
 />
@@ -134,6 +137,10 @@ type WebhookEventType =
   emit an order.
 - **`checkout.completed`** — a checkout was paid. Only Polar and Stripe expose a checkout event the SDK
   can confirm as paid.
+- **`license.issued`** — a license key was issued to a customer. Polar, Lemon Squeezy, and Dodo Payments
+  only; `licenseKeyId` is always set, `licenseKey` only where the provider sends the key itself. Nothing
+  else about a key's lifetime is normalized — see
+  [License keys](/docs/concepts/license-keys#getting-notified).
 - **`unknown`** — everything else. Never an error.
 
 :::warning
@@ -163,6 +170,9 @@ switch (event.type) {
     break;
   case 'checkout.completed':
     await fulfill(event.checkout!);
+    break;
+  case 'license.issued':
+    await recordLicenseKey(event.licenseKeyId!, event.licenseKey);
     break;
   default:
     // 'unknown' — log providerType and move on.

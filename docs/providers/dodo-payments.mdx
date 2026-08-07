@@ -72,7 +72,8 @@ its own secret to its own `verifyWebhook`.
 
 Events worth subscribing to: `subscription.active`, `subscription.updated`, `subscription.renewed`,
 `subscription.plan_changed`, `subscription.on_hold`, `subscription.paused`, `subscription.cancelled`,
-`subscription.expired`, `subscription.failed`, `payment.succeeded`.
+`subscription.expired`, `subscription.failed`, `payment.succeeded`, and — if you sell license keys —
+`license_key.created`.
 
 :::note
 Dodo Payments has **no `subscription.created` event**. The first signal for a new subscription is

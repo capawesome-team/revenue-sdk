@@ -186,6 +186,7 @@ export type ProrationBehavior = 'invoice_now' | 'none' | 'prorate';
 
 export type WebhookEventType =
   | 'checkout.completed'
+  | 'license.issued'
   | 'order.paid'
   | 'subscription.canceled'
   | 'subscription.created'
@@ -200,6 +201,10 @@ export interface WebhookEvent {
   subscription?: Subscription;
   order?: Order;
   checkout?: Checkout;
+  /** Which key a `license.issued` event refers to. Always set on that event, even when `licenseKey` is not. */
+  licenseKeyId?: string;
+  /** The issued key. Absent on Polar, which sends only a masked form — fetch it with `licenseKeys.get`. */
+  licenseKey?: LicenseKey;
   raw: unknown;
 }
 

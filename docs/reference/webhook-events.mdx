@@ -17,6 +17,7 @@ type WebhookEventType =
   | 'subscription.canceled'
   | 'order.paid'
   | 'checkout.completed'
+  | 'license.issued'
   | 'unknown';
 ```
 
@@ -76,6 +77,20 @@ on an unrecognized type.
 | **Paddle**        | — (use `transaction.completed` → `order.paid`)                                         |
 | **Dodo Payments** | — (use `payment.succeeded` → `order.paid`)                                             |
 
+### `license.issued`
+
+| Provider          | Provider event                                                                |
+| ----------------- | ----------------------------------------------------------------------------- |
+| **Polar**         | `benefit_grant.created` — **only** when `data.benefit.type` is `license_keys` |
+| **Lemon Squeezy** | `license_key_created`                                                         |
+| **Stripe**        | — (no license-key API)                                                        |
+| **Paddle**        | — (no license-key API)                                                        |
+| **Dodo Payments** | `license_key.created`                                                         |
+
+Issuance is the only normalized license event. Revocation and updates are not mapped — the three
+providers disagree too much to normalize; [License keys](/docs/concepts/license-keys#getting-notified)
+explains why and what to do instead.
+
 ## The traps this table encodes
 
 :::warning
@@ -112,6 +127,17 @@ On Paddle, `transaction.paid` is deliberately left unmapped so `transaction.comp
 "money received" signal and payments don't fire twice.
 :::
 
+:::warning
+**Polar has no license webhook.** A key is delivered as a *benefit grant*, so `license.issued` is the one
+normalized type that depends on inspecting the payload rather than the provider's event string: a
+`benefit_grant.created` maps to `license.issued` only when `data.benefit.type` is `license_keys`, and the
+same event for a Discord, downloadable or meter-credit benefit stays `unknown`.
+
+The grant also carries only `display_key`, a **masked** form of the key, so `event.licenseKey` is left
+`undefined` on Polar. Use `event.licenseKeyId` — always set on this event — with
+`client.licenseKeys.get` to read the real key.
+:::
+
 ## Which model each event carries
 
 | Normalized event         | Populated field  |
@@ -121,6 +147,7 @@ On Paddle, `transaction.paid` is deliberately left unmapped so `transaction.comp
 | `subscription.canceled`  | `subscription`   |
 | `order.paid`             | `order`          |
 | `checkout.completed`     | `checkout`       |
+| `license.issued`         | `licenseKeyId` always; `licenseKey` on Lemon Squeezy and Dodo Payments, never on Polar |
 | `unknown`                | `checkout` for a not-yet-complete Polar/Stripe checkout event; otherwise nothing but `raw` |
 
 ## Signature schemes

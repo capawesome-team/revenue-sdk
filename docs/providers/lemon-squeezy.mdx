@@ -69,7 +69,7 @@ There is **no timestamp**, so there is no replay window to enforce — de-duplic
 
 Events worth subscribing to: `subscription_created`, `subscription_updated`, `subscription_cancelled`,
 `subscription_resumed`, `subscription_paused`, `subscription_unpaused`, `subscription_expired`,
-`order_created`, `subscription_payment_success`.
+`order_created`, `subscription_payment_success`, and — if you sell license keys — `license_key_created`.
 
 :::note
 Checkout custom data arrives **only** in `meta.custom_data` on the webhook envelope, never on the
