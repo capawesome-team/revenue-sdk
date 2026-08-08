@@ -316,8 +316,9 @@ if (event.type === 'order.paid') {
 }
 ```
 
-The event covers **renewals too**, and on Lemon Squeezy it maps from both `order_created` and
-`subscription_payment_success` for exactly the reason described above. See
+The event covers **renewals too**, and fires **once per payment**: on Lemon Squeezy it maps from both
+`order_created` and `subscription_payment_success`, dropping the `initial` invoice for exactly the
+reason described above — so webhooks and `orders.list` agree on which ID a payment has. See
 [Webhooks](/docs/concepts/webhooks) and
 [the webhook events reference](/docs/reference/webhook-events).
 

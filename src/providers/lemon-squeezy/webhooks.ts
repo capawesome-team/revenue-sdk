@@ -120,10 +120,18 @@ export async function parseWebhookEvent(input: WebhookInput): Promise<WebhookEve
   // Renewal payments never emit order_created; the invoice-carrying payment event is the
   // uniform "money received" signal.
   if (providerType === 'subscription_payment_success') {
+    const invoice = envelope.data as LsResource<LsSubscriptionInvoiceAttributes>;
+    // The FIRST subscription payment raises BOTH `order_created` and this event — the same money
+    // under two IDs in two ID spaces — so the initial invoice is dropped here to keep `order.paid`
+    // firing exactly once per payment. `listOrders` filters the same `billing_reason`, and the
+    // order ID space is the one that survives in both places.
+    if (invoice.attributes.billing_reason === 'initial') {
+      return { ...base, type: 'unknown' };
+    }
     return {
       ...base,
       type: 'order.paid',
-      order: toOrderFromInvoice(envelope.data as LsResource<LsSubscriptionInvoiceAttributes>),
+      order: toOrderFromInvoice(invoice, metadata),
     };
   }
   if (providerType === 'license_key_created') {

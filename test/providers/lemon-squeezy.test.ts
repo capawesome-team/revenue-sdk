@@ -63,6 +63,15 @@ const PAYPAL_SUBSCRIPTION = {
   attributes: { ...SUBSCRIPTION.attributes, payment_processor: 'paypal' },
 };
 
+const TRIALING_SUBSCRIPTION = {
+  ...SUBSCRIPTION,
+  attributes: {
+    ...SUBSCRIPTION.attributes,
+    status: 'on_trial',
+    trial_ends_at: '2026-08-15T00:00:00.000000Z',
+  },
+};
+
 const PAUSED_SUBSCRIPTION = {
   ...SUBSCRIPTION,
   attributes: {
@@ -122,6 +131,8 @@ describe('lemonSqueezy', () => {
       const listRequest = stub.requests[0]!;
       expect(listRequest.url).toContain('/v1/variants?');
       expect(listRequest.url).toContain('page%5Bnumber%5D=1');
+      // Draft and pending variants cannot be bought.
+      expect(listRequest.url).toContain('filter%5Bstatus%5D=published');
       expect(listRequest.headers['accept']).toBe('application/vnd.api+json');
       expect(listRequest.headers['content-type']).toBe('application/vnd.api+json');
       expect(listRequest.headers['authorization']).toBe(`Bearer ${API_KEY}`);
@@ -438,12 +449,29 @@ describe('lemonSqueezy', () => {
       });
     });
 
-    it('ends a trial by resetting the billing anchor', async () => {
-      const { provider, stub } = setup(() => ({ json: { data: SUBSCRIPTION } }));
+    it('ends a trial by resetting the billing anchor, the only documented lever', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: TRIALING_SUBSCRIPTION } }));
       await provider.endSubscriptionTrial({ id: '42' });
-      expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
-        data: { type: 'subscriptions', id: '42', attributes: { billing_anchor: null } },
-      });
+      const preflight = stub.requests[0]!;
+      expect(preflight.method).toBe('GET');
+      expect(preflight.url).toBe('https://api.lemonsqueezy.com/v1/subscriptions/42');
+      const patch = stub.requests[1]!;
+      expect(patch.method).toBe('PATCH');
+      const attributes = JSON.parse(patch.body!).data.attributes;
+      // `null` must reach the API — a dropped key would leave the trial running.
+      expect('billing_anchor' in attributes).toBe(true);
+      expect(attributes.billing_anchor).toBeNull();
+      // Lemon Squeezy describes `trial_ends_at` as adjusting a trial's duration and documents
+      // nothing for past or present values, so it is deliberately not sent.
+      expect('trial_ends_at' in attributes).toBe(false);
+    });
+
+    it('refuses to end a trial on a subscription that is not trialing', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: SUBSCRIPTION } }));
+      // The anchor reset is unconditional upstream, so the PATCH would move the billing day.
+      await expectRevenueError(provider.endSubscriptionTrial({ id: '42' }), 'validation');
+      expect(stub.requests).toHaveLength(1);
+      expect(stub.requests[0]!.method).toBe('GET');
     });
 
     it('pauses immediately in void mode without a resume date', async () => {
@@ -517,8 +545,17 @@ describe('lemonSqueezy', () => {
       await expectRevenueError(provider.uncancelSubscription({ id: '42' }), 'unsupported');
       await expectRevenueError(provider.pauseSubscription({ id: '42' }), 'unsupported');
       await expectRevenueError(provider.resumeSubscription({ id: '42' }), 'unsupported');
-      await expectRevenueError(provider.endSubscriptionTrial({ id: '42' }), 'unsupported');
       await expect(provider.pauseSubscription({ id: '42' })).rejects.toThrow(/PayPal/);
+      // endTrial reads the subscription first, so its fixture has to be trialing to get that far.
+      const { provider: trialing } = setup(() => ({
+        json: {
+          data: {
+            ...PAYPAL_SUBSCRIPTION,
+            attributes: { ...TRIALING_SUBSCRIPTION.attributes, payment_processor: 'paypal' },
+          },
+        },
+      }));
+      await expectRevenueError(trialing.endSubscriptionTrial({ id: '42' }), 'unsupported');
     });
 
     it('still cancels a PayPal subscription via DELETE', async () => {

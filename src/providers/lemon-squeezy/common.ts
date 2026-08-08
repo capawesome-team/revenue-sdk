@@ -373,7 +373,10 @@ export function toOrderFromOrder(
   };
 }
 
-export function toOrderFromInvoice(resource: LsResource<LsSubscriptionInvoiceAttributes>): Order {
+export function toOrderFromInvoice(
+  resource: LsResource<LsSubscriptionInvoiceAttributes>,
+  metadata?: Metadata,
+): Order {
   const attributes = resource.attributes;
   return {
     id: String(resource.id),
@@ -391,6 +394,7 @@ export function toOrderFromInvoice(resource: LsResource<LsSubscriptionInvoiceAtt
         : String(attributes.subscription_id),
     createdAt: toDate(attributes.created_at),
     refundStatus: toRefundStatus(attributes.status, attributes.refunded_amount, attributes.total),
+    metadata,
     raw: resource,
   };
 }

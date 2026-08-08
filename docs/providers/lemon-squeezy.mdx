@@ -89,6 +89,13 @@ Subscription, so it normalizes to `unknown`.
 :::
 
 :::note
+**The first subscription payment fires `order.paid` once, not twice.** Lemon Squeezy raises both
+`order_created` and `subscription_payment_success` for it — the same money under two IDs. The SDK maps
+the order and leaves the invoice half (`billing_reason: 'initial'`) as `unknown`, which is the same
+filter `orders.list` applies, so both paths report that payment under its **order** ID.
+:::
+
+:::note
 **Lemon Squeezy publishes no event ID** — not in the headers, not in the body — so
 `event.idempotencyKey` is `lemon-squeezy:sha256:<hex of the raw body>`. It is stable across retries of
 the same delivery, which is what dedupe needs. It also sends no event timestamp, so `event.createdAt`
@@ -217,6 +224,11 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   `priceId` are always strings.
 - **The current price comes from `price-model`.** `/v1/prices?filter[variant_id]=…` is an append-only
   price *history*; the SDK reads the variant's `price-model` relationship instead.
+- **`products.list` returns published variants from *every* store the key can reach.** The SDK sends
+  `filter[status]=published` so draft and pending variants stay out, but `/v1/variants` offers **no
+  store filter** upstream — unlike customers, subscriptions, orders, and license keys, this one
+  collection ignores the factory's `storeId`. On an account with several stores, filter the results on
+  `raw.attributes.product_id` (or call `products.get` with the variant IDs you already know).
 - **JSON:API content type on every request**, including GETs (`application/vnd.api+json`).
 - **Empty objects serialize as `[]`.** Lemon Squeezy returns `[]` where an empty object is expected
   (`custom`, `billing_address`); the mappers tolerate it.
@@ -225,6 +237,15 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   supported (via `variant_quantities`).
 - **No cancellation reasons**, and **no immediate revoke** — `subscriptions.cancel` always runs to the
   end of the period. `subscriptions.revoke` throws `unsupported`.
+- **`endTrial` resets the billing anchor, so the SDK refuses it unless the subscription is trialing.**
+  Lemon Squeezy has no "end trial" operation. The one documented lever is `billing_anchor: null`, which
+  "reset[s] the billing anchor to the current date. Doing this will also remove an active trial." The
+  reset is unconditional: on a subscription that is *not* on trial the call still succeeds and silently
+  moves the customer's billing day to today, with a proration. So `subscriptions.endTrial` reads the
+  subscription first and throws `RevenueError { code: 'validation' }` when its status is not `on_trial`,
+  without sending the `PATCH`. (`trial_ends_at` is writable, but Lemon Squeezy documents it only as
+  adjusting a trial's *duration* and says nothing about past or present values, so the SDK does not rely
+  on it.)
 - **Cannot filter subscriptions by customer.** `subscriptions.list({ customerId })` throws
   `unsupported`; Lemon Squeezy filters by store, product, variant, or email.
 - **`cancelled` is not terminal.** It means "grace period until `ends_at`, still resumable", so it maps

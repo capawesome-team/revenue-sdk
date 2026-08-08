@@ -139,11 +139,12 @@ time and moves on every retry. Lemon Squeezy sends neither, so it is `undefined`
 - **`subscription.updated`** — anything changed: activation, renewal, plan change, pause, resume,
   past-due, **and a scheduled cancellation**. This is the workhorse.
 - **`subscription.canceled`** — **terminal only**. The subscription has actually ended.
-- **`order.paid`** — money was received, **including renewals**. On Lemon Squeezy this covers both
-  `order_created` (first payment) and `subscription_payment_success` (renewals), since renewals never
-  emit an order. The attached `Order` carries `status`, `createdAt`, and `refundStatus`, and its `id`
-  is the same identifier `client.orders.get` takes — see [Orders](/docs/concepts/orders) for reading
-  history back.
+- **`order.paid`** — money was received, **including renewals**. It fires **once per payment**: on Lemon
+  Squeezy it covers both `order_created` (first payment) and `subscription_payment_success` (renewals),
+  since renewals never emit an order — but the *first* subscription payment raises both, so the invoice
+  half of it (`billing_reason: 'initial'`) stays `unknown`. The attached `Order` carries `status`,
+  `createdAt`, and `refundStatus`, and its `id` is the same identifier `client.orders.get` takes — see
+  [Orders](/docs/concepts/orders) for reading history back.
 - **`checkout.completed`** — a checkout was paid. Only Polar and Stripe expose a checkout event the SDK
   can confirm as paid.
 - **`license.issued`** — a license key was issued to a customer. Polar, Lemon Squeezy, and Dodo Payments

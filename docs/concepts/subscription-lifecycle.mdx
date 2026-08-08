@@ -277,6 +277,14 @@ const subscription = await client.subscriptions.endTrial({ id: 'SUBSCRIPTION_ID'
 Bills the customer immediately and starts the paid cycle. **Dodo Payments** has no such operation and
 throws `unsupported`.
 
+:::note
+**On Lemon Squeezy, this only works while the subscription is actually trialing.** Lemon Squeezy has no
+end-trial endpoint; the SDK resets the billing anchor, which removes an active trial but also moves the
+billing day to today — unconditionally, so on a non-trialing subscription that reset would still happen.
+The SDK therefore reads the subscription first and throws `validation` instead of sending the reset —
+see [Lemon Squeezy](/docs/providers/lemon-squeezy#quirks).
+:::
+
 ### Pause
 
 ```ts

@@ -194,35 +194,47 @@ describe('lemon-squeezy parseWebhookEvent', () => {
     expect(event.createdAt).toBeUndefined();
   });
 
-  it('maps subscription_payment_success (an invoice payload) to order.paid', async () => {
-    const event = await parseWebhookEvent({
-      headers: {},
-      body: JSON.stringify({
-        meta: { event_name: 'subscription_payment_success' },
-        data: {
-          type: 'subscription-invoices',
-          id: '77',
-          attributes: {
-            subscription_id: 42,
-            customer_id: 7,
-            user_email: 'user@example.com',
-            currency: 'USD',
-            total: 2900,
-            status: 'paid',
-            billing_reason: 'renewal',
-          },
+  function paymentSuccessBody(billingReason: string) {
+    return JSON.stringify({
+      meta: {
+        event_name: 'subscription_payment_success',
+        custom_data: { organization_id: 'org_1' },
+      },
+      data: {
+        type: 'subscription-invoices',
+        id: '77',
+        attributes: {
+          subscription_id: 42,
+          customer_id: 7,
+          user_email: 'user@example.com',
+          currency: 'USD',
+          total: 2900,
+          status: 'paid',
+          billing_reason: billingReason,
         },
-      }),
+      },
     });
+  }
+
+  it('maps subscription_payment_success (an invoice payload) to order.paid', async () => {
+    const event = await parseWebhookEvent({ headers: {}, body: paymentSuccessBody('renewal') });
     expect(event.type).toBe('order.paid');
     expect(event.order).toMatchObject({
       id: '77',
       status: 'paid',
       subscriptionId: '42',
       amount: 2900,
+      metadata: { organization_id: 'org_1' },
     });
     expect(event.idempotencyKey).toMatch(DIGEST_KEY);
     expect(event.createdAt).toBeUndefined();
+  });
+
+  it('leaves the initial invoice unmapped so the first payment only fires order_created', async () => {
+    const event = await parseWebhookEvent({ headers: {}, body: paymentSuccessBody('initial') });
+    expect(event.type).toBe('unknown');
+    expect(event.providerType).toBe('subscription_payment_success');
+    expect(event.idempotencyKey).toMatch(DIGEST_KEY);
   });
 
   it('maps license_key_created to license.issued with the plaintext key', async () => {

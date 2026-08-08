@@ -171,6 +171,14 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     }
   }
 
+  async function fetchSubscription(id: string, signal: AbortSignal | undefined) {
+    const { data } = await http.json<LsSingleResponse<LsSubscriptionAttributes>>(
+      `/v1/subscriptions/${id}`,
+      { signal },
+    );
+    return data.data;
+  }
+
   async function patchSubscription(
     id: string,
     attributes: Record<string, unknown>,
@@ -225,7 +233,10 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     async listProducts(params) {
       const { page, query } = pageQuery(params.cursor, params.limit);
       const { data } = await http.json<LsListResponse<LsVariantAttributes>>('/v1/variants', {
-        query,
+        // Draft and pending variants cannot be bought, so only published ones are listed.
+        // `/v1/variants` takes no store filter, so a multi-store API key lists every store's
+        // variants — there is no upstream way to narrow this.
+        query: { ...query, 'filter[status]': 'published' },
         signal: params.signal,
       });
       const items: Product[] = [];
@@ -315,11 +326,7 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     },
 
     async getSubscription(params) {
-      const { data } = await http.json<LsSingleResponse<LsSubscriptionAttributes>>(
-        `/v1/subscriptions/${params.id}`,
-        { signal: params.signal },
-      );
-      return toSubscription(data.data);
+      return toSubscription(await fetchSubscription(params.id, params.signal));
     },
 
     async listSubscriptions(params) {
@@ -377,7 +384,21 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     },
 
     async endSubscriptionTrial(params) {
-      // `billing_anchor: null` resets the anchor to today and removes an active trial.
+      // Lemon Squeezy documents `billing_anchor: null` as "reset the billing anchor to the current
+      // date. Doing this will also remove an active trial." — the only upstream lever that ends a
+      // trial. The reset is unconditional, so on a subscription that is NOT on trial the same call
+      // succeeds and silently moves the customer's billing day to today (with a proration). Hence
+      // the preflight read: the operation is refused unless the subscription is really trialing.
+      // (`trial_ends_at` is writable too, but upstream only describes it as adjusting a trial's
+      // DURATION and documents nothing about past or present values, so it is not used here.)
+      const subscription = await fetchSubscription(params.id, params.signal);
+      if (subscription.attributes.status !== 'on_trial') {
+        throw new RevenueError(
+          'This subscription is not on trial; ending a trial resets the Lemon Squeezy billing ' +
+            "anchor, which would move the customer's billing day to today",
+          { code: 'validation', provider: 'lemon-squeezy' },
+        );
+      }
       return patchSubscription(params.id, { billing_anchor: null }, params.signal);
     },
 
@@ -470,7 +491,7 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
         // Filtering can leave a page short or even empty; it is never backfilled.
         items: data.data
           .filter((invoice) => invoice.attributes.billing_reason !== 'initial')
-          .map(toOrderFromInvoice),
+          .map((invoice) => toOrderFromInvoice(invoice)),
         cursor:
           state.page < lastPage
             ? encodeCursor<OrderCursorState>('lemon-squeezy', {
