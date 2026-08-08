@@ -44,6 +44,9 @@ function createHttpClient(params: DodoPaymentsLicenseKeyParams): HttpClient {
     // here. Dodo rate-limits them tightly: roughly 20 requests per second and 100 per minute.
     authHeaders: () => ({}),
     mapError,
+    // The key is the credential on these routes and travels in the body, while `mapError` forwards
+    // Dodo's own message verbatim — so an echoed key must be redacted before it reaches a log.
+    secrets: () => [params.key],
   });
 }
 

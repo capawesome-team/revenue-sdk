@@ -113,6 +113,26 @@ describe('dodo-payments activateLicenseKey', () => {
       expect((error as RevenueError).message).toBe('NOT_FOUND: License key not found');
     }
   });
+
+  it('redacts the license key from a message that echoes it', async () => {
+    const stub = setup(() => ({
+      status: 404,
+      json: { code: 'NOT_FOUND', message: `License key ${KEY} not found` },
+    }));
+    try {
+      await activateLicenseKey({ key: KEY, label: 'Device', fetch: stub.fetch });
+      expect.unreachable('expected RevenueError');
+    } catch (error) {
+      const revenueError = error as RevenueError;
+      // Dodo's `mapError` forwards the provider message verbatim.
+      expect(revenueError.message).toBe('NOT_FOUND: License key [redacted] not found');
+      expect(JSON.stringify(revenueError)).not.toContain(KEY);
+      // Still reachable for a caller who deliberately asks for it.
+      expect(revenueError.responseBody).toMatchObject({
+        message: `License key ${KEY} not found`,
+      });
+    }
+  });
 });
 
 describe('dodo-payments deactivateLicenseKey', () => {
