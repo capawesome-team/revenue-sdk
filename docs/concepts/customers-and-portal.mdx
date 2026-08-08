@@ -1,12 +1,22 @@
 ---
 title: Customers & portal
-description: Create, update and look up customers, understand the per-provider email-filter and metadata caveats, and mint short-lived customer portal sessions.
+description: Create, update and look up customers with the unified API, and mint short-lived provider-hosted customer portal sessions on demand.
 sidebar:
   label: Customers & portal
 ---
 
 Customers are the provider-side identity a subscription belongs to. `revenue-sdk` normalizes them into
 one shape and gives you a single call for the provider's self-service billing portal.
+
+```ts
+const customer = await client.customers.get({ id: 'CUSTOMER_ID' });
+
+// The provider-hosted page where a customer updates payment details, reads
+// invoices, and cancels. Mint the link when the customer clicks — it expires.
+const session = await client.customerPortal.createSession({ customerId: customer.id });
+
+redirect(session.url);
+```
 
 ## The Customer model
 
@@ -24,8 +34,6 @@ one shape and gives you a single call for the provider's self-service billing po
 ## Reading customers
 
 ```ts
-const customer = await client.customers.get({ id: 'CUSTOMER_ID' });
-
 const { items, cursor } = await client.customers.list({ limit: 50 });
 
 for await (const entry of client.customers.listAll()) {
@@ -33,33 +41,12 @@ for await (const entry of client.customers.listAll()) {
 }
 ```
 
-## The email filter and its caveats
+### The email filter
 
-`customers.list` accepts an **exact-match** `email` filter:
-
-```ts
-const { items } = await client.customers.list({ email: 'ada@example.com' });
-const customer = items[0];
-```
-
-It is supported by all five providers, but it does not behave identically:
-
-| Provider          | Caveat                                                                                       |
-| ----------------- | --------------------------------------------------------------------------------------------- |
-| **Polar**         | Exact match on the organization's customers.                                                  |
-| **Lemon Squeezy** | Always **scoped to the store** configured in the factory (`storeId`). Customers in your other stores are invisible. |
-| **Stripe**        | **Case-sensitive**, and emails are **not unique** — several customers can share one address.   |
-| **Paddle**        | Exact match.                                                                                  |
-| **Dodo Payments** | Exact match.                                                                                  |
-
-:::warning
-Never treat "email" as a primary key. On Stripe in particular, `Ada@example.com` and `ada@example.com`
-are different filter inputs *and* may both exist as separate customers. Store the provider
-`Customer.id` against your own user record the first time you see it, and look up by that ID
-afterwards.
-:::
-
-A defensive lookup that survives duplicates:
+`customers.list({ email })` is an **exact match** on all five providers, and it is never a primary key:
+emails are case-sensitive on Stripe and may repeat there, so a lookup can return zero, one, or several
+customers. Store the provider `Customer.id` against your own user record the first time you see it, and
+look up by that ID afterwards.
 
 ```ts
 const { items } = await client.customers.list({ email, limit: 100 });
@@ -69,6 +56,18 @@ if (items.length > 1) {
   logger.warn(`Multiple customers share ${email}`, { ids: items.map((c) => c.id) });
 }
 ```
+
+<Accordion>
+  <AccordionItem title="Per-provider filter caveats">
+    | Provider          | Caveat                                                                                                             |
+    | ----------------- | ------------------------------------------------------------------------------------------------------------------ |
+    | **Polar**         | Exact match on the organization's customers.                                                                       |
+    | **Lemon Squeezy** | Always **scoped to the store** configured in the factory (`storeId`). Customers in your other stores are invisible. |
+    | **Stripe**        | **Case-sensitive**, and emails are **not unique** — several customers can share one address.                        |
+    | **Paddle**        | Exact match.                                                                                                       |
+    | **Dodo Payments** | Exact match.                                                                                                       |
+  </AccordionItem>
+</Accordion>
 
 ## Creating and updating customers
 
@@ -80,7 +79,7 @@ providers support both, so neither operation is capability-gated.
 const customer = await client.customers.create({
   email: 'ada@example.com',
   name: 'Ada Lovelace',
-  metadata: { userId: '42' }, // requires the `customerMetadata` capability
+  metadata: { userId: '42' }, // requires the customerMetadata capability
 });
 
 await client.customers.update({ id: customer.id, name: 'Ada L.' });
@@ -95,23 +94,13 @@ await client.customers.update({ id: customer.id, name: 'Ada L.' });
   }}
 />
 
-`name` is **required** even though only two providers demand it: Lemon Squeezy and Dodo Payments both
-reject a customer without one, so a params type that made it optional would compile everywhere and fail
-on two providers at runtime.
+`update` takes the same fields plus the `id` to update, all of them optional; an omitted field keeps its
+stored value, and a field passed as an empty string is rejected with `validation` before the request goes
+out — no provider reads `''` as "clear this field".
 
-<TypeTable
-  type={{
-    id: { type: 'string', description: 'The provider customer to update.' },
-    email: { type: 'string', required: false, description: 'New email.' },
-    name: { type: 'string', required: false, description: 'New display name.' },
-    metadata: { type: 'Record<string, string | number | boolean>', required: false, description: 'New metadata. Requires the customerMetadata capability.' },
-    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
-  }}
-/>
-
-Everything except `id` is optional and an omitted field keeps its stored value. A field passed as an
-empty string is rejected with `validation` before the request goes out — no provider reads `''` as
-"clear this field".
+`name` is **required** on create even though only two providers demand it: Lemon Squeezy and Dodo
+Payments both reject a customer without one, so a params type that made it optional would compile
+everywhere and fail on two providers at runtime.
 
 Both calls are **writes**: the client replays them once when the provider answered with a rate limit,
 and never after a transport failure. No provider offers idempotency keys on customers, so a replayed
@@ -119,47 +108,36 @@ and never after a transport failure. No provider offers idempotency keys on cust
 
 ### Metadata is the one field that is not portable
 
-Metadata is the only customer field gated by a capability. Four providers store it, Lemon Squeezy has
+Metadata is the only customer field gated by a capability. Four providers store it; Lemon Squeezy has
 nowhere to put it, so `metadata` is rejected with `unsupported` there before the request goes out —
 branch on `client.capabilities.customerMetadata` to keep your own code provider-agnostic.
 
-| Provider          | Wire field    | On update                                                             |
-| ----------------- | ------------- | --------------------------------------------------------------------- |
-| **Polar**         | `metadata`    | Replaces. Capped at 50 pairs, 40-character keys, 500-character values. |
-| **Lemon Squeezy** | —             | No metadata field at all — `customerMetadata` is `false` here.        |
-| **Stripe**        | `metadata`    | **Merges key by key** — keys you leave out keep their stored value.   |
-| **Paddle**        | `custom_data` | Replaces the whole object. The SDK never reads-then-merges.           |
-| **Dodo Payments** | `metadata`    | Replaces.                                                             |
+Stripe is the odd one out on update: it **merges** `metadata` key by key, where everyone else replaces
+the whole object. If you need "these keys and nothing else" on Stripe, read the customer first and send
+the keys you want removed explicitly.
 
-:::note
-Stripe is the odd one out: it merges `metadata` rather than replacing it. If you need "these keys and
-nothing else" on Stripe, read the customer first and send the keys you want removed explicitly.
-:::
+<Accordion>
+  <AccordionItem title="Metadata wire fields and update semantics">
+    | Provider          | Wire field    | On update                                                             |
+    | ----------------- | ------------- | --------------------------------------------------------------------- |
+    | **Polar**         | `metadata`    | Replaces. Capped at 50 pairs, 40-character keys, 500-character values. |
+    | **Lemon Squeezy** | —             | No metadata field at all — `customerMetadata` is `false` here.        |
+    | **Stripe**        | `metadata`    | **Merges key by key** — keys you leave out keep their stored value.   |
+    | **Paddle**        | `custom_data` | Replaces the whole object. The SDK never reads-then-merges.           |
+    | **Dodo Payments** | `metadata`    | Replaces.                                                             |
+  </AccordionItem>
+</Accordion>
 
 ### Duplicate emails
 
-Providers disagree about whether an email may repeat:
-
-- **Paddle** rejects a taken address with `RevenueError { code: 'conflict' }`; the existing customer's
-  ID is in the message.
-- **Polar** requires the email to be unique within the organization and answers `validation`.
-- **Stripe** allows duplicates outright — several customers can share one address.
-
-Look the address up with `customers.list({ email })` first if you need create-or-get semantics.
+Whether an email may repeat is a provider policy, so a create-or-get flow must look the address up with
+`customers.list({ email })` first rather than relying on the error. Paddle rejects a taken address with
+`conflict` (the existing customer's ID is in the message), Polar requires uniqueness within the
+organization and answers `validation`, and Stripe allows duplicates outright.
 
 ## Customer portal sessions
 
-The customer portal is the provider-hosted page where a customer updates their payment method, views
-invoices, and cancels. `customerPortal.createSession` mints a session and returns its URL:
-
-```ts
-const session = await client.customerPortal.createSession({
-  customerId: customer.id,
-  returnUrl: 'https://example.com/account', // requires the portalReturnUrl capability
-});
-
-redirect(session.url);
-```
+`customerPortal.createSession` mints a session and returns its URL:
 
 <TypeTable
   type={{
@@ -171,16 +149,9 @@ redirect(session.url);
 
 ### Mint one per click — the URLs expire
 
-Portal URLs are short-lived, signed links. Generate one **when the customer clicks the button**, never
-at page render and never in a cached response or an email.
-
-| Provider          | Lifetime                                                          |
-| ----------------- | ------------------------------------------------------------------ |
-| **Lemon Squeezy** | ~24 hours (the signed URL on the customer record)                  |
-| **Polar**         | ~1 hour (customer session)                                         |
-| **Stripe**        | Short-lived, single-use billing portal session                     |
-| **Paddle**        | Short-lived portal session                                         |
-| **Dodo Payments** | Short-lived portal session                                         |
+Portal URLs are short-lived signed links. Generate one **when the customer clicks the button**, never at
+page render, never in a cached response, and never in an email. Lemon Squeezy's lasts around 24 hours
+and Polar's around an hour; Stripe, Paddle, and Dodo Payments mint short-lived sessions of their own.
 
 ```ts
 // A route that redirects straight into a freshly minted portal session.
@@ -193,18 +164,9 @@ export async function GET(request: Request): Promise<Response> {
 
 ### `returnUrl` support
 
-`returnUrl` is gated by the `portalReturnUrl` capability:
-
-| Provider          | `portalReturnUrl` |
-| ----------------- | ----------------- |
-| **Polar**         | `true`            |
-| **Lemon Squeezy** | `false`           |
-| **Stripe**        | `true`            |
-| **Paddle**        | `false`           |
-| **Dodo Payments** | `true`            |
-
-Passing it to Lemon Squeezy or Paddle throws `RevenueError` with code `unsupported`. In
-provider-agnostic code, gate it:
+`returnUrl` is gated by the `portalReturnUrl` capability — `false` on Lemon Squeezy and Paddle, where
+passing it throws `unsupported`. See the
+[capability matrix](/docs/reference/capability-matrix). In provider-agnostic code, gate it:
 
 ```ts
 const session = await client.customerPortal.createSession({
@@ -215,13 +177,9 @@ const session = await client.customerPortal.createSession({
 
 :::note
 **Lemon Squeezy** exposes the portal as a pre-signed URL on the customer record rather than as a session
-endpoint, and only once the customer has a subscription. A customer without one throws `RevenueError`
-with code `not_found`.
-:::
-
-:::note
-**Paddle** omits `management_urls` from webhook payloads, so a portal link can only be obtained from the
-API — never from an incoming event.
+endpoint, and only once the customer has a subscription — a customer without one throws `not_found`.
+**Paddle** omits `management_urls` from webhook payloads, so a portal link can only come from the API,
+never from an incoming event.
 :::
 
 <CardGroup cols={2}>

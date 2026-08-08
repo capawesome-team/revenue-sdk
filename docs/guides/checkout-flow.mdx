@@ -48,25 +48,19 @@ step.
     }
     ```
 
-    :::note
     Pass `customerId` when you already know the provider customer — it keeps a returning customer's
-    payment methods and invoices on one record. Lemon Squeezy is the exception: it rejects `customerId`
-    on checkouts, so always pass `customerEmail` there.
-    :::
+    payment methods and invoices on one record. Optional fields that not every provider accepts are
+    gated by a capability, so branch on the flag instead of hard-coding a provider:
 
-    :::note
-    Selling a pay-what-you-want product? Pass the amount the buyer picked as `customAmount`, in minor
-    units, gated by the `checkoutCustomAmount` capability (Polar and Lemon Squeezy). Omit it and the
-    buyer names the amount on the provider's page instead. See
-    [pay what you want](/docs/concepts/checkouts#pay-what-you-want).
-    :::
+    ```ts
+    customAmount: client.capabilities.checkoutCustomAmount ? pickedAmountInMinorUnits : undefined,
+    expiresAt: client.capabilities.checkoutExpiresAt ? new Date(Date.now() + 60 * 60 * 1000) : undefined,
+    ```
 
-    :::note
-    Only Stripe and Lemon Squeezy let you set when the link stops working — `expiresAt`, gated by the
-    `checkoutExpiresAt` capability. Polar and Dodo Payments fix it at 24 hours, and Paddle transactions
-    have no expiry field. An invalid or past date throws `validation` before the request. See
-    [checkout expiry](/docs/concepts/checkouts#checkout-expiry).
-    :::
+    Where `checkoutExpiresAt` is `false` the provider applies its own fixed lifetime. One difference has
+    no flag: Lemon Squeezy rejects `customerId` on checkouts and throws `unsupported`, so send
+    `customerEmail` there. See the [capability matrix](/docs/reference/capability-matrix) and
+    [Checkouts](/docs/concepts/checkouts).
   </Step>
   <Step title="Redirect the customer">
     On Polar, Lemon Squeezy, Stripe, and Dodo Payments, `checkout.url` is a provider-hosted page you can
@@ -115,45 +109,23 @@ step.
     ```
   </Step>
   <Step title="Fulfill from the webhook">
-    The webhook is the authoritative signal. Both `checkout.completed` and the subscription events are
-    useful — the checkout event carries your metadata, the subscription events carry the state you'll
-    keep in sync afterwards.
+    The webhook is the authoritative signal. Build the endpoint itself — verification, dedupe, fast
+    `204` — from [the webhook handler guide](/docs/guides/webhook-handler); this is the branch that
+    matters for fulfillment:
 
     ```ts
-    import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/stripe';
-
-    export async function POST(request: Request): Promise<Response> {
-      const headers = request.headers;
-      const body = await request.text();
-
-      if (!(await verifyWebhook({ headers, body, secret: process.env.STRIPE_WEBHOOK_SECRET! }))) {
-        return new Response('invalid signature', { status: 401 });
+    // Inside that handler's switch (event.type).
+    case 'checkout.completed': {
+      const userId = event.checkout.metadata?.userId;
+      if (typeof userId === 'string' && event.checkout.customerId) {
+        // Bootstrap the mapping so later events don't need metadata at all.
+        await linkBillingCustomer(userId, event.checkout.customerId);
       }
-
-      const event = await parseWebhookEvent({ headers, body });
-
-      switch (event.type) {
-        case 'checkout.completed': {
-          const checkout = event.checkout;
-          const userId = checkout.metadata?.userId;
-          if (typeof userId === 'string' && checkout.customerId) {
-            // Bootstrap the mapping so later events don't need metadata at all.
-            await linkBillingCustomer(userId, checkout.customerId);
-          }
-          break;
-        }
-        case 'subscription.created':
-        case 'subscription.updated':
-        case 'subscription.canceled':
-          await upsertSubscription(event.subscription);
-          break;
-        case 'order.paid':
-          await recordPayment(event.order);
-          break;
-      }
-
-      return new Response(null, { status: 204 });
+      break;
     }
+    case 'order.paid':
+      await recordPayment(event.order);
+      break;
     ```
 
     `checkout.completed` only fires where the provider exposes a checkout event the SDK can confirm as
@@ -174,29 +146,18 @@ your user id  ⇄  provider customer id  ⇄  provider subscription id
 Bootstrap it from checkout `metadata` on the first event, then rely on the IDs:
 
 ```ts
-async function upsertSubscription(subscription: Subscription): Promise<void> {
-  const userId =
+async function resolveUserId(subscription: Subscription): Promise<string | undefined> {
+  return (
     (typeof subscription.metadata?.userId === 'string' ? subscription.metadata.userId : undefined) ??
-    (await findUserByBillingCustomerId(subscription.customerId));
-
-  if (!userId) {
-    // Store it as orphaned and reconcile later rather than dropping it.
-    await storeOrphanSubscription(subscription);
-    return;
-  }
-
-  await db.subscriptions.upsert({
-    where: { providerSubscriptionId: subscription.id },
-    data: {
-      userId,
-      status: subscription.status,
-      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
-      currentPeriodEnd: subscription.currentPeriodEnd,
-      endsAt: subscription.endsAt,
-    },
-  });
+    (await findUserByBillingCustomerId(subscription.customerId))
+  );
 }
 ```
+
+Feed the result into the single `upsertSubscription` defined in
+[the webhook handler guide](/docs/guides/webhook-handler) — one implementation, shared by the webhook
+and every mutating call. When no user matches, store the subscription as orphaned and reconcile it later
+rather than dropping it.
 
 :::note
 On **Lemon Squeezy**, checkout custom data reaches you only through `meta.custom_data` on the webhook —

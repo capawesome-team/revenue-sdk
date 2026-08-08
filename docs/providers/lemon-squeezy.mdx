@@ -1,6 +1,6 @@
 ---
 title: Lemon Squeezy
-description: Configure the Lemon Squeezy provider — API key, store ID, test mode, webhooks, capabilities, and the variant-as-product model with its quirks.
+description: Configure the Lemon Squeezy provider — API key, store ID, test mode, webhooks, the variant-as-product model, and its limitations.
 sidebar:
   label: Lemon Squeezy
 ---
@@ -40,33 +40,46 @@ Create an API key in the Lemon Squeezy dashboard under **Settings → API**. `st
 checkout must name the store it belongs to, and customer/subscription lists are scoped to it. You'll
 find the numeric store ID in **Settings → Stores** or via `GET /v1/stores`.
 
-## Test mode
+## Sandbox & test mode
 
 Test mode is a **property of the API key**, not a flag on the request: a key created while the store is
 in test mode talks to test data, a live key talks to live data. There is no `server` option — swap the
 key (and the matching `storeId`) via environment variables.
 
+## Limitations
+
+- **No filtering by customer.** `subscriptions.list({ customerId })` and `orders.list({ customerId })`
+  throw `unsupported` (`listSubscriptionsByCustomer` and `listOrdersByCustomer` are `false`) — Lemon
+  Squeezy filters by store, product, variant, or email. Listing unfiltered works.
+- **No customer metadata.** A Lemon Squeezy customer has no custom-data field, so `metadata` on
+  `customers.create`/`customers.update` throws `unsupported`. Creating a customer requires **both** a
+  name and an email.
+- **No immediate revoke and no cancellation reasons.** `subscriptions.revoke` throws `unsupported` and
+  `subscriptions.cancel` always runs to the end of the period; passing `reason` or `comment` throws.
+- **Pause is immediate only.** `subscriptions.pause({ behavior: 'period_end' })` throws `unsupported`
+  and `pauseAtPeriodEnd` is always `false`. The SDK fixes the pause `mode` to `void`, so invoices raised
+  while the subscription is paused are voided; the alternative `free` mode is not exposed.
+- **No usage reporting.** `usage.report` throws `unsupported`. `POST /v1/usage-records` keys on a
+  subscription-item ID rather than a customer, and has no idempotency at all with `increment`
+  semantics, so a single replay double-bills. See
+  [Usage-based billing](/docs/concepts/usage-based-billing).
+- **One item per checkout, and no `customerId`.** More than one item throws `unsupported`; so does
+  attaching an existing customer — pass `customerEmail` instead. Quantities above `1` are supported.
+- **`Checkout.status` is always `null`** (`checkoutStatus: false`), and the customer portal takes no
+  `returnUrl` (`portalReturnUrl: false`).
+
+Full values for every capability: [capability matrix](/docs/reference/capability-matrix).
+
 ## Webhooks
 
 Create the endpoint in **Settings → Webhooks**, pick the events, and copy the **signing secret** you
-entered there.
+entered there. Verification and parsing come from the subpath:
 
 ```ts
 import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/lemon-squeezy';
-
-const headers = request.headers;
-const body = await request.text();
-
-if (!(await verifyWebhook({ headers, body, secret: env.LEMON_SQUEEZY_WEBHOOK_SECRET }))) {
-  return new Response('invalid signature', { status: 401 });
-}
-
-const event = await parseWebhookEvent({ headers, body });
 ```
 
-The `X-Signature` header carries a hex HMAC-SHA256 of the raw body, keyed by the secret used verbatim.
-There is **no timestamp**, so there is no replay window to enforce — de-duplication on
-`event.idempotencyKey` is the only replay defense here.
+See [Handle webhooks](/docs/guides/webhook-handler) for the full handler.
 
 Events worth subscribing to: `subscription_created`, `subscription_updated`, `subscription_cancelled`,
 `subscription_resumed`, `subscription_paused`, `subscription_unpaused`, `subscription_expired`,
@@ -75,97 +88,68 @@ Events worth subscribing to: `subscription_created`, `subscription_updated`, `su
 :::warning
 **`subscription_resumed` means un-*cancelled*, not un-*paused*.** Lemon Squeezy names the reversal of
 `subscription_cancelled` "resumed" and the reversal of `subscription_paused` "unpaused", so the SDK maps
-them the way they behave, not the way they read:
-
-| `event.subscriptionChange` | Lemon Squeezy event      |
-| -------------------------- | ------------------------ |
-| `cancel_scheduled`         | `subscription_cancelled` |
-| `paused`                   | `subscription_paused`    |
-| `resumed`                  | `subscription_unpaused`  |
-| `uncanceled`               | `subscription_resumed`   |
-
-There is no `past_due` transition: `subscription_payment_failed` carries an Invoice, not a
-Subscription, so it normalizes to `unknown`.
+them the way they behave: `subscription_resumed` becomes `subscriptionChange: 'uncanceled'` and
+`subscription_unpaused` becomes `'resumed'`. See
+[Webhook events](/docs/reference/webhook-events) for the full mapping.
 :::
 
-:::note
-**The first subscription payment fires `order.paid` once, not twice.** Lemon Squeezy raises both
-`order_created` and `subscription_payment_success` for it — the same money under two IDs. The SDK maps
-the order and leaves the invoice half (`billing_reason: 'initial'`) as `unknown`, which is the same
-filter `orders.list` applies, so both paths report that payment under its **order** ID.
-:::
-
-:::note
-**Lemon Squeezy publishes no event ID** — not in the headers, not in the body — so
-`event.idempotencyKey` is `lemon-squeezy:sha256:<hex of the raw body>`. It is stable across retries of
-the same delivery, which is what dedupe needs. It also sends no event timestamp, so `event.createdAt`
-is `undefined`.
-:::
-
-:::note
-Checkout custom data arrives **only** in `meta.custom_data` on the webhook envelope, never on the
-resource. This is the only place `Subscription.metadata` gets populated on Lemon Squeezy.
-:::
+Three more things worth knowing. **The first subscription payment fires `order.paid` once, not twice** —
+Lemon Squeezy raises both `order_created` and `subscription_payment_success` for it, and the SDK leaves
+the invoice half (`billing_reason: 'initial'`) as `unknown`, the same filter `orders.list` applies, so
+both paths report that payment under its **order** ID. **Checkout custom data arrives only in
+`meta.custom_data`** on the webhook envelope, never on the resource — it is the only place
+`Subscription.metadata` gets populated here. And **there is no event timestamp**, so
+`event.createdAt` is `undefined`; the dedupe key falls back to a hash of the raw body, which is stable
+across retries — see [Webhooks](/docs/concepts/webhooks).
 
 ## License keys
 
 The public license API needs **no credential**, so validate, activate, and deactivate are standalone
-exports rather than client methods — safe to ship inside a desktop, mobile, or CLI app.
+exports rather than client methods — safe to ship inside a desktop, mobile, or CLI app. See
+[License keys](/docs/concepts/license-keys) for the shared signatures and return types.
 
-```ts
-import {
-  activateLicenseKey,
-  deactivateLicenseKey,
-  validateLicenseKey,
-} from 'revenue-sdk/lemon-squeezy';
+:::warning
+**The public license API is unscoped, so `expect` is required.** It takes only the key, which means
+*any* Lemon Squeezy merchant's key validates against it. The SDK asserts `expect` against the response
+`meta` on all three calls; a foreign key comes back `valid: false` with `licenseKey` and `activation`
+left `undefined`, and a response without `meta` fails closed.
+:::
 
-const expect = { storeId: 76833, variantId: 1615641 };
-
-const validation = await validateLicenseKey({ key: 'LICENSE-KEY', expect });
-const activated = await activateLicenseKey({ key: 'LICENSE-KEY', expect, label: 'MacBook Pro' });
-await deactivateLicenseKey({ key: 'LICENSE-KEY', expect, activationId: activated.id });
-```
+Lemon Squeezy-specific options — the rest (`key`, `activationId`, `label`, `fetch`, `signal`) are the
+same on every provider:
 
 <TypeTable
   type={{
-    key: { type: 'string', description: 'The license key as the customer received it.' },
     expect: {
       type: '{ storeId: string | number; productId?: string | number; variantId?: string | number }',
-      description: 'Required. Asserted against the response meta on every call — see the quirk below. IDs are compared as strings.',
+      description: 'Required on all three calls. Asserted against the response meta; IDs are compared as strings.',
     },
-    activationId: {
-      type: 'string',
-      required: false,
-      description: 'Lemon Squeezy calls this an instance. Optional on validate, required on deactivate.',
-    },
-    label: { type: 'string', description: 'Activate only. Sent as instance_name; required by Lemon Squeezy.' },
     baseUrl: { type: 'string', required: false, description: 'Used verbatim; defaults to https://api.lemonsqueezy.com.' },
-    fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
-    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
   }}
 />
 
-Return types match the other subpaths: `validateLicenseKey` resolves to a `LicenseKeyValidation`,
-`activateLicenseKey` to a `LicenseKeyActivation`, `deactivateLicenseKey` to `void`. Lemon Squeezy
-answers all three routes with one envelope, so the SDK normalizes it away. Because activation and
-deactivation report their outcome through the return type alone, a refusal throws rather than
-returning a false verdict — a reached activation limit surfaces as `validation`, and a key belonging
-to another store as `not_found`. Only `validateLicenseKey` reports a rejection as `valid: false`.
+```ts
+import { validateLicenseKey } from 'revenue-sdk/lemon-squeezy';
 
-Merchant-side management — `client.licenseKeys.list/listAll/get/update` — uses the API key and reads
-`/v1/license-keys`, filtered by the factory's `storeId`. See
-[License keys](/docs/concepts/license-keys).
+const expect = { storeId: 76833, variantId: 1615641 };
+const validation = await validateLicenseKey({ key: 'LICENSE-KEY', expect });
+```
+
+- **Test and live keys share one host.** Unlike the merchant API, the license API is not scoped by an
+  API key, so a test-mode key validates against production. `license_key.test_mode` on `raw` is the only
+  discriminator — check it if you ship test keys.
+- **`LicenseKey.productId` is `undefined` on merchant reads.** Lemon Squeezy's `product_id` names the LS
+  *product* while the unified `Product` is a *variant*, so the ID would not work with `products.get`.
+  The public license path reports `meta.variant_id` instead.
 
 ## Orders
 
-Lemon Squeezy has no single payments collection, so a unified `Order` is the **union of an Order and a
-Subscription Invoice**. A one-off purchase raises an order; a renewal raises an invoice and no order;
-the **first** subscription payment raises **both** — the same money under two IDs, in two numeric ID
-spaces, with nothing joining them.
-
-`orders.list` therefore returns **all orders, plus every subscription invoice whose `billing_reason` is
-not `initial`**, which yields each payment exactly once. Both requests are scoped to the factory's
-`storeId`.
+See [Orders](/docs/concepts/orders) for the model. Lemon Squeezy has no single payments collection, so
+a unified `Order` is the **union of an Order and a Subscription Invoice**: a one-off purchase raises an
+order, a renewal raises an invoice and no order, and the **first** subscription payment raises **both**
+— the same money under two IDs, in two numeric ID spaces, with nothing joining them. `orders.list`
+returns all orders plus every subscription invoice whose `billing_reason` is not `initial`, which
+yields each payment exactly once. Both requests are scoped to the factory's `storeId`.
 
 :::warning
 **Pages are not chronological.** The cursor drains `/v1/orders` first and only then starts on
@@ -175,130 +159,41 @@ returns newest-first — sort by `createdAt` after draining `listAll` if you nee
 
 - **A page can come back short, or empty.** The `initial` invoices are dropped after Lemon Squeezy has
   already paged, and the page is never backfilled. Follow the cursor until it is `undefined`.
-- **`orders.get` tries both ID spaces.** It reads `/v1/orders/{id}` and falls back to
-  `/v1/subscription-invoices/{id}` on a `not_found`; if both miss, the order lookup's `not_found` is
-  what surfaces. The fallback costs a second request whenever the ID is an invoice.
-- **No customer filter.** `/v1/orders` filters by store, user email, and order number only, so
-  `listOrdersByCustomer` is `false` and `orders.list({ customerId })` throws `unsupported`. Listing
-  unfiltered works.
+- **`orders.get` tries both ID spaces.** It reads the order, then falls back to the subscription
+  invoice on a `not_found`; the fallback costs a second request whenever the ID is an invoice.
 - **`subscriptionId` is only ever set on the invoice half** — a Lemon Squeezy order carries no
   subscription reference.
-- **`refundStatus` is derived from amounts.** The `refunded` boolean means *fully* refunded only, so it
-  is deliberately not read; the SDK compares `refunded_amount` against `total` (and treats status
-  `refunded` as full).
-- **Invoice URLs do not expire.** `getInvoiceUrl` returns `urls.receipt` for an order and
-  `urls.invoice_url` for a subscription invoice — both hosted by Lemon Squeezy. A subscription invoice
-  that is still pending has no PDF link yet and throws `not_found`.
-- **`void` belongs to invoices only.** It is a bill cancelled while the subscription was paused; orders
-  never carry it.
+- **Invoice URLs do not expire**, so they are safe to store. A subscription invoice that is still
+  pending has no PDF link yet and throws `not_found`.
 
-See [Orders](/docs/concepts/orders) for the model and the cross-provider comparison.
+## Provider notes
 
-## Capabilities
-
-| Capability                    | Value                                  |
-| ----------------------------- | -------------------------------------- |
-| `cancellationReason`          | `false`                                |
-| `checkoutCustomAmount`        | `true`                                 |
-| `checkoutExpiresAt`           | `true`                                 |
-| `checkoutStatus`              | `false`                                |
-| `checkoutSuccessUrl`          | `true`                                 |
-| `customerMetadata`            | `false`                                |
-| `endTrial`                    | `true`                                 |
-| `hostedCheckout`              | `true`                                 |
-| `licenseKeys`                 | `true`                                 |
-| `listOrdersByCustomer`        | `false`                                |
-| `listSubscriptionsByCustomer` | `false`                                |
-| `pause`                       | `true`                                 |
-| `pauseBehaviors`              | `['immediately']`                      |
-| `portalReturnUrl`             | `false`                                |
-| `prorationBehaviors`          | `['invoice_now', 'prorate', 'none']`   |
-| `revoke`                      | `false`                                |
-| `uncancel`                    | `true`                                 |
-| `usageReporting`              | `false`                                |
-
-## Quirks
-
-- **A `Product` is a Lemon Squeezy VARIANT.** The variant is the purchasable unit, so
-  `Product.id` and `Price.checkoutRef` are both the variant ID, and every product has exactly one price.
-- **Numeric IDs coerced to strings.** JSON:API puts `data.id` as a string but foreign keys inside
-  `attributes` as numbers. The SDK coerces everything with `String()`, so `customerId`, `productId`, and
-  `priceId` are always strings.
-- **The current price comes from `price-model`.** `/v1/prices?filter[variant_id]=…` is an append-only
-  price *history*; the SDK reads the variant's `price-model` relationship instead.
-- **`products.list` returns published variants from *every* store the key can reach.** The SDK sends
-  `filter[status]=published` so draft and pending variants stay out, but `/v1/variants` offers **no
-  store filter** upstream — unlike customers, subscriptions, orders, and license keys, this one
-  collection ignores the factory's `storeId`. On an account with several stores, filter the results on
-  `raw.attributes.product_id` (or call `products.get` with the variant IDs you already know).
-- **JSON:API content type on every request**, including GETs (`application/vnd.api+json`).
-- **A customer has no metadata field at all**, so `customerMetadata` is `false` and the client rejects
-  `metadata` on `customers.create`/`customers.update` with `unsupported` — Lemon Squeezy's customer
-  object has no custom-data equivalent. Creating one requires **both** a name and an email, and the
-  store is sent as a JSON:API relationship, so new customers always land in the factory's `storeId`.
-- **Empty objects serialize as `[]`.** Lemon Squeezy returns `[]` where an empty object is expected
-  (`custom`, `billing_address`); the mappers tolerate it.
-- **`customAmount` maps to `custom_price`**, a positive integer in cents sent as a sibling of
-  `checkout_data` in the checkout attributes. Lemon Squeezy applies it to the variant being bought; on
-  a subscription it becomes the price of every renewal too, until the subscription moves to another
+- **A `Product` is a Lemon Squeezy VARIANT.** The variant is the purchasable unit, so `Product.id` and
+  `Price.checkoutRef` are both the variant ID, and every product has exactly one price.
+- **`products.list` returns published variants from *every* store the key can reach.** `/v1/variants`
+  offers **no store filter** upstream — unlike customers, subscriptions, orders, and license keys, this
+  one collection ignores the factory's `storeId`. On a multi-store account, filter the results on
+  `raw.attributes.product_id`, or call `products.get` with the variant IDs you already know.
+- **PayPal subscriptions ignore `PATCH /subscriptions`, and the SDK throws rather than lie.** Lemon
+  Squeezy answers `200` with the record unchanged when the payment processor is PayPal, which affects
+  `changePlan`, `uncancel`, `pause`, `resume`, and `endTrial`: each throws
+  `RevenueError { code: 'unsupported' }` instead of returning an object that claims a mutation
+  happened. Send those customers to the customer portal. `subscriptions.cancel` is deliberately **not**
+  guarded — it is a different endpoint with no PayPal caveat, and blocking it would lock PayPal
+  customers out of cancelling.
+- **`endTrial` refuses unless the subscription is trialing.** Lemon Squeezy has no end-trial operation;
+  the one documented lever, `billing_anchor: null`, resets the billing anchor unconditionally and would
+  silently move a non-trialing customer's billing day. So the SDK reads the subscription first and
+  throws `RevenueError { code: 'validation' }` when its status is not `on_trial`.
+- **Portal and update-payment-method URLs expire after 24 hours**, so the SDK fetches them on demand. A
+  customer without a subscription has no portal and throws `not_found`.
+- **`customAmount` maps to `custom_price`.** Lemon Squeezy applies it to the variant being bought; on a
+  subscription it becomes the price of every renewal too, until the subscription moves to another
   variant.
-- **One item per checkout, and no `customerId`.** More than one item throws `unsupported`; attaching an
-  existing customer throws `unsupported` — pass `customerEmail` instead. Quantities above `1` are
-  supported (via `variant_quantities`).
-- **No cancellation reasons**, and **no immediate revoke** — `subscriptions.cancel` always runs to the
-  end of the period. `subscriptions.revoke` throws `unsupported`.
-- **`endTrial` resets the billing anchor, so the SDK refuses it unless the subscription is trialing.**
-  Lemon Squeezy has no "end trial" operation. The one documented lever is `billing_anchor: null`, which
-  "reset[s] the billing anchor to the current date. Doing this will also remove an active trial." The
-  reset is unconditional: on a subscription that is *not* on trial the call still succeeds and silently
-  moves the customer's billing day to today, with a proration. So `subscriptions.endTrial` reads the
-  subscription first and throws `RevenueError { code: 'validation' }` when its status is not `on_trial`,
-  without sending the `PATCH`. (`trial_ends_at` is writable, but Lemon Squeezy documents it only as
-  adjusting a trial's *duration* and says nothing about past or present values, so the SDK does not rely
-  on it.)
-- **Cannot filter subscriptions by customer.** `subscriptions.list({ customerId })` throws
-  `unsupported`; Lemon Squeezy filters by store, product, variant, or email.
+- **Checkout expiry is settable and optional**, and **omitting it means the checkout never expires** —
+  not true of any other provider here. There is no upper bound.
 - **`cancelled` is not terminal.** It means "grace period until `ends_at`, still resumable", so it maps
   to `active` + `cancelAtPeriodEnd: true`. The terminal status is `expired`.
-- **Portal and update-payment-method URLs expire after 24 hours**, so the SDK fetches them on demand.
-  A customer without a subscription has no portal and throws `not_found`. `returnUrl` is unsupported.
-- **Pause is immediate and voids invoices.** Lemon Squeezy cannot schedule a pause, so
-  `subscriptions.pause({ behavior: 'period_end' })` throws `unsupported` and `pauseAtPeriodEnd` is always
-  `false`. The SDK fixes Lemon Squeezy's pause `mode` to `void`, which voids the invoices raised while
-  the subscription is paused; the alternative `free` mode is not exposed.
-- **No usage reporting.** `usage.report` throws `unsupported`. `POST /v1/usage-records` exists, but it
-  keys on a **subscription-item ID** rather than a customer — an extra lookup that is ambiguous as soon
-  as a customer has several subscriptions — and it has no idempotency at all with `increment` semantics,
-  so a single replay double-bills. See [Usage-based billing](/docs/concepts/usage-based-billing).
-- **The public license API is unscoped, so `expect` is required.** It takes only the key, which means
-  *any* Lemon Squeezy merchant's key validates against it. The SDK asserts `expect` against the response
-  `meta` on all three calls; a foreign key comes back `valid: false` with `licenseKey` and `activation`
-  left `undefined`, and a response without `meta` fails closed. See
-  [License keys](/docs/concepts/license-keys).
-- **Test and live keys share one host.** Unlike the merchant API, the license API is not scoped by an
-  API key, so a test-mode key validates against production. `license_key.test_mode` on `raw` is the only
-  discriminator — check it if you ship test keys.
-- **A non-OK response can still be a verdict.** Activate answers
-  `400 {"activated":false,"error":"License key activation limit reached."}`, and an unknown key answers
-  `404 {"valid":false,…}`. Any 4XX carrying the verdict field is returned as `valid: false`; anything
-  else re-throws as a `RevenueError`.
-- **`LicenseKey.productId` depends on the path.** On merchant reads it is `undefined`: Lemon Squeezy's
-  `product_id` names the LS *product*, while the unified `Product` is a *variant*, so the ID would not
-  work with `products.get`. On the public license path the SDK reports `meta.variant_id` instead.
-- **`disabled` arrives as a boolean or a number** depending on the endpoint; any truthy value maps to
-  `status: 'disabled'`.
-- **PayPal subscriptions ignore `PATCH /subscriptions`, and the SDK throws rather than lie.** Lemon
-  Squeezy documents that the request "will not modify the subscription" when the payment processor is
-  PayPal — it answers `200` with the record unchanged. Every PATCH-backed operation is affected:
-  `changePlan`, `uncancel`, `pause`, `resume`, and `endTrial`. The adapter reads `payment_processor` off
-  the PATCH *response* (no extra request — the response is the subscription) and throws
-  `RevenueError { code: 'unsupported' }` instead of returning an object that claims a mutation happened.
-  Send those customers to the customer portal. `subscriptions.cancel` is deliberately **not** guarded: it
-  is a bodyless `DELETE` on a different endpoint with no PayPal caveat, and blocking it would lock PayPal
-  customers out of cancelling.
-- **Checkout expiry is settable and optional.** `checkouts.create({ expiresAt })` sends `expires_at` as
-  ISO 8601; **omitting it means the checkout never expires**, which is not true of any other provider
-  here. There is no upper bound.
 
 <CardGroup cols={2}>
   <Card title="Stripe" icon="credit-card" href="/docs/providers/stripe">

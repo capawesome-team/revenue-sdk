@@ -1,6 +1,6 @@
 ---
 title: Production webhook handler
-description: Build a production webhook endpoint — verify the signature, dedupe the delivery, upsert by subscription id, and acknowledge with a fast 2xx.
+description: Build a production webhook endpoint — verify the signature, dedupe the delivery, upsert by subscription id, and beat the read-then-upsert race.
 sidebar:
   label: Webhook handler
 ---
@@ -55,7 +55,8 @@ Express, mount `express.raw({ type: '*/*' })` on the webhook route specifically.
 
 Providers retry deliveries, sometimes for days. Every parsed event carries `idempotencyKey` — a
 required, provider-namespaced `<provider>:<id>` string that is stable across retries and dashboard
-replays — so there is nothing to derive. Store it with a TTL:
+replays — so there is nothing to derive; store it with a TTL and drop repeats. Where that key comes
+from on each provider is covered in [Webhooks](/docs/concepts/webhooks).
 
 ```ts
 const DEDUPE_TTL_SECONDS = 60 * 60 * 24 * 3;
@@ -69,21 +70,11 @@ async function markProcessed(key: string): Promise<void> {
 }
 ```
 
-It works the same on every provider, including Lemon Squeezy, which publishes no event id and gets a
-SHA-256 of the raw body instead — see
-[where the key comes from](/docs/concepts/webhooks#where-the-key-comes-from).
-
-:::note
-Mark the delivery processed **after** the work succeeds, not before. If persistence throws, you want the
-provider's retry to find no dedupe entry and try again.
-:::
-
-:::warning
-`idempotencyKey` dedupes **redeliveries of one event**. It does not collapse a provider's several events
-for one state change — Polar and Dodo Payments emit both `subscription.active` and
-`subscription.updated` for a single activation, two events with two distinct keys — and it cannot fix a
-race inside your own handler. The next section is where that bites.
-:::
+Mark the delivery processed **after** the work succeeds, not before: if persistence throws, you want the
+provider's retry to find no dedupe entry and try again. Know the limit too — `idempotencyKey` dedupes
+redeliveries of *one* event, and providers often emit several events for a single state change, which
+is where [the read-then-upsert race](#why-does-provisioning-fire-twice-the-read-then-upsert-race)
+starts.
 
 ## 3. Persist — upsert by subscription ID
 
@@ -138,34 +129,9 @@ async function upsertSubscription(subscription: Subscription): Promise<void> {
 }
 ```
 
-:::warning
-**The read-then-upsert above is a race, and event dedupe cannot save you from it.** `upsertSubscription`
-reads the stored row, then writes in a second statement. Two deliveries handled concurrently can both
-read the old row before either writes, so both pass the staleness guard, both see the same "change", and
-any side effect hanging off that diff — a plan-changed email, a provisioning call, a credit grant — fires
-twice. Their `idempotencyKey`s differ by construction, because they are two different events, so
-`alreadyProcessed` never sees a duplicate. This is the trap: event-id dedupe *looks* like it solves
-exactly this, and it does not.
-
-Make the read and the write **one statement**, and drive side effects off the row the write returns
-rather than a snapshot you read earlier:
-
-```sql
-UPDATE subscriptions
-   SET status = $2, cancel_at_period_end = $3, current_period_end = $4
- WHERE provider_subscription_id = $1
-   AND status IS DISTINCT FROM $2
-RETURNING id, status;
-```
-
-Exactly one of the two concurrent deliveries gets a row back; that one sends the email. The other gets
-an empty result, which means "somebody else already applied this state" — do nothing and return `204`.
-Any store with a conditional write does this: a `WHERE`-guarded `UPDATE … RETURNING`, a Mongo
-`findOneAndUpdate` with the old value in the filter, a DynamoDB conditional update, a Durable Object.
-
-This is especially likely on edge runtimes, where concurrent deliveries land in **separate isolates** and
-share no in-process lock, so a single-instance mutex or a "check the cache first" guard buys you nothing.
-:::
+The read and the write above are two statements, and that is a race — see
+[Why does provisioning fire twice?](#why-does-provisioning-fire-twice-the-read-then-upsert-race) below
+before you ship it.
 
 Three things this gets right:
 
@@ -215,6 +181,37 @@ Only put **non-critical** work in `ctx.waitUntil`. It is not a queue: it has no 
 durability guarantee, and if it throws, the provider has already been told the delivery succeeded.
 Critical work belongs before the response, or on a real queue.
 :::
+
+## Why does provisioning fire twice? The read-then-upsert race
+
+Because `upsertSubscription` reads the stored row and then writes it in a **second statement**, and event
+dedupe cannot save you from that. Two deliveries handled concurrently can both read the old row before
+either writes, so both pass the staleness guard, both see the same "change", and any side effect hanging
+off that diff — a plan-changed email, a provisioning call, a credit grant — fires twice.
+
+Their `idempotencyKey`s differ by construction, because they *are* two different events: Polar and Dodo
+Payments emit both `subscription.active` and `subscription.updated` for a single activation. So
+`alreadyProcessed` never sees a duplicate. This is the trap — event-id dedupe looks like it solves
+exactly this, and it does not.
+
+Make the read and the write **one statement**, and drive side effects off the row the write returns
+rather than a snapshot you read earlier:
+
+```sql
+UPDATE subscriptions
+   SET status = $2, cancel_at_period_end = $3, current_period_end = $4
+ WHERE provider_subscription_id = $1
+   AND status IS DISTINCT FROM $2
+RETURNING id, status;
+```
+
+Exactly one of the two concurrent deliveries gets a row back; that one sends the email. The other gets
+an empty result, which means "somebody else already applied this state" — do nothing and return `204`.
+Any store with a conditional write does this: a `WHERE`-guarded `UPDATE … RETURNING`, a Mongo
+`findOneAndUpdate` with the old value in the filter, a DynamoDB conditional update, a Durable Object.
+
+This is especially likely on edge runtimes, where concurrent deliveries land in **separate isolates** and
+share no in-process lock, so a single-instance mutex or a "check the cache first" guard buys you nothing.
 
 ## Choose your status codes deliberately
 

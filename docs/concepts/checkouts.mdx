@@ -1,6 +1,6 @@
 ---
 title: Checkouts
-description: Create and read checkouts, the per-provider item and success-URL support matrix, metadata propagation, and status semantics.
+description: Create and read checkouts — the params, the capability gates on successUrl, expiresAt and customAmount, metadata, and status semantics.
 sidebar:
   label: Checkouts
 ---
@@ -41,6 +41,29 @@ redirect(checkout.url);
 The client validates `items` before any request is made: an empty array, an empty `product` string, or a
 `quantity` that isn't a positive integer throws `RevenueError` with code `validation`.
 
+Three params are capability-gated and throw `unsupported` rather than being silently dropped —
+`successUrl` (`checkoutSuccessUrl`), `expiresAt` (`checkoutExpiresAt`) and `customAmount`
+(`checkoutCustomAmount`). A few finer limits are enforced by the adapters instead: Polar rejects an item
+`quantity` other than `1`, and Lemon Squeezy rejects a second item as well as `customerId` (pass
+`customerEmail`). Read the values off `client.capabilities`, or look them up in the
+[capability matrix](/docs/reference/capability-matrix#matrix):
+
+```ts
+await client.checkouts.create({
+  items: [{ product: price.checkoutRef }],
+  successUrl: client.capabilities.checkoutSuccessUrl
+    ? 'https://example.com/thanks'
+    : undefined,
+});
+```
+
+:::warning
+**Paddle has no provider-hosted checkout.** `checkouts.create` creates a *transaction*, and the returned
+`checkout.url` points at the **default payment link** configured in your Paddle dashboard — a page you
+host yourself that runs Paddle.js on an approved domain. That is why Paddle reports
+`hostedCheckout: false` and `checkoutSuccessUrl: false`; see [Paddle](/docs/providers/paddle).
+:::
+
 ## The Checkout model
 
 <TypeTable
@@ -57,48 +80,10 @@ The client validates `items` before any request is made: an empty array, an empt
   }}
 />
 
-## Items, quantity, and success URL support
-
-| Provider          | Multiple items | `quantity` > 1 | `successUrl`               | `customerId` on create |
-| ----------------- | -------------- | -------------- | -------------------------- | ---------------------- |
-| **Polar**         | yes            | **no**         | yes                        | yes                    |
-| **Lemon Squeezy** | **no** (one)   | yes            | yes (`redirect_url`)       | **no** (use `customerEmail`) |
-| **Stripe**        | yes            | yes            | yes                        | yes                    |
-| **Paddle**        | yes            | yes            | **no** — see below         | yes (email is resolved to a customer) |
-| **Dodo Payments** | yes            | yes            | yes (`return_url`)         | yes                    |
-
-Unsupported combinations throw `RevenueError` with code `unsupported` rather than silently dropping
-your input:
-
-- Polar rejects any item `quantity` other than `1`.
-- Lemon Squeezy rejects more than one item, and rejects `customerId` (pass `customerEmail` instead).
-- Paddle rejects `successUrl` — the client gates this one *before* the request, via the
-  `checkoutSuccessUrl` capability.
-
-:::warning
-**Paddle has no provider-hosted checkout.** `checkouts.create` creates a *transaction*, and the returned
-`checkout.url` points at the **default payment link** configured in your Paddle dashboard — a page you
-host yourself that runs [Paddle.js](https://developer.paddle.com/paddlejs/overview) on an approved
-domain. Without a configured default payment link and an approved domain, the URL will not work. This
-is why Paddle reports `hostedCheckout: false` and `checkoutSuccessUrl: false`: success redirects are
-configured in Paddle.js, not in the API call.
-:::
-
-Check the capability before offering a success URL in provider-agnostic code:
-
-```ts
-await client.checkouts.create({
-  items: [{ product: price.checkoutRef }],
-  successUrl: client.capabilities.checkoutSuccessUrl
-    ? 'https://example.com/thanks'
-    : undefined,
-});
-```
-
 ## Checkout expiry
 
-Two of the five providers let you choose when a checkout link stops working; the rest apply a fixed
-lifetime. `expiresAt` is a `Date`, gated by the `checkoutExpiresAt` capability:
+`expiresAt` is a `Date`, gated by the `checkoutExpiresAt` capability — only Lemon Squeezy and Stripe let
+you choose when a link stops working; the other three apply a fixed lifetime server-side:
 
 ```ts
 await client.checkouts.create({
@@ -109,36 +94,32 @@ await client.checkouts.create({
 });
 ```
 
-| Provider          | `expiresAt` | Behavior                                                                  |
-| ----------------- | ----------- | -------------------------------------------------------------------------- |
-| **Polar**         | **no**      | Fixed 24 hours, set server-side.                                            |
-| **Lemon Squeezy** | yes         | `expires_at`, ISO 8601. Omit it and the link **never** expires.             |
+An invalid `Date` or one at or before now throws `validation`; a provider-specific window (Stripe's, for
+instance) is left to the provider, whose rejection arrives as a `validation` error like any other.
+
+`Checkout.expiresAt` is the read side of the same field, populated on Polar, Lemon Squeezy and Stripe —
+Polar included, which reports the expiry it picked without letting you choose it.
+
+<Accordion>
+  <AccordionItem title="What each provider does with a checkout's lifetime">
+
+| Provider          | `expiresAt` | Behavior                                                                         |
+| ----------------- | ----------- | -------------------------------------------------------------------------------- |
+| **Polar**         | **no**      | Fixed 24 hours, set server-side.                                                 |
+| **Lemon Squeezy** | yes         | `expires_at`, ISO 8601. Omit it and the link **never** expires.                  |
 | **Stripe**        | yes         | `expires_at`, unix seconds. Stripe accepts 30 minutes to 24 hours from creation. |
-| **Paddle**        | **no**      | Transactions have no expiry field.                                          |
-| **Dodo Payments** | **no**      | Fixed 24 hours, or 15 minutes for a confirmed checkout.                     |
+| **Paddle**        | **no**      | Transactions have no expiry field.                                               |
+| **Dodo Payments** | **no**      | Fixed 24 hours, or 15 minutes for a confirmed checkout.                          |
 
-The client checks three things before any request:
-
-- `expiresAt` on a provider without `checkoutExpiresAt` → `unsupported`.
-- An invalid `Date` (`NaN`) → `validation`.
-- A date at or before now → `validation`.
-
-:::note
-The SDK deliberately does **not** enforce Stripe's 30-minute-to-24-hour window. It is one provider's rule,
-Stripe measures it against its own clock — so near either boundary, clock skew alone would turn a valid
-date into a client-side rejection — and clamping the value would silently rewrite what you asked for.
-Stripe rejects an out-of-range date itself, and that `400` arrives as a `validation` error like any other.
-:::
-
-`Checkout.expiresAt` is the read side of the same field. It is populated on Polar, Lemon Squeezy, and
-Stripe — Polar included, which reports the expiry it picked without letting you choose it. Paddle
-transactions and Dodo Payments checkout sessions carry no expiry at all, so it stays `undefined` there.
+  </AccordionItem>
+</Accordion>
 
 ## Pay what you want
 
-A price whose `model` is `custom` has no fixed amount: the buyer picks one. `customAmount` supplies that
-amount from your own UI instead — an integer in the currency's **minor units** (`2500` is $25.00), in
-whatever currency the product is priced in. It is gated by the `checkoutCustomAmount` capability:
+A price whose `model` is `custom` has no fixed amount: the buyer picks one on the provider's checkout
+page. `customAmount` supplies that amount from your own UI instead — an integer in the currency's
+**minor units** (`2500` is $25.00). It is gated by `checkoutCustomAmount`, which is `true` on Polar and
+Lemon Squeezy only:
 
 ```ts
 await client.checkouts.create({
@@ -147,53 +128,22 @@ await client.checkouts.create({
 });
 ```
 
-| Provider          | `customAmount` | Wire field                                          |
-| ----------------- | -------------- | --------------------------------------------------- |
-| **Polar**         | yes            | top-level `amount`, cents                           |
-| **Lemon Squeezy** | yes            | `custom_price` in the checkout attributes, cents     |
-| **Stripe**        | **no**         | —                                                   |
-| **Paddle**        | **no**         | —                                                   |
-| **Dodo Payments** | **no**         | —                                                   |
-
-The client rejects a `customAmount` that is not a positive integer with `validation`, and one passed to a
-provider without the capability with `unsupported` — both before any request. The **upper** bound is the
-provider's to enforce: Polar checks the price's own `minimum_amount`/`maximum_amount`, and only the
-provider knows them.
+A value that is not a positive integer throws `validation`, both checks happening before any request.
+The **upper** bound belongs to the provider — only it knows the price's own minimum and maximum.
 
 :::note
-Neither provider fails when the price is not a pay-what-you-want one. Polar states it outright — the
-amount "will be ignored for fixed and free prices" — so a `customAmount` aimed at the wrong price
-charges the catalog amount instead. Confirm `price.model === 'custom'` before you send one.
+Neither provider fails when the price is *not* a pay-what-you-want one — Polar states outright that the
+amount "will be ignored for fixed and free prices", so a misaimed `customAmount` silently charges the
+catalog amount. Confirm `price.model === 'custom'` before you send one.
 :::
 
-Omit `customAmount` and the buyer enters the amount on the provider's own checkout page, which is the
-right choice whenever you have no reason to preset it.
+## Metadata
 
-Dodo Payments is the near miss: it has a pay-what-you-want `amount`, but per **cart item** and for
-one-time products only, which cannot be expressed as one checkout-level amount once a checkout carries
-several items — so `checkoutCustomAmount` stays `false` there rather than guessing which item to apply it
-to.
-
-## Metadata propagation
-
-`metadata` is a flat `Record<string, string | number | boolean>`. Where it ends up differs per provider:
-
-| Provider          | Written as                                                    | Reaches the subscription?                       |
-| ----------------- | ------------------------------------------------------------- | ----------------------------------------------- |
-| **Polar**         | checkout `metadata`                                            | yes — Polar copies it onto the order/subscription |
-| **Lemon Squeezy** | `checkout_data.custom`                                         | only via webhooks, as `meta.custom_data`         |
-| **Stripe**        | session `metadata` **and** `subscription_data[metadata]`        | yes — the SDK writes both                        |
-| **Paddle**        | transaction `custom_data`                                      | yes — carried onto the subscription              |
-| **Dodo Payments** | checkout `metadata`                                            | yes                                              |
-
-Two of these deserve attention:
-
-- **Stripe** does *not* copy session metadata onto the created subscription. `revenue-sdk` writes
-  `subscription_data[metadata]` as well whenever the checkout is in subscription mode, so
-  `subscription.metadata` carries your keys.
-- **Lemon Squeezy** never attaches custom data to the subscription resource. It travels only in the
-  webhook envelope (`meta.custom_data`), which is why `Subscription.metadata` is populated on Lemon
-  Squeezy webhook events but is `undefined` when you fetch the subscription over the API.
+`metadata` is a flat `Record<string, string | number | boolean>` sent with the checkout and echoed back
+on the resulting order or subscription — with one gap worth planning around: on **Lemon Squeezy** custom
+data never reaches the subscription resource at all. It travels only in the webhook envelope, so
+`Subscription.metadata` is populated on Lemon Squeezy webhook events and `undefined` when you fetch the
+same subscription over the API.
 
 :::tip
 Treat metadata as a hint, not a source of truth. Store your own mapping from provider
@@ -201,26 +151,36 @@ Treat metadata as a hint, not a source of truth. Store your own mapping from pro
 sight.
 :::
 
+<Accordion>
+  <AccordionItem title="Where metadata is written on each provider">
+
+| Provider          | Written as                                               | Reaches the subscription?                         |
+| ----------------- | -------------------------------------------------------- | ------------------------------------------------- |
+| **Polar**         | checkout `metadata`                                      | yes — Polar copies it onto the order/subscription |
+| **Lemon Squeezy** | `checkout_data.custom`                                   | only via webhooks, as `meta.custom_data`          |
+| **Stripe**        | session `metadata` **and** `subscription_data[metadata]` | yes — the SDK writes both                         |
+| **Paddle**        | transaction `custom_data`                                | yes — carried onto the subscription               |
+| **Dodo Payments** | checkout `metadata`                                      | yes                                               |
+
+Stripe does not copy session metadata onto the created subscription by itself, which is why the SDK
+writes `subscription_data[metadata]` as well whenever the checkout is in subscription mode.
+
+  </AccordionItem>
+</Accordion>
+
 ## Checkout status semantics
 
 `Checkout.status` is a three-value union plus `null`:
 
-| `status`   | Meaning                                                    |
-| ---------- | ---------------------------------------------------------- |
-| `open`     | Not paid (yet). The link may still be used.                |
-| `complete` | **Paid.** Safe to fulfill.                                 |
-| `expired`  | The checkout failed, was canceled, or timed out.           |
-| `null`     | The provider exposes no checkout status (Lemon Squeezy).   |
+| `status`   | Meaning                                                  |
+| ---------- | -------------------------------------------------------- |
+| `open`     | Not paid (yet). The link may still be used.              |
+| `complete` | **Paid.** Safe to fulfill.                               |
+| `expired`  | The checkout failed, was canceled, or timed out.         |
+| `null`     | The provider exposes no checkout status (Lemon Squeezy). |
 
-Per-provider mapping:
-
-| Provider          | → `complete`            | → `expired`             | → `open`                                     |
-| ----------------- | ----------------------- | ----------------------- | -------------------------------------------- |
-| **Polar**         | `succeeded`             | `expired`, `failed`     | everything else                              |
-| **Lemon Squeezy** | —                       | —                       | — (`status` is always `null`)                 |
-| **Stripe**        | `complete` **and** `payment_status !== 'unpaid'` | `expired` | `open`, **and** `complete` while `payment_status === 'unpaid'` |
-| **Paddle**        | `paid`, `completed`     | `canceled`              | everything else                               |
-| **Dodo Payments** | `payment_status: succeeded` | `cancelled`, `failed` | everything else                            |
+Which provider value produces which is in
+[Status mapping](/docs/reference/status-mapping#checkout-status-mapping).
 
 :::warning
 **Stripe: `complete` does not mean paid.** With delayed payment methods (bank debits, vouchers) a
@@ -239,43 +199,8 @@ if (checkout.status === 'complete') {
 }
 ```
 
-:::note
 On **Dodo Payments** the checkout-status endpoint does not return the checkout URL, so a `Checkout`
-fetched with `checkouts.get` has `url: ''`. Persist the URL from `checkouts.create` if you need it
-later.
-:::
-
-## What gets into CreateCheckoutParams
-
-`CreateCheckoutParams` is small on purpose. A field is added when both of these hold:
-
-1. **At least two providers implement the same concept** — not merely a similar-sounding field.
-2. **The SDK's own model doesn't structurally prevent it.**
-
-Below that bar, the answer is to call the provider's endpoint directly. `checkouts.create` is a single
-POST, and nothing downstream depends on having gone through it: `Checkout.raw`, the webhook path, and
-`orders.*` all work the same on a checkout you created yourself.
-
-`expiresAt` cleared the bar on two providers, and `Checkout.expiresAt` already existed on the read side —
-it closed an asymmetry rather than introducing a concept. Three requests did not clear it:
-
-- **`embedOrigin`** — one provider out of five, and the rest are not near-misses. Polar's `embed_origin`
-  is a security allowlist: the iframe posts the session token only to a listed origin. Lemon Squeezy's
-  `checkout_options.embed` is a display toggle with no origin and no security semantics. Stripe has no
-  origin allowlist at all — embedding is a second checkout *mode* (`ui_mode` + `client_secret` +
-  `return_url`) that forbids `success_url`, so it collides with `checkoutSuccessUrl` and needs a
-  `client_secret` field on `Checkout`. That is a design, not a parameter. Paddle approves domains once in
-  the dashboard, and Dodo Payments has nothing.
-- **A per-checkout product description** — only Lemon Squeezy's `product_options.description` is usable.
-  On Stripe it is structurally impossible: `items[].product` is a catalog price ID, `price` and
-  `price_data` are mutually exclusive, so overriding the description means abandoning catalog pricing.
-  `line_items[].description` does not exist on Checkout Sessions.
-- **A `providerOptions` passthrough** — rejected outright, not merely declined. It can't be typed without
-  making `RevenueProvider` and `createClient` generic, it would freeze the private per-provider wire
-  shapes into the public API, and it voids "throw `unsupported`, never silently drop" by construction:
-  the client can't gate keys it doesn't know. It would also collide with the fields the SDK already
-  writes — `product_options.redirect_url`, `invoice_creation`, `subscription_data[metadata]`,
-  `success_url`.
+fetched with `checkouts.get` has `url: ''`. Persist the URL from `checkouts.create` if you need it later.
 
 :::warning
 Do not fulfill from the success page alone. The customer may close the tab, and delayed payment methods

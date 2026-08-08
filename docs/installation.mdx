@@ -43,17 +43,18 @@ There are no `node:*` imports anywhere in the package, so it drops into edge run
 
 The client lives at the package root; each provider factory lives on its own subpath so a bundler only
 pulls in the provider you actually import. Every provider subpath also exports that provider's
-standalone webhook helpers.
+standalone webhook helpers, and the providers with license keys additionally export the standalone
+license functions.
 
 | Import                       | Exports                                                                       |
 | ---------------------------- | ----------------------------------------------------------------------------- |
 | `revenue-sdk`                | `createClient`, `RevenueError`, `detectWebhookProvider`, and all normalized types |
-| `revenue-sdk/polar`          | `polar`, `verifyWebhook`, `parseWebhookEvent`                                 |
-| `revenue-sdk/lemon-squeezy`  | `lemonSqueezy`, `verifyWebhook`, `parseWebhookEvent`                          |
+| `revenue-sdk/polar`          | `polar`, `verifyWebhook`, `parseWebhookEvent`, `validateLicenseKey`, `activateLicenseKey`, `deactivateLicenseKey` |
+| `revenue-sdk/lemon-squeezy`  | `lemonSqueezy`, `verifyWebhook`, `parseWebhookEvent`, `validateLicenseKey`, `activateLicenseKey`, `deactivateLicenseKey` |
 | `revenue-sdk/stripe`         | `stripe`, `verifyWebhook`, `parseWebhookEvent`                                |
 | `revenue-sdk/paddle`         | `paddle`, `verifyWebhook`, `parseWebhookEvent`                                |
-| `revenue-sdk/dodo-payments`  | `dodoPayments`, `verifyWebhook`, `parseWebhookEvent`                          |
-| `revenue-sdk/testing`        | `createInMemoryProvider`                                                       |
+| `revenue-sdk/dodo-payments`  | `dodoPayments`, `verifyWebhook`, `parseWebhookEvent`, `validateLicenseKey`, `activateLicenseKey`, `deactivateLicenseKey` |
+| `revenue-sdk/testing`        | `createInMemoryProvider`, `signWebhook`                                        |
 
 :::note
 `revenue-sdk/testing` is meant for your test suite only — it provides a seedable in-memory provider so

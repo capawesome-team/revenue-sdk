@@ -6,3 +6,54 @@
 :root[data-theme='dark'] {
   --blume-accent-foreground: oklch(0.085 0 0);
 }
+
+/*
+ * Blume's AccordionItem wraps its body in `not-prose`, which strips the
+ * typography plugin's table, list, and paragraph styling (the .blume-table-scroll
+ * frame and cell padding survive — they are unscoped). Restore the missing
+ * pieces so tables and lists inside accordions match the surrounding prose.
+ */
+[data-blume-accordion] table {
+  width: 100%;
+  font-size: 0.875em;
+  line-height: 1.7;
+}
+[data-blume-accordion] thead {
+  border-bottom: 1px solid var(--blume-border);
+}
+[data-blume-accordion] th {
+  color: var(--blume-foreground);
+  font-weight: 600;
+  text-align: start;
+  vertical-align: bottom;
+}
+[data-blume-accordion] tbody tr {
+  border-bottom: 1px solid var(--blume-border);
+}
+[data-blume-accordion] tbody tr:last-child {
+  border-bottom-width: 0;
+}
+[data-blume-accordion] tbody td {
+  vertical-align: baseline;
+}
+[data-blume-accordion] p {
+  margin-block: 1rem;
+}
+[data-blume-accordion] ul {
+  list-style-type: disc;
+}
+[data-blume-accordion] ol {
+  list-style-type: decimal;
+}
+[data-blume-accordion] ul,
+[data-blume-accordion] ol {
+  margin-block: 1rem;
+  padding-inline-start: 1.625em;
+}
+[data-blume-accordion] li {
+  margin-block: 0.375em;
+  padding-inline-start: 0.375em;
+}
+[data-blume-accordion] li::marker {
+  color: var(--blume-muted-foreground);
+}

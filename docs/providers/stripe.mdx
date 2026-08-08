@@ -1,6 +1,6 @@
 ---
 title: Stripe
-description: Configure the Stripe provider — secret key, pinned API version, test mode, webhooks, capabilities, and quirks.
+description: Configure the Stripe provider — secret key, pinned API version, test mode, webhooks, limitations, and the traps worth knowing.
 sidebar:
   label: Stripe
 ---
@@ -41,32 +41,37 @@ Create a key in the Stripe dashboard under **Developers → API keys**. Either a
 **restricted key** (`rk_…`) works — a restricted key is the better default. Grant it read/write on
 Products, Prices, Checkout Sessions, Customers, Subscriptions, and the Billing Portal.
 
-## Test mode
+## Sandbox & test mode
 
 Test mode is selected by the **key prefix**: `sk_test_…` / `rk_test_…` talk to test data, `sk_live_…` to
 live data. There is no `server` option — swap the key via environment variables.
 
+## Limitations
+
+- **No license keys.** `licenseKeys` is `false` and all four `client.licenseKeys` methods throw
+  `unsupported` — Stripe has no license-key API, and Billing Entitlements is not a substitute (no key
+  string, no activation count, no device identity, and no way for a shipped app to check its own
+  license). See [License keys](/docs/concepts/license-keys).
+- **No pay-what-you-want.** `checkouts.create({ customAmount })` throws `unsupported`
+  (`checkoutCustomAmount: false`).
+- **Pause is immediate only.** `subscriptions.pause({ behavior: 'period_end' })` throws `unsupported` —
+  scheduling a pause would require Subscription Schedules — and `pauseAtPeriodEnd` is always `false`.
+- **A checkout expiry must be 30 minutes to 24 hours out.** The SDK deliberately does not enforce
+  Stripe's window client-side: it is measured against Stripe's clock, so a boundary value would be
+  rejected by clock skew alone. Stripe's `400` maps to `RevenueError { code: 'validation' }`.
+
+Full values for every capability: [capability matrix](/docs/reference/capability-matrix).
+
 ## Webhooks
 
-Create the endpoint in **Developers → Webhooks** and copy the signing secret (`whsec_…`).
+Create the endpoint in **Developers → Webhooks** and copy the signing secret (`whsec_…`). Verification
+and parsing come from the subpath:
 
 ```ts
 import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/stripe';
-
-const headers = request.headers;
-const body = await request.text();
-
-if (!(await verifyWebhook({ headers, body, secret: env.STRIPE_WEBHOOK_SECRET }))) {
-  return new Response('invalid signature', { status: 401 });
-}
-
-const event = await parseWebhookEvent({ headers, body });
 ```
 
-The `Stripe-Signature` header carries a timestamp (`t=`) and one or more signatures. Only `v1=`
-signatures are trusted — `v0=` is a deliberately fake test scheme and is ignored — and deliveries older
-than 300 seconds are rejected. The `whsec_` secret is used **verbatim**; never strip or base64-decode
-it.
+See [Handle webhooks](/docs/guides/webhook-handler) for the full handler.
 
 Events worth subscribing to: `customer.subscription.created`, `customer.subscription.updated`,
 `customer.subscription.deleted`, `customer.subscription.paused`, `customer.subscription.resumed`,
@@ -74,17 +79,14 @@ Events worth subscribing to: `customer.subscription.created`, `customer.subscrip
 `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `invoice.paid`.
 
 :::warning
-**A pause issued through this SDK emits no paused event.** Stripe's
-`customer.subscription.paused` / `.resumed` fire only when a subscription enters Stripe's raw
-`status: 'paused'` — a trial that ended without a payment method. `subscriptions.pause` sets
-`pause_collection`, an unrelated mechanism that Stripe reports as a plain
-`customer.subscription.updated`. So `event.subscriptionChange` is `paused` / `resumed` only for the
-trial case; an SDK-initiated pause arrives with `subscriptionChange` `undefined` and the pause visible
-on `event.subscription.status`.
+**A pause issued through this SDK emits no paused event.** Stripe's `customer.subscription.paused` /
+`.resumed` fire only when a subscription enters Stripe's raw `status: 'paused'` — a trial that ended
+without a payment method. `subscriptions.pause` sets `pause_collection`, an unrelated mechanism Stripe
+reports as a plain `customer.subscription.updated`.
 
 Stripe names no other transition either: a scheduled cancellation, a slide into `past_due`, and an
-uncancel all arrive as `customer.subscription.updated` with no `subscriptionChange`. Read
-`event.subscription` for the resulting state on Stripe.
+uncancel all arrive as `customer.subscription.updated` with `event.subscriptionChange` `undefined`.
+Read `event.subscription` for the resulting state.
 :::
 
 :::warning
@@ -94,133 +96,63 @@ uncancel all arrive as `customer.subscription.updated` with no `subscriptionChan
 `checkout.session.async_payment_succeeded` to catch the settlement.
 :::
 
+Stripe also documents distinct `evt_` IDs describing the **same** change, so de-duplicating on
+`event.idempotencyKey` stops redeliveries, not fan-out — see [Webhooks](/docs/concepts/webhooks).
+
 ## Orders
 
-A unified `Order` is a **Stripe Invoice**, not a Charge. `orders.list` reads `/v1/invoices` and
-`orders.get` reads `/v1/invoices/{id}`.
-
-That choice keeps one ID space: `order.paid` maps from `invoice.paid`, so `event.order.id` is an `in_…`
-and resolves through `orders.get`. Charges are a different space — and since `charge.invoice` was
-removed in `2025-03-31.basil`, a Charge could not carry `subscriptionId` at the pinned version anyway.
+See [Orders](/docs/concepts/orders) for the model. A unified `Order` is a **Stripe Invoice**, not a
+Charge: `order.paid` maps from `invoice.paid`, so `event.order.id` is an `in_…` and resolves through
+`orders.get`.
 
 :::warning
 **A one-off payment only becomes an Invoice when the Checkout Session asked for one.**
-`checkouts.create` now sends `invoice_creation[enabled]` on every `payment`-mode session it creates, so
+`checkouts.create` sends `invoice_creation[enabled]` on every `payment`-mode session it creates, so
 purchases made through this SDK appear in `orders.list` and emit `order.paid`. Purchases through a
 session created **outside this SDK, or before this version**, never produce an invoice and cannot be
 retrofitted. Subscription mode always invoices — and rejects the parameter, so the SDK only sends it in
 payment mode.
 :::
 
-- **Drafts are dropped client-side.** Stripe's `status` filter takes a single value, so "everything
-  except draft" cannot be expressed on the wire. The cursor comes from the unfiltered page, so a page
-  can be **short or empty and still have a cursor** — a renewal sits as a `draft` for about an hour
-  before Stripe charges it.
 - **`refundStatus` is never set.** A refund is a Charge-level object and leaves no trace on the invoice —
   no flag, no amount — so a refunded invoice still reports `status: 'paid'`.
-- **`amount` is `amount_paid` on a settled invoice**, which is below `total` whenever a customer credit
-  balance covered part of it. An unpaid invoice reports `total`, since its `amount_paid` is `0`.
+- **Drafts are dropped client-side**, because Stripe's `status` filter takes a single value. A page can
+  be **short or empty and still have a cursor** — a renewal sits as a `draft` for about an hour before
+  Stripe charges it.
 - **`createdAt` is the invoice creation time**, not the payment time — that lives on
   `status_transitions.paid_at` in `raw`.
-- **`getInvoiceUrl` prefers `hosted_invoice_url`** and falls back to `invoice_pdf`. Both are minted at
-  finalization and expire 30 days after the due date (capped at 120); an expired PDF link answers
-  `400`. Before finalization neither exists and the call throws `not_found`.
+- **`getInvoiceUrl` throws `not_found` before finalization.** The URLs are minted at finalization and
+  expire 30 days after the due date (capped at 120); an expired PDF link answers `400`.
 
-See [Orders](/docs/concepts/orders) for the model and the cross-provider comparison.
-
-## Capabilities
-
-| Capability                    | Value                                  |
-| ----------------------------- | -------------------------------------- |
-| `cancellationReason`          | `true`                                 |
-| `checkoutCustomAmount`        | `false`                                |
-| `checkoutExpiresAt`           | `true`                                 |
-| `checkoutStatus`              | `true`                                 |
-| `checkoutSuccessUrl`          | `true`                                 |
-| `customerMetadata`            | `true`                                 |
-| `endTrial`                    | `true`                                 |
-| `hostedCheckout`              | `true`                                 |
-| `licenseKeys`                 | `false`                                |
-| `listOrdersByCustomer`        | `true`                                 |
-| `listSubscriptionsByCustomer` | `true`                                 |
-| `pause`                       | `true`                                 |
-| `pauseBehaviors`              | `['immediately']`                      |
-| `portalReturnUrl`             | `true`                                 |
-| `prorationBehaviors`          | `['invoice_now', 'none', 'prorate']`   |
-| `revoke`                      | `true`                                 |
-| `uncancel`                    | `true`                                 |
-| `usageReporting`              | `true`                                 |
-
-## Quirks
+## Provider notes
 
 - **`Price.checkoutRef` is the price ID**, not the product ID. Stripe checkout line items take
-  `price_…`. `Product.id` is the `prod_…` — never pass it to `checkouts.create`.
+  `price_…`; `Product.id` is the `prod_…` and must never be passed to `checkouts.create`.
 - **The API version is pinned** to a constant so response shapes match the SDK's types regardless of
   your account default. Override it with `apiVersion` only if you know the shapes still line up.
-- **Form encoding is invisible to you.** Stripe's API takes
-  `application/x-www-form-urlencoded` with bracket notation, not JSON. The SDK's encoder handles
-  sequential array indices, omitting `undefined`, sending `null` as `''`, booleans as `'true'`/`'false'`,
-  and `Date` as unix seconds. You pass plain objects and never see it.
-- **`status=all` is always sent** on subscription lists. Without it Stripe silently hides canceled
-  subscriptions, so a canceled subscription would simply vanish from your list.
-- **Plan changes send the current item ID.** Omitting `items[0][id]` *adds* the new price instead of
-  replacing the old one — silent double-billing. The SDK fetches the subscription first and sends the
-  item ID, so this can't happen through `subscriptions.changePlan`. If that subscription comes back
-  with no items, the SDK throws `RevenueError { code: 'provider_error' }` rather than send a change it
-  cannot make safely.
-- **`current_period_start` / `current_period_end` live on subscription items**, not on the
-  subscription. The SDK reads them from the first item and exposes them as
-  `currentPeriodStart`/`currentPeriodEnd`.
-- **`cancelAtPeriodEnd` needs two fields.** In flexible billing mode — Stripe's default for new
-  integrations — a portal cancellation sets only `cancel_at` and leaves `cancel_at_period_end` at
-  `false`. The SDK checks `cancel_at_period_end || cancel_at !== null`, and `uncancel` clears both.
-- **A paused subscription keeps its Stripe status.** `subscriptions.pause` sets `pause_collection` with
-  `behavior: 'void'`, and Stripe documents that "the subscription status will be unchanged and will not be
-  updated to `paused`". The SDK reports `status: 'paused'` whenever `pause_collection` is set — except on
-  a terminally `canceled` subscription, where `canceled` wins. `pauseAtPeriodEnd` is always `false`:
-  `pause_collection` is immediate, and scheduling a pause would require Subscription Schedules.
-- **Two unrelated pause mechanisms.** Besides `pause_collection`, Stripe has a raw `paused` status that
-  only occurs when a trial ends without a payment method, and it resumes through a different endpoint
-  (`POST /v1/subscriptions/{id}/resume`). `subscriptions.resume` reads the subscription first and picks
-  the right one — one extra request.
-- **`checkout.status === 'complete'` means paid.** A session that is `complete` but `payment_status:
-  unpaid` is reported as `open`.
-- **A checkout expiry must be 30 minutes to 24 hours out.** `checkouts.create({ expiresAt })` sends
-  `expires_at` as unix seconds. The SDK deliberately does **not** enforce Stripe's window client-side: it
-  is one provider's rule, measured against Stripe's clock, so a boundary value would be rejected by
-  clock skew alone. Stripe's `400` maps to `RevenueError { code: 'validation' }`.
-- **`event.idempotencyKey` is the envelope `id`** (`stripe:evt_…`) and `event.createdAt` is the
-  envelope's `created`, converted from unix seconds. Stripe also documents distinct `evt_` IDs
-  describing the *same* change, so dedupe stops redeliveries, not fan-out.
-- **The email filter is case-sensitive and emails are not unique** — see
-  [Customers & portal](/docs/concepts/customers-and-portal).
-- **`customers.update` merges metadata instead of replacing it.** Stripe updates a customer with
-  `POST /v1/customers/{id}` (not `PATCH`) and merges `metadata` key by key, so a key you leave out keeps
-  its stored value — the opposite of every other provider here. Stripe requires no field at all to
-  create a customer; the SDK still requires `email` and `name`, because two other providers do.
 - **A `2xx` on `usage.report` is not a confirmation.** Meter events are validated synchronously but
   processed asynchronously: an unknown customer, or an `eventName` with no matching meter, is dropped
   **silently**. The only signals are the `v1.billing.meter.error_report_triggered` and
   `v1.billing.meter.no_meter_found` thin webhooks, which the SDK does not parse — subscribe to them in
-  the dashboard if silent revenue loss matters. See
-  [Usage-based billing](/docs/concepts/usage-based-billing).
+  the dashboard if silent revenue loss matters.
 - **Meter payload keys are configurable.** `stripe_customer_id` and `value` are only the meter's
-  *default* keys (`customer_mapping.event_payload_key` / `value_settings.event_payload_key`); a meter
-  with custom keys needs them passed through `metadata`. A usage `timestamp` may be at most 35 calendar
-  days old and 5 minutes ahead. The endpoint allows 1,000 events per second, but only **one concurrent
-  call per customer per meter** — parallelize across customers, not within one.
-- **No license keys.** Stripe has no license-key API at all, so `licenseKeys` is `false` and all four
-  `client.licenseKeys` methods throw `unsupported`. Billing Entitlements is not a substitute: it is a
-  derived per-customer feature boolean with no key string, no activation count, and no device identity —
-  and `GET /v1/entitlements/active_entitlements` is secret-key-only (`CustomerSessions` has no
-  `entitlements` component), so a shipped app cannot check its own license. See
-  [License keys](/docs/concepts/license-keys).
-- **No `Retry-After` on 429.** Stripe signals retryability with `Stripe-Should-Retry` instead, which the
-  adapter maps onto `RevenueError.retryable`. `retryAfter` is therefore usually `undefined`, so the
-  client's bounded retry falls back to a one-second wait — and skips the retry entirely when the header
-  says `false`. Anything longer is your own back-off.
-- **Timestamps are unix seconds** on the wire and are converted to `Date` everywhere in the normalized
-  models.
+  *default* keys, so a meter with custom keys needs them passed through `metadata`. A usage `timestamp`
+  may be at most 35 calendar days old and 5 minutes ahead, and the endpoint allows only **one
+  concurrent call per customer per meter** — parallelize across customers, not within one. See
+  [Usage-based billing](/docs/concepts/usage-based-billing).
+- **`customers.update` merges metadata instead of replacing it.** Stripe merges `metadata` key by key,
+  so a key you leave out keeps its stored value — the opposite of every other provider here.
+- **The email filter is case-sensitive and emails are not unique** — see
+  [Customers & portal](/docs/concepts/customers-and-portal).
+- **`checkout.status === 'complete'` means paid.** A session that is `complete` but with
+  `payment_status: unpaid` is reported as `open`.
+- **A plan change on a subscription with no items throws `provider_error`.** Stripe needs the current
+  item ID to *replace* a price instead of adding one; without it the change would double-bill, so the
+  SDK refuses rather than send it.
+- **No `Retry-After` on 429.** Stripe signals retryability with `Stripe-Should-Retry`, which the adapter
+  maps onto `RevenueError.retryable`. `retryAfter` is therefore usually `undefined`, so the client's
+  bounded retry falls back to a one-second wait — and skips the retry entirely when the header says
+  `false`. Anything longer is your own back-off.
 
 <CardGroup cols={2}>
   <Card title="Paddle" icon="square-stack" href="/docs/providers/paddle">

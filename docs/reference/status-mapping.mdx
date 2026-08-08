@@ -35,7 +35,7 @@ type SubscriptionStatus =
 | `past_due`   | `past_due`   | `past_due`             | `past_due`                       | `past_due` | `on_hold`                        |
 | `unpaid`     | `unpaid`     | `unpaid`               | `unpaid`                         | —          | —                                |
 | `paused`     | `paused`     | `paused`               | `paused`, `pause_collection`²    | `paused`   | —                                |
-| `canceled`   | `canceled`, `incomplete_expired` | `expired` | `canceled`, `incomplete_expired` | `canceled` | `cancelled`, `failed`, `expired` |
+| `canceled`   | `canceled`, `incomplete_expired` | `expired`              | `canceled`, `incomplete_expired` | `canceled` | `cancelled`, `failed`, `expired` |
 
 <small>¹ Lemon Squeezy's `cancelled` means "grace period until `ends_at`, still resumable" — it maps to
 `active` with `cancelAtPeriodEnd: true`. The terminal status is `expired`.</small>
@@ -56,9 +56,15 @@ A dash means the provider has no equivalent state. **Any unrecognized provider s
 | ----------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------- |
 | **Polar**         | `cancel_at_period_end === true`                             | Set by `PATCH /v1/subscriptions/{id}`.                                       |
 | **Lemon Squeezy** | provider status is `cancelled`                              | The status *is* the flag; the unified status stays `active`.                 |
-| **Stripe**        | `cancel_at_period_end === true \|\| cancel_at !== null`     | Flexible billing mode sets only `cancel_at` for portal cancellations.        |
+| **Stripe**        | `cancel_at_period_end === true \|\| cancel_at !== null`     | Both fields must be checked — see the note below.                            |
 | **Paddle**        | `scheduled_change?.action === 'cancel'`                     | Scheduling emits `subscription.updated`, not `subscription.canceled`.        |
 | **Dodo Payments** | `cancel_at_next_billing_date === true`                      | Forced to `false` once the status is terminal.                               |
+
+:::note
+**The Stripe rule needs both fields.** In flexible billing mode — Stripe's default for new integrations
+— a cancellation made through the **customer portal** sets only `cancel_at` and leaves
+`cancel_at_period_end` at `false`. Checking one field alone misses those cancellations entirely.
+:::
 
 On Stripe and Dodo Payments, `cancelAtPeriodEnd` is normalized back to `false` when the subscription is
 terminally `canceled` — there is nothing left to schedule.
@@ -87,39 +93,10 @@ indefinite pause.
 ## `subscriptionChange`: the edge, not the level
 
 Everything above is a **level** — the state a subscription is in right now. A webhook event can also
-carry the **edge**, the transition the provider just named, on `WebhookEvent.subscriptionChange`:
-
-```ts
-type SubscriptionChange = 'cancel_scheduled' | 'past_due' | 'paused' | 'resumed' | 'uncanceled';
-```
-
-The two are not redundant. `cancelAtPeriodEnd` stays `true` for the rest of the period, so it cannot
-tell you *when* it was set: a handler that reacts to it fires the same "your plan ends soon" email on
-every later `subscription.updated` for that subscription. Diffing against your stored copy is not a
-substitute either — if anything else mutated the row first, the diff comes back empty and the transition
-is lost. `subscriptionChange` is derived **only from the provider's event string**, never from payload
-state, so it appears exactly once per transition.
-
-| Change             | Polar | Lemon Squeezy | Stripe | Paddle | Dodo Payments |
-| ------------------ | ----- | ------------- | ------ | ------ | ------------- |
-| `cancel_scheduled` | yes   | yes           | —      | —      | —             |
-| `past_due`         | yes   | —             | —      | yes    | yes           |
-| `paused`           | yes   | yes           | yes¹   | yes    | —             |
-| `resumed`          | yes   | yes           | yes¹   | yes    | —             |
-| `uncanceled`       | yes   | yes²          | —      | —      | —             |
-
-<small>¹ Stripe's `customer.subscription.paused` / `.resumed` fire only for its raw `paused` status — a
-trial that ended without a payment method. A pause issued through `subscriptions.pause` sets
-`pause_collection` and arrives as a plain `customer.subscription.updated` with no
-`subscriptionChange`.</small>
-
-<small>² Lemon Squeezy's `subscription_resumed` means un-*cancelled*; un-*pausing* is
-`subscription_unpaused` → `resumed`.</small>
-
-Coverage is uneven by design: `subscriptionChange` names a transition where the provider named one and
-is `undefined` otherwise. Use it to trigger side effects **once**, and keep reading the level from
-`event.subscription` for entitlement. The per-provider event strings are in
-[Webhook events](/docs/reference/webhook-events).
+carry the **edge**: `WebhookEvent.subscriptionChange` names the transition the provider's event string
+named, so it fires exactly once instead of staying set for the rest of the period. Its per-provider
+coverage grid, with the exact event string behind every cell, is in
+[Webhook events](/docs/reference/webhook-events#subscription-changes).
 
 ## Date fields
 

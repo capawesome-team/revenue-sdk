@@ -40,15 +40,15 @@ commit footer. Do avoid changes that break callers _silently_; make them fail lo
 
 `status: 'incomplete' | 'trialing' | 'active' | 'past_due' | 'unpaid' | 'paused' | 'canceled'` — `canceled` is TERMINAL only. A scheduled "cancel at period end" is `cancelAtPeriodEnd: true` with `status` unchanged (+ `endsAt`). A scheduled "pause at period end" works the same way: `pauseAtPeriodEnd: true` with `status` unchanged (+ `resumesAt`); `status` only becomes `paused` once the pause takes effect.
 
-| Unified    | Polar      | Lemon Squeezy      | Stripe                       | Paddle   | Dodo                       |
-| ---------- | ---------- | ------------------ | ---------------------------- | -------- | -------------------------- |
-| incomplete | incomplete | —                  | incomplete                   | —        | pending                    |
-| trialing   | trialing   | on_trial           | trialing                     | trialing | —                          |
-| active     | active     | active, cancelled¹ | active                       | active   | active                     |
-| past_due   | past_due   | past_due           | past_due                     | past_due | on_hold                    |
-| unpaid     | unpaid     | unpaid             | unpaid                       | —        | —                          |
-| paused     | paused     | paused             | paused, pause_collection²    | paused   | —                          |
-| canceled   | canceled   | expired            | canceled, incomplete_expired | canceled | cancelled, failed, expired |
+| Unified    | Polar                        | Lemon Squeezy      | Stripe                       | Paddle   | Dodo                       |
+| ---------- | ---------------------------- | ------------------ | ---------------------------- | -------- | -------------------------- |
+| incomplete | incomplete                   | —                  | incomplete                   | —        | pending                    |
+| trialing   | trialing                     | on_trial           | trialing                     | trialing | —                          |
+| active     | active                       | active, cancelled¹ | active                       | active   | active                     |
+| past_due   | past_due                     | past_due           | past_due                     | past_due | on_hold                    |
+| unpaid     | unpaid                       | unpaid             | unpaid                       | —        | —                          |
+| paused     | paused                       | paused             | paused, pause_collection²    | paused   | —                          |
+| canceled   | canceled, incomplete_expired | expired            | canceled, incomplete_expired | canceled | cancelled, failed, expired |
 
 ¹ LS `cancelled` → `active` + `cancelAtPeriodEnd: true`.
 
@@ -198,20 +198,31 @@ Exactly four mappings read the PAYLOAD rather than the event string, and that is
 
 ## Docs drift checklist
 
-When changing any of the following, update the matching docs in the same PR:
+Single-home rule (docs restructure, 2026-08): every cross-provider table lives in exactly ONE page —
+`docs/reference/` for lookup tables; a collapsed `<Accordion>` on the owning concept page for tables
+reference does not carry (order/refund status, invoice-URL lifetimes, checkout expiry, metadata
+propagation, idempotency-key derivation, proration wire values). Concept pages teach the unified model
+code-first and LINK to reference — they never carry a twin of a reference table. Provider pages have a
+fixed skeleton: Factory options → Authentication → Sandbox & test mode → `## Limitations` (what's
+unsupported/restricted, links to the capability matrix) → Webhooks → License keys → Orders →
+`## Provider notes` (≤8 actionable traps). Quirks the SDK fully absorbs (wire formats, header names,
+endpoint spellings, encodings) are documented in this file and code comments ONLY, never in docs/.
+`docs/guides/webhook-handler.mdx` holds the docs' only full webhook handler and the only
+`upsertSubscription` reference implementation; other pages excerpt and link.
 
-- A provider's `CAPABILITIES` const → `docs/reference/capability-matrix.mdx` + that provider's page + this file's tables. A NEW capability key also needs `docs/concepts/capabilities.mdx` (both the `TypeTable` and the "client gates on" list) and a row on EVERY provider page.
-- Status, `cancelAtPeriodEnd` or `pauseAtPeriodEnd` mapping → `docs/reference/status-mapping.mdx` + `docs/concepts/subscription-lifecycle.mdx` + the table above
-- Webhook event mapping in `providers/*/webhooks.ts` → `docs/reference/webhook-events.mdx` + `docs/concepts/webhooks.mdx` (license events also `docs/concepts/license-keys.mdx` + that provider's "events worth subscribing to" list)
+When changing any of the following, update the single home in the same PR:
+
+- A provider's `CAPABILITIES` const → `docs/reference/capability-matrix.mdx` + that provider page's `## Limitations` bullets + this file's tables. A NEW capability key needs only the matrix row and the affected providers' Limitations.
+- Status, `cancelAtPeriodEnd` or `pauseAtPeriodEnd` mapping → `docs/reference/status-mapping.mdx` + the table above (concepts/subscription-lifecycle only links)
+- Webhook event mapping in `providers/*/webhooks.ts` → `docs/reference/webhook-events.mdx` + that provider page's "events worth subscribing to" list (license events also `docs/concepts/license-keys.mdx`)
 - `WebhookEvent` fields → the `TypeTable` in `docs/concepts/webhooks.mdx` + the "which model each event carries" table in `docs/reference/webhook-events.mdx`
-- `RevenueErrorCode` union or `codeFromStatus` → `docs/reference/error-codes.mdx`
-- `RevenueError` FIELDS (incl. the `cause`/`responseBody` split) or a provider's `mapError` → `docs/reference/error-codes.mdx` + `docs/concepts/errors.mdx` + `docs/guides/webhook-handler.mdx`
-- `SubscriptionChange` mapping, `WebhookEvent.idempotencyKey`/`createdAt` derivation → `docs/reference/webhook-events.mdx` + `docs/concepts/webhooks.mdx` + `docs/guides/webhook-handler.mdx` + `docs/guides/cloudflare-workers.mdx` + that provider's page and quirks bullet. Every handler `switch` in docs/, `pages/index.astro` and `blog/` drifts too — grep for `subscription.updated`.
-- `CreateCheckoutParams` fields → `docs/concepts/checkouts.mdx` + `docs/guides/checkout-flow.mdx` + that provider's page
-- `CreateCustomerParams`/`UpdateCustomerParams` fields, or a provider's customer metadata handling → `docs/concepts/customers-and-portal.mdx` + that provider's page
+- `RevenueErrorCode` union, `codeFromStatus`, `RevenueError` fields or a provider's `mapError` → `docs/reference/error-codes.mdx` (touch `docs/concepts/errors.mdx` only if the short overview story itself changes)
+- `SubscriptionChange` mapping, `WebhookEvent.idempotencyKey`/`createdAt` derivation → `docs/reference/webhook-events.mdx` + the idempotency Accordion in `docs/concepts/webhooks.mdx`. Handler `switch`es in `docs/quickstart.mdx`, `docs/guides/webhook-handler.mdx`, `pages/index.astro` and `blog/` drift too — grep for `subscription.updated`.
+- `CreateCheckoutParams` fields → `docs/concepts/checkouts.mdx` (incl. its Accordions) + `docs/guides/checkout-flow.mdx`
+- `CreateCustomerParams`/`UpdateCustomerParams` fields, or a provider's customer metadata handling → `docs/concepts/customers-and-portal.mdx` (incl. its Accordions) + that provider page's notes
 - `reportUsage` wire mapping, `toUsagePayload`, or `Subscription.meters` → `docs/concepts/usage-based-billing.mdx` + that provider's page + the table above
-- License-key status mapping, the standalone `providers/*/licenses.ts` signatures, or `licenseKeys` client gating → `docs/concepts/license-keys.mdx` + that provider's page + the tables above
-- `Order` fields, a `toOrderStatus`/`toRefundStatus` helper, a `listOrders` filter or sort, or `getOrderInvoiceUrl` → `docs/concepts/orders.mdx` + that provider's `## Orders` section + the tables above (invoice-URL lifetimes and short pages also `docs/concepts/pagination.mdx`)
+- License-key status mapping, the standalone `providers/*/licenses.ts` signatures, or `licenseKeys` client gating → `docs/concepts/license-keys.mdx` + that provider page's `## License keys` section + the tables above
+- `Order` fields, a `toOrderStatus`/`toRefundStatus` helper, a `listOrders` filter or sort, or `getOrderInvoiceUrl` → `docs/concepts/orders.mdx` (its Accordions are the single home for order-status/refund/invoice-URL tables) + that provider page's `## Orders` deltas + the tables above (short filtered pages also `docs/concepts/pagination.mdx`)
 - Provider factory options → that provider's page + `docs/quickstart.mdx` code tabs + `pages/index.astro` code tabs
 
 ## Blog

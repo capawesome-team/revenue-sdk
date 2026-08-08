@@ -1,14 +1,45 @@
 ---
 title: Subscription lifecycle
-description: The unified status model, scheduled cancellations, entitlement checks, every lifecycle operation, and the per-provider proration matrix.
+description: Entitlement checks, the unified status model, scheduled cancellations and pauses, and every lifecycle operation the client exposes.
 sidebar:
   label: Subscription lifecycle
 ---
 
-Subscriptions are where billing providers disagree most: each has its own status vocabulary, and most
-of them overload one status to mean both "canceled, access ended" and "canceled, but still paid up
-until the end of the period". `revenue-sdk` normalizes all of it into **one seven-value status enum plus
-two scheduling booleans**.
+Every provider has its own status vocabulary, and most overload one value to mean both "canceled, access
+ended" and "canceled, but still paid up until the end of the period". `revenue-sdk` normalizes all of it
+into **one seven-value status enum plus two scheduling booleans**.
+
+## Checking entitlement
+
+The point of the model is that entitlement is a set membership test that works on every provider:
+
+```ts
+import type { Subscription } from 'revenue-sdk';
+
+const ENTITLED: ReadonlySet<Subscription['status']> = new Set(['active', 'trialing']);
+// past_due means a renewal failed and the provider is still retrying. Keeping access on
+// during that window is a product decision — most SaaS products do.
+const GRACE: ReadonlySet<Subscription['status']> = new Set([...ENTITLED, 'past_due']);
+
+export function isEntitled(subscription: Subscription, allowGrace = true): boolean {
+  return (allowGrace ? GRACE : ENTITLED).has(subscription.status);
+}
+```
+
+Note what is **not** in the check: `cancelAtPeriodEnd` is irrelevant to access. A subscription scheduled
+to cancel is still paid for and still entitled until it flips to `canceled`. Do **not** extend the grace
+to `unpaid` (retries exhausted) or `paused` (deliberately suspended).
+
+### Surfacing the end date
+
+```ts
+if (subscription.cancelAtPeriodEnd && subscription.endsAt) {
+  banner(`Your plan ends on ${subscription.endsAt.toLocaleDateString()}.`);
+}
+```
+
+`endsAt` is "when access ends" — the effective date of a scheduled cancellation, or the end of a grace
+period. `endedAt` is "when it actually terminated", and is only set once the subscription is over.
 
 ## The unified status model
 
@@ -23,204 +54,53 @@ type SubscriptionStatus =
   | 'canceled';
 ```
 
-| Status       | Meaning                                                                   |
-| ------------ | ------------------------------------------------------------------------- |
-| `incomplete` | Created but the first payment has not succeeded yet. No access.            |
-| `trialing`   | In a trial. Access granted.                                               |
-| `active`     | Paid and current. Access granted.                                         |
-| `past_due`   | A renewal payment failed; the provider is retrying. Grace period.         |
-| `unpaid`     | Retries exhausted, the subscription still exists. No access.              |
-| `paused`     | Deliberately suspended by the merchant or customer. No access.            |
-| `canceled`   | **Terminal.** The subscription has ended and will not renew.              |
+| Status       | Meaning                                                           |
+| ------------ | ----------------------------------------------------------------- |
+| `incomplete` | Created but the first payment has not succeeded yet. No access.    |
+| `trialing`   | In a trial. Access granted.                                       |
+| `active`     | Paid and current. Access granted.                                 |
+| `past_due`   | A renewal payment failed; the provider is retrying. Grace period. |
+| `unpaid`     | Retries exhausted, the subscription still exists. No access.      |
+| `paused`     | Deliberately suspended by the merchant or customer. No access.    |
+| `canceled`   | **Terminal.** The subscription has ended and will not renew.      |
 
-### Per-provider mapping
+An unrecognized provider status falls back to `active`, so a newly introduced status never silently
+revokes a paying customer's access — inspect `raw` for the exact provider value. The per-provider
+mapping table is in [Status mapping](/docs/reference/status-mapping#status-mapping).
 
-| Unified      | Polar        | Lemon Squeezy        | Stripe                         | Paddle     | Dodo Payments                |
-| ------------ | ------------ | -------------------- | ------------------------------ | ---------- | ---------------------------- |
-| `incomplete` | `incomplete` | —                    | `incomplete`                   | —          | `pending`                    |
-| `trialing`   | `trialing`   | `on_trial`           | `trialing`                     | `trialing` | —                            |
-| `active`     | `active`     | `active`, `cancelled`¹ | `active`                     | `active`   | `active`                     |
-| `past_due`   | `past_due`   | `past_due`           | `past_due`                     | `past_due` | `on_hold`                    |
-| `unpaid`     | `unpaid`     | `unpaid`             | `unpaid`                       | —          | —                            |
-| `paused`     | `paused`     | `paused`             | `paused`, `pause_collection`²  | `paused`   | —                            |
-| `canceled`   | `canceled`   | `expired`            | `canceled`, `incomplete_expired` | `canceled` | `cancelled`, `failed`, `expired` |
+## Scheduled cancellations and pauses
 
-<small>¹ Lemon Squeezy's `cancelled` means "grace period until `ends_at`, still resumable" — it maps to
-`active` with `cancelAtPeriodEnd: true`.</small>
-
-<small>² Stripe leaves its own status untouched when `pause_collection` is set — the SDK reports the
-unified `paused` anyway. Stripe's raw `paused` status is a different thing entirely: a trial that ended
-without a payment method.</small>
-
-A dash means the provider has no equivalent state. Unrecognized provider statuses fall back to `active`
-so a newly introduced status never breaks an entitlement check silently — inspect `raw` if you need the
-exact provider value.
-
-## `canceled` is terminal — `cancelAtPeriodEnd` is the schedule
-
-This is the decision that makes the model work: **a scheduled cancellation is not a status.** When a
-customer cancels, the subscription keeps its current status (`active` or `trialing`) and gains:
-
-- `cancelAtPeriodEnd: true`
-- `endsAt` — the date access actually ends
-
-Only when that date passes does the status become `canceled`. So:
+This is the decision that makes the model work: **a scheduled cancellation is not a status.** The
+subscription keeps its current status and gains `cancelAtPeriodEnd: true` plus `endsAt`, the date access
+actually ends. Only when that date passes does the status become `canceled`:
 
 ```ts
-subscription.status === 'canceled'; // access has ended, permanently
-subscription.cancelAtPeriodEnd; // will not renew, but is still paid up
+// checkout completes    → status: 'active',   cancelAtPeriodEnd: false
+// subscriptions.cancel  → status: 'active',   cancelAtPeriodEnd: true,  endsAt: 2026-09-01
+// subscriptions.uncancel→ status: 'active',   cancelAtPeriodEnd: false, endsAt: undefined
+// the period ends       → status: 'canceled', cancelAtPeriodEnd: false, endedAt: 2026-09-01
 ```
 
-### How `cancelAtPeriodEnd` is detected
+Treat `cancelAtPeriodEnd` as meaningless once the status is terminal — there is nothing left to
+schedule, so check `status === 'canceled'` first. A pause scheduled for the end of the period behaves
+identically: `pauseAtPeriodEnd: true` with
+the status unchanged, plus `resumesAt` when the pause has an automatic end date. `status` only becomes
+`paused` once the pause takes effect.
 
-| Provider          | Detected from                                                                          |
-| ----------------- | -------------------------------------------------------------------------------------- |
-| **Polar**         | `cancel_at_period_end`                                                                  |
-| **Lemon Squeezy** | status `cancelled`                                                                      |
-| **Stripe**        | `cancel_at_period_end \|\| cancel_at !== null`                                          |
-| **Paddle**        | `scheduled_change?.action === 'cancel'`                                                 |
-| **Dodo Payments** | `cancel_at_next_billing_date`                                                           |
+Every provider encodes both schedules somewhere different — Stripe's flexible billing mode, for one,
+sets only `cancel_at` when a customer cancels through the portal — and the SDK reads all of them. The
+detection rules are in
+[Status mapping](/docs/reference/status-mapping#cancelatperiodend-detection).
 
-:::note
-The Stripe rule matters. In flexible billing mode — Stripe's default for new integrations — a
-cancellation made through the **customer portal** sets only `cancel_at` and leaves
-`cancel_at_period_end` at `false`. Checking one field alone misses those cancellations entirely.
-:::
+### The flags are levels; webhooks carry the edge
 
-Once a subscription is terminally `canceled`, `cancelAtPeriodEnd` is forced back to `false` — there is
-nothing left to schedule.
-
-### `pauseAtPeriodEnd` follows the same rule
-
-A pause scheduled for the end of the current period is not a status either. The subscription keeps its
-current status and gains `pauseAtPeriodEnd: true`, plus `resumesAt` when the pause has an automatic end
-date. Only once the pause takes effect does `status` become `paused`.
-
-| Provider          | `pauseAtPeriodEnd` detected from                                                       |
-| ----------------- | -------------------------------------------------------------------------------------- |
-| **Polar**         | `pause_at_period_end`                                                                   |
-| **Lemon Squeezy** | always `false` — pauses are immediate                                                   |
-| **Stripe**        | always `false` — `pause_collection` is immediate                                        |
-| **Paddle**        | `scheduled_change?.action === 'pause'`                                                  |
-| **Dodo Payments** | always `false` — no pause at all                                                        |
-
-For the reasoning behind this split, and the entitlement bugs it prevents, see
-[how to normalize subscription status across billing providers](/blog/normalize-subscription-status-across-providers).
-
-### The flags are levels; webhooks also carry the edge
-
-`status`, `cancelAtPeriodEnd`, and `pauseAtPeriodEnd` describe where a subscription **is**. They cannot
-tell you when it got there — `cancelAtPeriodEnd` stays `true` for the rest of the period, so a handler
-that keys off it re-sends its "your plan ends soon" email on every later update event for that
-subscription. Diffing against your stored copy misses transitions too: if anything else mutated the row
-first, the diff is empty.
-
-That is what `WebhookEvent.subscriptionChange` is for. It names the transition **the provider named**,
-derived from the event string alone and never from payload state, so it appears exactly once:
-
-```ts
-switch (event.type) {
-  case 'subscription.updated':
-    await upsert(event.subscription); // the level — always
-    if (event.subscriptionChange === 'cancel_scheduled') {
-      await sendWinBackEmail(event.subscription); // the edge — once
-    }
-    break;
-}
-```
-
-`SubscriptionChange` is `'cancel_scheduled' | 'past_due' | 'paused' | 'resumed' | 'uncanceled'`, and it
-is `undefined` wherever the provider has no dedicated event — Stripe names none of the five for a
-pause set through `subscriptions.pause`, and Dodo Payments names only `past_due`. Entitlement must
-therefore keep reading the status; the edge is for side effects. The coverage table is in
-[Status mapping](/docs/reference/status-mapping#subscriptionchange-the-edge-not-the-level), the event
-strings in [Webhook events](/docs/reference/webhook-events).
-
-## A lifecycle timeline
-
-<Steps>
-  <Step title="Subscribe">
-    A completed checkout creates the subscription.
-
-    ```ts
-    // status: 'active' (or 'trialing' when the price has a trial)
-    // cancelAtPeriodEnd: false
-    // currentPeriodEnd: 2026-09-01
-    ```
-  </Step>
-  <Step title="Cancel">
-    The customer cancels. Access is retained until the period ends.
-
-    ```ts
-    const subscription = await client.subscriptions.cancel({ id });
-    // status: 'active'          ← unchanged
-    // cancelAtPeriodEnd: true
-    // endsAt: 2026-09-01
-    ```
-  </Step>
-  <Step title="Uncancel">
-    They change their mind before the period ends.
-
-    ```ts
-    const subscription = await client.subscriptions.uncancel({ id });
-    // status: 'active'
-    // cancelAtPeriodEnd: false
-    // endsAt: undefined
-    ```
-  </Step>
-  <Step title="Period end">
-    If it was left canceled, the provider terminates it and sends a `subscription.canceled` webhook.
-
-    ```ts
-    // status: 'canceled'        ← terminal
-    // cancelAtPeriodEnd: false
-    // endedAt: 2026-09-01
-    ```
-  </Step>
-</Steps>
-
-## Checking entitlement
-
-The whole point of the model is that entitlement is a two-line check that works on every provider:
-
-```ts
-import type { Subscription } from 'revenue-sdk';
-
-const ENTITLED: ReadonlySet<Subscription['status']> = new Set(['active', 'trialing']);
-
-export function isEntitled(subscription: Subscription): boolean {
-  return ENTITLED.has(subscription.status);
-}
-```
-
-Note what is **not** in the check: `cancelAtPeriodEnd` is irrelevant to access. A subscription scheduled
-to cancel is still paid for and still entitled until it flips to `canceled`.
-
-### Optional `past_due` grace
-
-`past_due` means a renewal failed and the provider is retrying. Whether you keep access on during the
-dunning window is a product decision — most SaaS products do, to avoid punishing an expired card:
-
-```ts
-const GRACE: ReadonlySet<Subscription['status']> = new Set(['active', 'trialing', 'past_due']);
-
-export function isEntitled(subscription: Subscription, allowGrace = true): boolean {
-  return (allowGrace ? GRACE : ENTITLED).has(subscription.status);
-}
-```
-
-Do **not** extend the grace to `unpaid` (retries exhausted) or `paused` (deliberately suspended).
-
-### Surfacing the end date
-
-```ts
-if (subscription.cancelAtPeriodEnd && subscription.endsAt) {
-  banner(`Your plan ends on ${subscription.endsAt.toLocaleDateString()}.`);
-}
-```
-
-`endsAt` is "when access ends" — the effective date of a scheduled cancellation, or the end of a grace
-period. `endedAt` is "when it actually terminated", and is only set once the subscription is over.
+`status`, `cancelAtPeriodEnd` and `pauseAtPeriodEnd` describe where a subscription **is**, never when it
+got there. `cancelAtPeriodEnd` stays `true` for the rest of the period, so a handler keyed off it
+re-sends its "your plan ends soon" email on every later update event. `WebhookEvent.subscriptionChange`
+names the transition instead — `'cancel_scheduled' | 'past_due' | 'paused' | 'resumed' | 'uncanceled'`,
+derived only from the provider's event string, so it appears exactly once. Keep entitlement on the
+level; use the edge for side effects. See [Webhooks](/docs/concepts/webhooks) and the coverage grid in
+[Status mapping](/docs/reference/status-mapping#subscriptionchange-the-edge-not-the-level).
 
 ## Lifecycle operations
 
@@ -260,14 +140,9 @@ const subscription = await client.subscriptions.changePlan({
 ```
 
 `product` is a [`Price.checkoutRef`](/docs/concepts/products-and-prices), not a `Product.id`. Polar and
-Lemon Squeezy reject a `quantity` other than `1`.
-
-:::note
-On Stripe, a plan change must replace the existing subscription item rather than add a second one —
-sending only the new price silently double-bills the customer. `revenue-sdk` fetches the current item ID
-and sends it with the change, so this class of bug can't happen through the SDK. If the subscription
-comes back with no items, the change is not sent and `provider_error` is thrown instead.
-:::
+Lemon Squeezy reject a `quantity` other than `1`. On Stripe the SDK sends the existing subscription
+item's ID with the change, so the classic double-billing bug cannot happen through the client; if the
+subscription comes back with no items, nothing is sent and `provider_error` is thrown instead.
 
 ### End a trial early
 
@@ -276,15 +151,9 @@ const subscription = await client.subscriptions.endTrial({ id: 'SUBSCRIPTION_ID'
 ```
 
 Bills the customer immediately and starts the paid cycle. **Dodo Payments** has no such operation and
-throws `unsupported`.
-
-:::note
-**On Lemon Squeezy, this only works while the subscription is actually trialing.** Lemon Squeezy has no
-end-trial endpoint; the SDK resets the billing anchor, which removes an active trial but also moves the
-billing day to today — unconditionally, so on a non-trialing subscription that reset would still happen.
-The SDK therefore reads the subscription first and throws `validation` instead of sending the reset —
-see [Lemon Squeezy](/docs/providers/lemon-squeezy#quirks).
-:::
+throws `unsupported`; on **Lemon Squeezy** it throws `validation` unless the subscription is actually
+trialing, because the underlying reset would otherwise move the billing day — see
+[Lemon Squeezy](/docs/providers/lemon-squeezy#provider-notes).
 
 ### Pause
 
@@ -298,12 +167,10 @@ const subscription = await client.subscriptions.pause({
 
 Requires the `pause` capability — **Dodo Payments** has no pause endpoint and no paused status, so both
 `pause` and `resume` throw `unsupported`. `behavior` is checked against `capabilities.pauseBehaviors`
-before the request: **Polar** pauses at period end only, **Lemon Squeezy** and **Stripe** immediately
-only, **Paddle** does both. Omitting `behavior` always works and uses the provider's own default.
-
-An immediate pause sets `status: 'paused'`; a period-end pause leaves `status` alone and sets
-`pauseAtPeriodEnd: true` until it takes effect. `resumesAt` schedules the automatic resume — on
-**Polar** it must fall after the current period end.
+before the request; omitting it always works and uses the provider's own default. An immediate pause
+sets `status: 'paused'`; a period-end pause leaves `status` alone and sets `pauseAtPeriodEnd: true` until
+it takes effect. `resumesAt` schedules the automatic resume — on **Polar** it must fall after the current
+period end.
 
 ### Resume
 
@@ -312,14 +179,9 @@ const subscription = await client.subscriptions.resume({ id: 'SUBSCRIPTION_ID' }
 ```
 
 Always takes effect immediately, and also clears a pause that was merely scheduled. Gated by the same
-`pause` capability. On **Polar**, resuming starts a new billing period and charges the customer.
-
-:::note
-Stripe has two unrelated pause mechanisms: `pause_collection`, which leaves Stripe's own status
-unchanged, and the `paused` status a trial reaches when it ends without a payment method. `revenue-sdk`
-reports both as `status: 'paused'`, and `resume` reads the subscription first to pick the right endpoint
-— one extra request.
-:::
+`pause` capability. On **Polar** it starts a new billing period and charges the customer; on **Stripe**
+it costs one extra read, because the SDK has to see which of Stripe's two pause mechanisms is in play
+before picking an endpoint.
 
 ### Revoke immediately
 
@@ -335,32 +197,37 @@ throws `unsupported` — its cancel always runs to the end of the period.
 
 `prorationBehavior` controls what happens to the money when a plan changes mid-period:
 
-| Behavior      | Meaning                                                                         |
-| ------------- | -------------------------------------------------------------------------------- |
-| `prorate`     | Credit the unused time and defer the difference to the next invoice.              |
-| `invoice_now` | Credit the unused time and invoice the difference immediately.                    |
-| `none`        | Switch now, bill nothing extra.                                                   |
+| Behavior      | Meaning                                                              |
+| ------------- | -------------------------------------------------------------------- |
+| `prorate`     | Credit the unused time and defer the difference to the next invoice. |
+| `invoice_now` | Credit the unused time and invoice the difference immediately.       |
+| `none`        | Switch now, bill nothing extra.                                      |
 
-Support and wire mapping per provider:
-
-| Behavior      | Polar               | Lemon Squeezy               | Stripe              | Paddle                          | Dodo Payments          |
-| ------------- | ------------------- | --------------------------- | ------------------- | ------------------------------- | ---------------------- |
-| `prorate`     | `prorate`           | provider default            | `create_prorations` | `prorated_next_billing_period`  | **unsupported**        |
-| `invoice_now` | `invoice`           | `invoice_immediately`       | `always_invoice`    | `prorated_immediately`          | `prorated_immediately` |
-| `none`        | **unsupported**     | `disable_prorations`        | `none`              | `do_not_bill`                   | `do_not_bill`          |
-| *omitted*     | provider default    | provider default            | provider default    | behaves as `prorate`            | behaves as `invoice_now` |
-
-Polar has no equivalent of `none`: its `next_period` mode defers the plan change itself and `reset`
-restarts the billing anchor — neither matches "switch now, bill nothing extra", so the SDK refuses
-rather than pick a lookalike. Dodo Payments has no defer-to-next-invoice mode, so `prorate` is refused.
-
-The client checks `prorationBehavior` against `capabilities.prorationBehaviors` **before** the request:
+The client checks the value against `capabilities.prorationBehaviors` **before** the request and throws
+`unsupported` otherwise. Not every provider offers all three — Polar has no `none`, Dodo Payments no
+`prorate` — so read the capability rather than hard-coding a behavior:
 
 ```ts
 if (client.capabilities.prorationBehaviors.includes('none')) {
   await client.subscriptions.changePlan({ id, product, prorationBehavior: 'none' });
 }
 ```
+
+Support per provider is in the
+[capability matrix](/docs/reference/capability-matrix#matrix).
+
+<Accordion>
+  <AccordionItem title="How each behavior maps onto the provider's own wire value">
+
+| Behavior      | Polar            | Lemon Squeezy         | Stripe              | Paddle                         | Dodo Payments            |
+| ------------- | ---------------- | --------------------- | ------------------- | ------------------------------ | ------------------------ |
+| `prorate`     | `prorate`        | provider default      | `create_prorations` | `prorated_next_billing_period` | **unsupported**          |
+| `invoice_now` | `invoice`        | `invoice_immediately` | `always_invoice`    | `prorated_immediately`         | `prorated_immediately`   |
+| `none`        | **unsupported**  | `disable_prorations`  | `none`              | `do_not_bill`                  | `do_not_bill`            |
+| *omitted*     | provider default | provider default      | provider default    | behaves as `prorate`           | behaves as `invoice_now` |
+
+  </AccordionItem>
+</Accordion>
 
 ## The Subscription model
 
@@ -378,7 +245,7 @@ if (client.capabilities.prorationBehaviors.includes('none')) {
     amount: { type: 'number', required: false, description: 'Amount per billing interval, in minor units.' },
     interval: { type: "'day' | 'week' | 'month' | 'year'", required: false, description: 'Billing interval.' },
     intervalCount: { type: 'number', required: false, description: 'Intervals per billing cycle.' },
-    currentPeriodStart: { type: 'Date', required: false, description: 'Start of the current billing period.' },
+    currentPeriodStart: { type: 'Date', required: false, description: 'Start of the current billing period. On Stripe this lives on the subscription item; the SDK reads the first one.' },
     currentPeriodEnd: { type: 'Date', required: false, description: 'End of the current billing period / next renewal.' },
     trialEndsAt: { type: 'Date', required: false, description: 'When the trial ends.' },
     resumesAt: { type: 'Date', required: false, description: 'When a paused — or pause-scheduled — subscription resumes automatically; absent for an indefinite pause.' },
@@ -391,14 +258,9 @@ if (client.capabilities.prorationBehaviors.includes('none')) {
   }}
 />
 
-:::note
-On **Stripe**, `currentPeriodStart`/`currentPeriodEnd` live on the subscription *item*, not the
-subscription. `revenue-sdk` reads them from the first item, so the normalized fields are populated as
-you'd expect.
-:::
-
-`meters` carries the current period's metered usage and is populated on **Polar only** — see
-[Usage-based billing](/docs/concepts/usage-based-billing).
+Which provider field each date comes from is in
+[Status mapping](/docs/reference/status-mapping#date-fields); `meters` is
+[Polar-only](/docs/concepts/usage-based-billing).
 
 ## Listing subscriptions
 
@@ -408,18 +270,14 @@ const { items, cursor } = await client.subscriptions.list({ customerId: 'CUSTOME
 
 The `customerId` filter requires the `listSubscriptionsByCustomer` capability — **Lemon Squeezy** cannot
 filter by customer and throws `unsupported` (it filters by store, product, variant, or email instead).
-
-:::note
-Stripe hides canceled subscriptions from `GET /v1/subscriptions` unless `status=all` is sent.
-`revenue-sdk` always sends it, so a canceled subscription shows up in `subscriptions.list` on every
-provider.
-:::
+Canceled subscriptions are included on every provider, Stripe included, where the SDK always sends
+`status=all`.
 
 <CardGroup cols={2}>
   <Card title="Next: Usage-based billing" icon="gauge" href="/docs/concepts/usage-based-billing">
     Report metered usage and read it back.
   </Card>
   <Card title="Status mapping reference" icon="table" href="/docs/reference/status-mapping">
-    The status table and cancelAtPeriodEnd detection, side by side.
+    Per-provider statuses, schedule detection, and date fields.
   </Card>
 </CardGroup>

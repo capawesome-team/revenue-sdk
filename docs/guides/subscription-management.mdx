@@ -120,12 +120,11 @@ export async function POST(request: Request): Promise<Response> {
 }
 ```
 
-`reason` must be one of the unified `CancellationReason` values — `customer_service`, `low_quality`,
-`missing_features`, `other`, `switched_service`, `too_complex`, `too_expensive`, `unused` — and requires
-the `cancellationReason` capability (Lemon Squeezy and Paddle lack it).
+`toReason` maps your survey answer onto a unified `CancellationReason` — `'too_expensive'`, say;
+TypeScript lists the rest at the call site. The `cancellationReason` capability decides whether the
+provider forwards it at all, which is why the branch above drops it rather than guessing.
 
-To end access **immediately** instead, use `subscriptions.revoke` — gated by the `revoke` capability,
-which Lemon Squeezy lacks:
+To end access **immediately** instead, use `subscriptions.revoke`, gated by the `revoke` capability:
 
 ```ts
 if (client.capabilities.revoke) {
@@ -144,23 +143,20 @@ await upsertSubscription(subscription);
 All five providers support it. It reverts a *scheduled* cancellation only — once `status` is `canceled`
 the subscription is gone and the customer needs a new checkout.
 
-:::warning
-On **Lemon Squeezy**, `PATCH /subscriptions` silently no-ops for PayPal-paid subscriptions: the request
-answers `200` with the record unchanged. The adapter reads `payment_processor` off that response and
-throws `unsupported` rather than handing back a subscription that claims a change happened — so you get
-an error instead of a silent failure, and you don't have to re-read and diff it yourself. The guard
-covers every PATCH-backed operation: `uncancel`, `changePlan`, `pause`, `resume`, and `endTrial`.
-`cancel` is a bodyless `DELETE` on a different endpoint, has no PayPal caveat, and still works. Send
-PayPal customers to the [customer portal](/docs/concepts/customers-and-portal) for the rest.
-:::
+On Lemon Squeezy, PayPal-paid subscriptions can't be mutated at all — every PATCH-backed call throws
+`unsupported`; see [the Lemon Squeezy page](/docs/providers/lemon-squeezy).
 
 ## Pause and resume
 
-Pausing keeps the subscription alive but stops the billing. Both calls are gated by the `pause`
-capability, which **Dodo Payments** lacks, so render the control conditionally:
+Pausing keeps the subscription alive but stops the billing. Render the control only where the `pause`
+capability is on, and pick a `behavior` the provider actually supports:
 
 ```ts
 // POST /api/billing/pause
+if (!client.capabilities.pause) {
+  return new Response('Pausing is not available on this plan', { status: 409 });
+}
+
 const subscription = await client.subscriptions.pause({
   id: user.providerSubscriptionId!,
   // Omit behavior to accept the provider's default, or pick one it supports.
@@ -176,9 +172,9 @@ const subscription = await client.subscriptions.resume({ id: user.providerSubscr
 await upsertSubscription(subscription);
 ```
 
-A `behavior` outside `capabilities.pauseBehaviors` throws `unsupported` — Polar can only pause at period
-end, Lemon Squeezy and Stripe only immediately, Paddle does both. Resume always takes effect
-immediately; on Polar it starts a new billing period and charges the customer.
+A `behavior` outside `capabilities.pauseBehaviors` throws `unsupported`; resume always takes effect
+immediately. Which providers pause, and how, is in
+[the capability matrix](/docs/reference/capability-matrix).
 
 An immediate pause reports `status: 'paused'`, which the entitlement check above already treats as no
 access. A period-end pause leaves `status` untouched and sets `pauseAtPeriodEnd`, so the banner for it
@@ -228,14 +224,12 @@ const subscription = await client.subscriptions.changePlan({
 await upsertSubscription(subscription);
 ```
 
-Pick the proration behavior from `capabilities.prorationBehaviors` rather than hard-coding it — Polar
-has no `none`, Dodo Payments has no `prorate`. The full matrix is in
-[Subscription lifecycle](/docs/concepts/subscription-lifecycle#proration-behaviors).
+Pick the proration behavior from `capabilities.prorationBehaviors`, as the snippet above does, rather
+than hard-coding one of `'prorate'`, `'invoice_now'` or `'none'` — not every provider offers all three.
+The matrix is in [the capability matrix](/docs/reference/capability-matrix).
 
-:::note
-Polar and Lemon Squeezy reject a `quantity` other than `1` on a plan change. Omit it unless you know the
-provider supports seats.
-:::
+There is no capability for seats: pass `quantity` only if you know your provider accepts it on a plan
+change, since Polar and Lemon Squeezy throw `unsupported` for anything but `1`.
 
 ## The billing portal link
 

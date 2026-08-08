@@ -1,6 +1,6 @@
 ---
 title: Orders
-description: Read billing history back — the Order model, which resource each provider maps to, the Lemon Squeezy union, and why invoice URLs are fetched on demand.
+description: Read billing history back — listing and fetching payments, the Order model, refund semantics, and on-demand invoice URLs.
 sidebar:
   label: Orders
 ---
@@ -11,18 +11,58 @@ for an invoice history page, a reconciliation job, or anything that happened bef
 existed.
 
 ```ts
-const { items, cursor } = await client.orders.list({ limit: 20 });
-
-for await (const order of client.orders.listAll({ customerId: 'CUSTOMER_ID' })) {
-  console.log(order.createdAt, order.amount, order.status);
-}
-
+const { items, cursor } = await client.orders.list({ limit: 20, customerId: 'CUSTOMER_ID' });
 const order = await client.orders.get({ id: 'ORDER_ID' });
 const invoiceUrl = await client.orders.getInvoiceUrl({ id: 'ORDER_ID' });
 ```
 
-Orders are **read-only**. Creating a charge is `checkouts.create`; refunding one is a dashboard or
-provider-native operation — see [Out of scope](#out-of-scope).
+Orders are **read-only**: creating a charge is `checkouts.create`, and refunding one is a dashboard or
+provider-native operation.
+
+## A billing history page
+
+The use case orders exist for: date, amount, status, and a receipt link the customer can open.
+
+```ts
+import type { Order } from 'revenue-sdk';
+
+function formatMoney(amount: number, currency: string): string {
+  // Minor units per major unit vary by currency — 100 for USD, 1 for JPY, 1000 for KWD.
+  const format = new Intl.NumberFormat('en-US', { style: 'currency', currency });
+  return format.format(amount / 10 ** format.resolvedOptions().maximumFractionDigits);
+}
+
+function describe(order: Order): string {
+  // refundStatus is read before status: on Stripe a refunded invoice still reports `paid`,
+  // and on Paddle and Dodo Payments a refunded payment still reports `completed`/`succeeded`.
+  if (order.refundStatus !== undefined) {
+    return order.refundStatus === 'full' ? 'Refunded' : 'Partially refunded';
+  }
+  return order.status === 'paid' ? 'Paid' : order.status;
+}
+
+export async function billingHistory(customerId: string) {
+  const rows = [];
+  for await (const order of client.orders.listAll({ customerId })) {
+    rows.push({
+      id: order.id,
+      date: order.createdAt,
+      amount:
+        order.amount !== undefined && order.currency !== undefined
+          ? formatMoney(order.amount, order.currency)
+          : '—',
+      status: describe(order),
+    });
+  }
+  // Lemon Squeezy drains orders before subscription invoices, so sort rather than
+  // trusting the page order.
+  return rows.sort((a, b) => (b.date?.getTime() ?? 0) - (a.date?.getTime() ?? 0));
+}
+```
+
+The receipt link belongs in a second route that calls `getInvoiceUrl` per click and redirects — never
+rendered into the table, because most of those URLs expire. See
+[`getInvoiceUrl`](#getinvoiceurl-is-a-call-not-a-field) below.
 
 ## The Order model
 
@@ -42,53 +82,47 @@ provider-native operation — see [Out of scope](#out-of-scope).
   }}
 />
 
-`amount` is deliberately **what the customer was charged**, not what was billed. Where the two differ —
-a credit balance absorbing part of a Stripe invoice, a Paddle credit against the total — the SDK reports
-the charged figure (Stripe's `amount_paid` on a settled invoice, Paddle's `grand_total`). An unpaid
-Stripe invoice has no `amount_paid`, so it reports the billed `total` instead.
-
-`status` is **required** — every order has one, including one read from a webhook.
+`amount` is deliberately **what the customer was charged**, not what was billed: where a credit absorbs
+part of the total, the charged figure wins (an unpaid invoice reports the billed total, having no other).
+Line items, tax and discount breakdowns are not normalized — read `raw` for those.
 
 ## Which resource each provider maps to
 
-This is the thing worth knowing before you write any code against `orders`: "an order" is a different
-object on every provider, with a different ID space.
+"An order" is a different object on every provider, with a different ID space:
 
 | Provider          | Underlying resource                  | `orders.list` reads                                    | List filter                                       |
 | ----------------- | ------------------------------------ | ------------------------------------------------------ | ------------------------------------------------- |
 | **Polar**         | `Order`                              | `GET /v1/orders/`                                      | every status except `draft`, excluded server-side |
-| **Lemon Squeezy** | `Order` **∪** `Subscription Invoice` | `GET /v1/orders`, then `GET /v1/subscription-invoices` | the store, minus `initial` invoices — see below    |
+| **Lemon Squeezy** | `Order` **∪** `Subscription Invoice` | `GET /v1/orders`, then `GET /v1/subscription-invoices` | the store, minus `initial` invoices                |
 | **Stripe**        | **`Invoice`** (not `Charge`)         | `GET /v1/invoices`                                     | drafts dropped client-side                        |
 | **Paddle**        | `Transaction`                        | `GET /transactions`                                    | `status=completed`, ordered by `billed_at[DESC]`  |
 | **Dodo Payments** | `Payment`                            | `GET /payments`                                        | `status=succeeded`                                |
 
-Because Paddle and Dodo Payments filter to a settled status server-side, every order they list is
-`paid`. Polar, Lemon Squeezy, and Stripe also list pending, failed, refunded and voided payments.
-
 `Order.id` is always an ID from that provider's own space, so it round-trips through `orders.get` and
-`orders.getInvoiceUrl` — and matches the `event.order.id` you receive on `order.paid`.
-
-### Why Stripe maps to Invoice rather than Charge
-
-Two reasons, both about staying in one ID space:
-
-- **`invoice.paid` is what `order.paid` maps from**, so `event.order.id` is an `in_…`. If `orders.get`
-  read Charges, the ID you just received from a webhook would not resolve.
-- **A Charge can no longer name its subscription.** Stripe removed `charge.invoice` in
-  `2025-03-31.basil`, and the SDK pins a version at or after that — so `Order.subscriptionId` would be
-  permanently empty on the Charge path.
+`orders.getInvoiceUrl` — and matches the `event.order.id` you receive on `order.paid`. Paddle and Dodo
+Payments filter to a settled status server-side, so every order they list is `paid`. Lemon Squeezy is
+the one union, which also makes its pages **not globally chronological** — sort after draining; see
+[Lemon Squeezy](/docs/providers/lemon-squeezy#orders).
 
 :::warning
 **A Stripe one-off payment only produces an Invoice when the Checkout Session asked for one.**
-`checkouts.create` now sets `invoice_creation[enabled]` on every `payment`-mode session it creates, so
-purchases made through this SDK appear in `orders.list` and emit `order.paid`. Purchases made through a
-Checkout Session created **outside this SDK — or before this version** — do not, and no later call can
-retrofit them. Subscription payments are unaffected: Stripe always invoices those.
+`checkouts.create` sets `invoice_creation[enabled]` on every `payment`-mode session it creates, so those
+purchases appear in `orders.list` and emit `order.paid`. Purchases through a session created **outside
+this SDK — or before this version** — never appear, and no later call can retrofit them. Subscription
+payments are unaffected. See [Stripe](/docs/providers/stripe).
 :::
 
 ## Statuses
 
-`OrderStatus` is a closed union of six values:
+`OrderStatus` is a closed union of six values: `paid`, `pending`, `failed`, `refunded`,
+`partially_refunded` and `void`. **Every provider enum is treated as open** — an unrecognized status
+maps to `pending` rather than throwing, so a provider adding a state can never crash a list call. Branch
+on `paid` and on the refund states; treat everything else as "not settled yet".
+
+Stripe, Paddle and Dodo Payments never report a refund through `status` — read `refundStatus` instead.
+
+<Accordion>
+  <AccordionItem title="Per-provider status mapping">
 
 | Unified              | Polar                | Lemon Squeezy          | Stripe           | Paddle                      | Dodo Payments              |
 | -------------------- | -------------------- | ---------------------- | ---------------- | --------------------------- | -------------------------- |
@@ -105,72 +139,54 @@ to an order fetched directly by ID, or one arriving on a webhook.
 ² Only Lemon Squeezy *subscription invoices* carry `void` — a bill cancelled while the subscription was
 paused. Orders never do.
 
-:::note
-**Every provider enum is treated as open.** An unrecognized status maps to `pending` rather than
-throwing, so a provider adding a state can never crash a list call. Branch on `paid` and on the refund
-states; treat everything else as "not settled yet".
-:::
-
-Stripe, Paddle and Dodo Payments never report a refund through `status` — read `refundStatus` instead.
+  </AccordionItem>
+</Accordion>
 
 ## Refunds
 
 `refundStatus` is set as soon as *any* of the order was refunded, and says whether the refund covered
-the whole amount:
-
-| Provider          | Derived from                                                                                      |
-| ----------------- | --------------------------------------------------------------------------------------------------- |
-| **Polar**         | status `refunded` → `full`; status `partially_refunded`, or any `refunded_amount > 0` → `partial` |
-| **Lemon Squeezy** | status `refunded` → `full`; otherwise `refunded_amount` compared against `total`                  |
-| **Stripe**        | **never set**                                                                                     |
-| **Paddle**        | `adjustments_totals.breakdown.refund` compared against the order amount                           |
-| **Dodo Payments** | `refund_status` on the payment (`full` / `partial`)                                               |
+the whole amount (`'full'`) or part of it (`'partial'`).
 
 :::warning
 **Stripe leaves no trace of a refund on the Invoice.** A refund is a Charge-level object: the invoice
-carries neither a refunded flag nor a refunded amount, so `refundStatus` is always `undefined` on
-Stripe and `status` stays `paid`. If you need refunds on Stripe, listen for `charge.refunded` (an
-`unknown` event here, with the payload on `raw`) or read the Charge through Stripe's own API.
+carries neither a refunded flag nor a refunded amount, so `refundStatus` is always `undefined` on Stripe
+and `status` stays `paid`. If you need refunds on Stripe, listen for `charge.refunded` (an `unknown`
+event here, with the payload on `raw`) or read the Charge through Stripe's own API.
 :::
 
-Two smaller notes: Lemon Squeezy's `refunded` boolean is **not** read, because it is `true` only for a
-*full* refund — a partial one leaves it `false` with a non-zero `refunded_amount`. Paddle's refund
-totals only exist when the request asks for them, so the SDK always sends
-`include=adjustments_totals` on both `orders.list` and `orders.get`.
+<Accordion>
+  <AccordionItem title="How refundStatus is derived per provider">
 
-## Lemon Squeezy lists two resources
+| Provider          | Derived from                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------ |
+| **Polar**         | status `refunded` → `full`; status `partially_refunded`, or any `refunded_amount > 0` → `partial` |
+| **Lemon Squeezy** | status `refunded` → `full`; otherwise `refunded_amount` compared against `total`                 |
+| **Stripe**        | **never set**                                                                                    |
+| **Paddle**        | `adjustments_totals.breakdown.refund` compared against the order amount                          |
+| **Dodo Payments** | `refund_status` on the payment (`full` / `partial`)                                              |
 
-Lemon Squeezy has no single "payments" collection. A one-off purchase raises an **Order**; a renewal
-raises a **Subscription Invoice** and no order; the **first** subscription payment raises **both** — the
-same money under two IDs, in two numeric ID spaces, with no foreign key joining them.
+Lemon Squeezy's `refunded` boolean is deliberately not read: it is `true` only for a *full* refund, so a
+partial one leaves it `false` with a non-zero `refunded_amount`. Paddle's refund totals only exist when
+the request asks for them, so the SDK always sends `include=adjustments_totals`.
 
-So `orders.list` returns **all orders, plus every subscription invoice whose `billing_reason` is not
-`initial`**. That yields each payment exactly once.
-
-The consequences:
-
-:::warning
-**Pages are not globally chronological on Lemon Squeezy.** The cursor drains `/v1/orders` first and only
-then starts on `/v1/subscription-invoices`, so an old one-off purchase can precede yesterday's renewal.
-Every other provider returns newest-first. `listAll` still yields everything — sort after draining if
-you need strict chronology.
-:::
-
-- **A page can come back short, or even empty.** Dropping the `initial` invoices happens after the
-  provider has already paged, and the page is never backfilled. An empty page is not the end of the
-  list; keep following the cursor until it is `undefined`. Stripe behaves the same way when it drops
-  drafts.
-- **`orders.get` tries both endpoints.** An opaque ID could belong to either space, so the SDK reads
-  `/v1/orders/{id}` first and falls back to `/v1/subscription-invoices/{id}` on a `not_found`. If both
-  miss, the original order lookup's `not_found` is what you get. That costs a second request whenever
-  the ID turns out to be an invoice.
-
-Lemon Squeezy orders also carry no subscription reference at all, so `subscriptionId` is only ever set
-on the invoice half of the union.
+  </AccordionItem>
+</Accordion>
 
 ## `getInvoiceUrl` is a call, not a field
 
-The invoice link lives behind a method because its cost and its lifetime differ wildly per provider:
+The invoice link lives behind a method because its lifetime differs wildly per provider — Polar's is an
+S3 presign valid for **10 minutes**, Paddle's for **1 hour**, while Lemon Squeezy's never expires. Fetch
+one when the customer clicks, the same rule as a
+[portal session](/docs/concepts/customers-and-portal).
+
+It throws `RevenueError { code: 'not_found' }` when the provider has no invoice for the order: on
+**Stripe** before the invoice is finalized, on **Polar** when none was ever generated (Polar mints them
+through an async job the SDK deliberately does not trigger), on **Paddle** for a transaction that was
+never billed or is zero-value, on **Lemon Squeezy** while a subscription invoice is still pending, and
+on **Dodo Payments** when the payment carries no `invoice_url`.
+
+<Accordion>
+  <AccordionItem title="Invoice URL source and lifetime per provider">
 
 | Provider          | Source                                              | Lifetime                                                                 |
 | ----------------- | --------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -180,151 +196,38 @@ The invoice link lives behind a method because its cost and its lifetime differ 
 | **Paddle**        | an extra `GET /transactions/{id}/invoice`           | **1 hour**                                                               |
 | **Polar**         | an extra `GET /v1/orders/{id}/invoice`              | **10 minutes** (an S3 presign)                                           |
 
-Putting the URL on `Order` would mean an extra request per item on every Polar and Paddle list — an N+1
-on a page of 20 — and would hand you links that are dead ten minutes later. Fetch one when the customer
-clicks, the same rule as a [portal session](/docs/concepts/customers-and-portal).
-
-It throws `RevenueError { code: 'not_found' }` when the provider has no invoice for the order:
-
-- **Stripe** — before the invoice is finalized, when neither link exists yet.
-- **Polar** — when no invoice was ever generated. Polar generates them on request through a `202`
-  asynchronous job, which the SDK deliberately does not trigger or poll; use Polar's own API if you need
-  one created.
-- **Paddle** — for a transaction that was never billed, or whose total is zero.
-- **Lemon Squeezy** — while a subscription invoice is still pending and its PDF link is `null`.
-- **Dodo Payments** — when the payment carries no `invoice_url`.
+  </AccordionItem>
+</Accordion>
 
 ## Filtering by customer
 
-`orders.list` and `orders.listAll` accept a `customerId`, gated by the `listOrdersByCustomer`
-capability:
-
-| Provider          | `listOrdersByCustomer` |
-| ----------------- | ---------------------- |
-| **Polar**         | `true`                 |
-| **Lemon Squeezy** | `false`                |
-| **Stripe**        | `true`                 |
-| **Paddle**        | `true`                 |
-| **Dodo Payments** | `true`                 |
-
-Lemon Squeezy's `/v1/orders` filters by store, user email, and order number — not by customer ID — so
-passing one throws `unsupported` **before any request is made**. Listing *unfiltered* works everywhere.
+`orders.list` and `orders.listAll` accept a `customerId`, gated by the
+[`listOrdersByCustomer`](/docs/reference/capability-matrix#matrix) capability — `false` on **Lemon
+Squeezy** only, whose `/v1/orders` filters by store, user email and order number rather than customer
+ID. Passing one there throws `unsupported` before any request is made; listing *unfiltered* works
+everywhere.
 
 ```ts
 // On Lemon Squeezy, list everything and filter locally.
 const orders = client.capabilities.listOrdersByCustomer
   ? client.orders.listAll({ customerId })
   : client.orders.listAll();
-
-for await (const order of orders) {
-  if (order.customerId !== customerId) {
-    continue;
-  }
-  // ...
-}
 ```
-
-## A billing history page
-
-The centrepiece use case: date, amount, status, and a receipt link the customer can open.
-
-```ts
-import type { Order } from 'revenue-sdk';
-
-interface HistoryRow {
-  id: string;
-  date: Date | undefined;
-  amount: string;
-  status: string;
-}
-
-function formatMoney(amount: number, currency: string): string {
-  // Minor units per major unit vary by currency — 100 for USD, 1 for JPY, 1000 for KWD.
-  const format = new Intl.NumberFormat('en-US', { style: 'currency', currency });
-  return format.format(amount / 10 ** format.resolvedOptions().maximumFractionDigits);
-}
-
-function describe(order: Order): string {
-  if (order.refundStatus === 'full') {
-    return 'Refunded';
-  }
-  if (order.refundStatus === 'partial') {
-    return 'Partially refunded';
-  }
-  return order.status === 'paid' ? 'Paid' : order.status;
-}
-
-export async function billingHistory(customerId: string): Promise<HistoryRow[]> {
-  const rows: HistoryRow[] = [];
-
-  for await (const order of client.orders.listAll({ customerId })) {
-    rows.push({
-      id: order.id,
-      date: order.createdAt,
-      amount:
-        order.amount === undefined || order.currency === undefined
-          ? '—'
-          : formatMoney(order.amount, order.currency),
-      status: describe(order),
-    });
-  }
-
-  // Lemon Squeezy drains orders before subscription invoices, so sort rather than
-  // trusting the page order.
-  return rows.sort((a, b) => (b.date?.getTime() ?? 0) - (a.date?.getTime() ?? 0));
-}
-```
-
-The receipt link is a second, separate route — minted per click, never rendered into the table:
-
-```ts
-import { RevenueError } from 'revenue-sdk';
-
-export async function GET(request: Request): Promise<Response> {
-  const orderId = new URL(request.url).searchParams.get('order') ?? '';
-  try {
-    const url = await client.orders.getInvoiceUrl({ id: orderId });
-    return Response.redirect(url, 302);
-  } catch (error) {
-    if (error instanceof RevenueError && error.code === 'not_found') {
-      return new Response('no invoice for this order yet', { status: 404 });
-    }
-    throw error;
-  }
-}
-```
-
-`describe` reads `refundStatus` before `status` on purpose: on Stripe a refunded invoice still reports
-`paid`, and on Paddle and Dodo Payments a refunded payment still reports `completed`/`succeeded`. Only
-Polar and Lemon Squeezy move the status itself.
 
 ## Getting notified
 
-`order.paid` carries a fully mapped `Order` — including `status`, `createdAt`, and `refundStatus` — so a
-handler can record the payment without a follow-up read:
+`order.paid` carries a fully mapped `Order` — `status`, `createdAt` and `refundStatus` included — so a
+handler can record the payment without a follow-up read, and it fires **once per payment**, renewals
+included:
 
 ```ts
 if (event.type === 'order.paid') {
-  const order = event.order;
-  await recordPayment({
-    id: order.id,
-    subscriptionId: order.subscriptionId,
-    amount: order.amount,
-    currency: order.currency,
-    paidAt: order.createdAt,
-  });
+  await recordPayment(event.order);
 }
 ```
 
-The event covers **renewals too**, and fires **once per payment**: on Lemon Squeezy it maps from both
-`order_created` and `subscription_payment_success`, dropping the `initial` invoice for exactly the
-reason described above — so webhooks and `orders.list` agree on which ID a payment has. See
-[Webhooks](/docs/concepts/webhooks) and
-[the webhook events reference](/docs/reference/webhook-events).
-
-Webhooks are the live signal; `orders.list` is the backfill. Use the first to stay current and the
-second to reconcile — deliveries can be missed, and only the list is authoritative about what actually
-happened.
+Webhooks are the live signal; `orders.list` is the backfill. Deliveries can be missed, and only the list
+is authoritative about what actually happened — see [Webhooks](/docs/concepts/webhooks).
 
 ## Testing
 
@@ -337,21 +240,10 @@ const provider = createInMemoryProvider({
     { id: 'ord-2', customerId: 'cus-1', amount: 2900, currency: 'usd', refundStatus: 'partial' },
   ],
 });
-const client = createClient({ provider });
-
-const { items } = await client.orders.list({ customerId: 'cus-1' });
+const { items } = await createClient({ provider }).orders.list({ customerId: 'cus-1' });
 ```
 
 See [Testing provider](/docs/providers/testing) for the full seed shape.
-
-## Out of scope
-
-- **Creating or refunding a payment.** Refunds are a separate resource on every provider — Paddle and
-  Polar model them as adjustments, Stripe as a Charge-level object — with no shared shape to normalize.
-- **Line items.** The unified `Order` is one amount, not a breakdown of what was bought. The provider's
-  own items are on `raw`.
-- **Tax, discount, and net totals.** `amount` is the charged total; the components differ enough per
-  provider that reading `raw` is more honest than a normalized guess.
 
 <CardGroup cols={2}>
   <Card title="Next: Webhooks" icon="webhook" href="/docs/concepts/webhooks">

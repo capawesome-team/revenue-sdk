@@ -52,11 +52,12 @@ Two fields, and the split is the point:
   `util.inspect`, `JSON.stringify(error)` and error reporters such as Sentry all skip it, while
   `error.responseBody` still reads it. Getting at the body is a deliberate act.
 
-:::warning
-**This is a change.** `cause` used to hold the provider body, and it reached logs only because Node
-hard-codes `cause` in its inspector. If you read `error.cause` to inspect a provider response, read
-`error.responseBody` instead.
-:::
+```ts
+if (error.code === 'validation') {
+  // Deliberate read — this is the only way the body reaches you.
+  logger.debug({ detail: error.responseBody });
+}
+```
 
 ## The code union
 
@@ -123,9 +124,17 @@ express — see [the capability matrix](/docs/reference/capability-matrix#beyond
 
 `retryable` defaults to `true` for `rate_limited` and `network_error`, and for **any** error whose HTTP
 `status` is `5xx`. A provider adapter may override the default in either direction when the provider
-says so explicitly — only Stripe does, from `Stripe-Should-Retry`. `retryAfter` is parsed from the
+says so explicitly — only Stripe does, from `Stripe-Should-Retry`: a 429 the header vetoes is
+`retryable: false`, and a lock conflict it endorses is `retryable: true`. `retryAfter` is parsed from the
 provider's `Retry-After` header, accepting either numeric seconds or an HTTP date (converted to seconds
 from now, never negative).
+
+```ts
+if (error.retryable) {
+  await sleep((error.retryAfter ?? 1) * 1000);
+  // then retry with your own back-off policy
+}
+```
 
 Provider behavior on rate limits:
 
@@ -183,6 +192,10 @@ The same applies to the enumerable `raw` field on every model. `Customer.raw`, `
 `Order.raw` are untouched provider payloads, they serialize with `JSON.stringify`, and they show up on
 **success**, not only on failure. If you have a no-PII-in-logs rule, `raw` is the larger surface.
 :::
+
+Some values are secrets by design and no redaction covers them: a
+[customer portal URL](/docs/concepts/customers-and-portal) is a signed, ready-to-use link into someone's
+billing account. Never log one.
 
 ## Handling errors
 

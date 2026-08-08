@@ -60,8 +60,10 @@ const client = createClient({
   provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
 });
 
+const [product] = (await client.products.list()).items;
+
 const checkout = await client.checkouts.create({
-  items: [{ product: 'PRODUCT_ID' }],
+  items: [{ product: product.prices[0].checkoutRef }],
   customerEmail: 'ada@example.com',
   successUrl: 'https://example.com/thanks',
 });
@@ -81,8 +83,10 @@ const client = createClient({
 });
 
 // Same call, same shape — only the provider changed.
+const [product] = (await client.products.list()).items;
+
 const checkout = await client.checkouts.create({
-  items: [{ product: 'VARIANT_ID' }],
+  items: [{ product: product.prices[0].checkoutRef }],
   customerEmail: 'ada@example.com',
 });`,
   },
@@ -131,8 +135,10 @@ const client = createClient({
   }),
 });
 
+const [product] = (await client.products.list()).items;
+
 const checkout = await client.checkouts.create({
-  items: [{ product: 'PRODUCT_ID' }],
+  items: [{ product: product.prices[0].checkoutRef }],
   successUrl: 'https://example.com/thanks',
 });`,
   },
@@ -201,7 +207,7 @@ const docCards = [
   },
 ];
 
-const runtimes = ['Node.js ≥ 20', 'Cloudflare Workers', 'Deno', 'Bun'];
+const runtimes = ['Node.js ≥ 22', 'Cloudflare Workers', 'Deno', 'Bun'];
 const codeThemes = { light: 'github-light', dark: 'github-dark' } as const;
 
 // Longer than the site description so the home page's meta description reads well in search results.

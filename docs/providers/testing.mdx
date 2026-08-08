@@ -1,13 +1,15 @@
 ---
 title: Testing provider
-description: Exercise your billing integration with the seedable in-memory provider from revenue-sdk/testing — seeds, state assertions, and capability overrides.
+description: Try revenue-sdk with no account, no API keys, no fetch stubs and no test cards — a seedable in-memory provider from revenue-sdk/testing.
 sidebar:
   label: Testing
 ---
 
-`revenue-sdk/testing` ships `createInMemoryProvider`, an in-memory `RevenueProvider` you can hand to
-`createClient` to test your integration without hitting a real billing provider — no `fetch` stubs, no
-sandbox accounts, no test cards.
+`revenue-sdk/testing` ships `createInMemoryProvider`, a seedable in-memory `RevenueProvider` you hand to
+`createClient` like any other: **no account, no API keys, no `fetch` stubs, no sandbox, no test cards.**
+
+Every `client.*` example in these docs runs unchanged against it — it implements the same
+`RevenueProvider` interface, and it reports **every capability enabled** by default.
 
 ## Basic usage
 
@@ -27,101 +29,13 @@ const subscription = await client.subscriptions.get({ id: 'sub-1' });
 subscription.status; // 'active'
 ```
 
-The seed is optional — `createInMemoryProvider()` starts empty.
-
-## The seed shape
-
-`products`, `customers`, `subscriptions`, `orders`, and `licenseKeys` are arrays; every field is
-optional and gets a sensible default. Missing IDs are generated (`product-1`, `price-2`, `customer-3`,
-…).
-
-<TypeTable
-  type={{
-    products: {
-      type: 'InMemoryProductSeed[]',
-      required: false,
-      description: '{ id?, name?, description?, prices? }. name defaults to the id.',
-    },
-    customers: {
-      type: 'InMemoryCustomerSeed[]',
-      required: false,
-      description: '{ id?, email?, name?, metadata? }. email defaults to <id>@example.com.',
-    },
-    subscriptions: {
-      type: 'InMemorySubscriptionSeed[]',
-      required: false,
-      description:
-        '{ id?, status?, cancelAtPeriodEnd?, pauseAtPeriodEnd?, customerId?, productId?, quantity?, currency?, amount?, interval?, currentPeriodEnd?, trialEndsAt?, resumesAt?, endsAt?, metadata? }.',
-    },
-    orders: {
-      type: 'InMemoryOrderSeed[]',
-      required: false,
-      description:
-        '{ id?, status?, amount?, currency?, customerId?, customerEmail?, subscriptionId?, createdAt?, refundStatus?, metadata? }. status defaults to paid.',
-    },
-    licenseKeys: {
-      type: 'InMemoryLicenseKeySeed[]',
-      required: false,
-      description:
-        '{ id?, key?, status?, activationLimit?, activationCount?, expiresAt?, customerId?, productId? }. key defaults to the id, status to active.',
-    },
-  }}
-/>
-
-Price seeds default to a `fixed`, `recurring`, monthly price of `1000` in `usd`, and `checkoutRef`
-defaults to the parent product's ID:
-
-<TypeTable
-  type={{
-    id: { type: 'string', required: false, description: 'Generated when omitted.' },
-    checkoutRef: { type: 'string', required: false, description: "Defaults to the parent product's id." },
-    type: { type: "'one_time' | 'recurring'", required: false, default: 'recurring', description: 'Price type.' },
-    model: { type: 'PriceModel', required: false, default: 'fixed', description: 'Pricing model.' },
-    amount: { type: 'number | null', required: false, default: '1000', description: 'Minor units. Pass null explicitly for non-fixed models.' },
-    currency: { type: 'string', required: false, default: 'usd', description: 'Lowercase ISO 4217 code.' },
-    interval: { type: 'BillingInterval', required: false, default: 'month', description: "Omitted when type is 'one_time'." },
-    intervalCount: { type: 'number', required: false, description: 'Intervals per billing cycle.' },
-    trialDays: { type: 'number', required: false, description: 'Trial length in days.' },
-  }}
-/>
-
-A fuller seed:
-
-```ts
-const provider = createInMemoryProvider({
-  products: [
-    {
-      id: 'pro-monthly',
-      name: 'Pro (monthly)',
-      prices: [{ id: 'price-monthly', amount: 2900, currency: 'usd', interval: 'month' }],
-    },
-    {
-      id: 'pro-yearly',
-      name: 'Pro (yearly)',
-      prices: [{ id: 'price-yearly', amount: 29000, currency: 'usd', interval: 'year' }],
-    },
-  ],
-  customers: [{ id: 'cus-1', email: 'ada@example.com', name: 'Ada Lovelace' }],
-  subscriptions: [
-    {
-      id: 'sub-1',
-      customerId: 'cus-1',
-      productId: 'pro-monthly',
-      status: 'active',
-      amount: 2900,
-      currency: 'usd',
-      interval: 'month',
-      currentPeriodEnd: new Date('2026-09-01'),
-    },
-  ],
-});
-```
+The seed is optional — `createInMemoryProvider()` starts empty, and anything looked up by an ID that
+isn't seeded throws `RevenueError` with code `not_found`.
 
 ## Simulating a provider and its capabilities
 
-By default the provider reports itself as `testing` with **every capability enabled**. A second options
-argument lets you simulate a specific provider's identity and its capability gaps, so code that branches
-on `client.capabilities` is testable:
+A second options argument simulates a specific provider's identity and its capability gaps, so code
+that branches on `client.capabilities` is testable:
 
 ```ts
 const provider = createInMemoryProvider(
@@ -170,7 +84,6 @@ test('cancelling schedules the end of the period', async () => {
 
   const subscription = await client.subscriptions.cancel({ id: 'sub-1' });
 
-  expect(subscription.status).toBe('active');
   expect(subscription.cancelAtPeriodEnd).toBe(true);
   expect(subscription.endsAt).toEqual(new Date('2026-09-01'));
   expect(provider.state.subscriptions[0]!.cancelAtPeriodEnd).toBe(true);
@@ -187,7 +100,6 @@ test('creating a checkout records it', async () => {
   });
 
   expect(checkout.status).toBe('open');
-  expect(provider.state.checkouts).toHaveLength(1);
   expect(provider.state.checkouts[0]!.metadata).toEqual({ userId: 'user_123' });
 });
 ```
@@ -202,24 +114,21 @@ instances.
 `usage.report` appends to `state.usageEvents`, so you can assert on what your code would have billed:
 
 ```ts
-test('an API call reports one unit of usage', async () => {
-  const provider = createInMemoryProvider();
-  const client = createClient({ provider });
+const provider = createInMemoryProvider();
 
-  await client.usage.report({
-    customerId: 'cus-1',
-    eventName: 'api_request',
-    value: 25,
-    metadata: { region: 'eu' },
-  });
+await createClient({ provider }).usage.report({
+  customerId: 'cus-1',
+  eventName: 'api_request',
+  value: 25,
+  metadata: { region: 'eu' },
+});
 
-  expect(provider.state.usageEvents[0]).toEqual({
-    customerId: 'cus-1',
-    eventName: 'api_request',
-    payload: { value: 25, region: 'eu' },
-    idempotencyKey: undefined,
-    timestamp: undefined,
-  });
+expect(provider.state.usageEvents[0]).toEqual({
+  customerId: 'cus-1',
+  eventName: 'api_request',
+  payload: { value: 25, region: 'eu' },
+  idempotencyKey: undefined,
+  timestamp: undefined,
 });
 ```
 
@@ -236,62 +145,44 @@ test('an API call reports one unit of usage', async () => {
   }}
 />
 
-The type is exported as `InMemoryUsageEvent` from `revenue-sdk/testing`. Override
-`capabilities: { usageReporting: false }` to exercise the Lemon Squeezy and Paddle fallback path — see
+The type is exported as `InMemoryUsageEvent`. Override `capabilities: { usageReporting: false }` to
+exercise the Lemon Squeezy and Paddle fallback path — see
 [Usage-based billing](/docs/concepts/usage-based-billing).
 
 ### Seeded orders
 
 `orders` seeds surface on `state.orders`, filtered by `customerId` when you pass one, and paginated like
-everything else:
-
-```ts
-test('the billing history shows the refund', async () => {
-  const provider = createInMemoryProvider({
-    orders: [
-      { id: 'ord-1', customerId: 'cus-1', amount: 2900, currency: 'usd', status: 'paid' },
-      {
-        id: 'ord-2',
-        customerId: 'cus-1',
-        amount: 2900,
-        currency: 'usd',
-        status: 'partially_refunded',
-        refundStatus: 'partial',
-      },
-    ],
-  });
-  const client = createClient({ provider });
-
-  const { items } = await client.orders.list({ customerId: 'cus-1' });
-
-  expect(items.map((order) => order.status)).toEqual(['paid', 'partially_refunded']);
-});
-```
-
-`status` defaults to `paid`; nothing else is defaulted, so an unseeded field stays `undefined` exactly
-as it would on a provider that does not report it. `orders.getInvoiceUrl` returns a deterministic fake —
+everything else. `orders.getInvoiceUrl` returns a deterministic fake —
 `https://invoices.example.com/<order id>` — for any seeded order, and throws `not_found` for an unknown
 one. Override `capabilities: { listOrdersByCustomer: false }` to exercise the Lemon Squeezy path, where
 `orders.list({ customerId })` throws `unsupported`.
 
-### Seeded license keys
-
-`licenseKeys` seeds surface on `state.licenseKeys`, and `licenseKeys.update` writes into them:
-
 ```ts
-test('a chargeback disables the key', async () => {
-  const provider = createInMemoryProvider({
-    licenseKeys: [{ id: 'lk-1', key: 'AAAA-BBBB', activationLimit: 3 }],
-  });
-  const client = createClient({ provider });
-
-  await client.licenseKeys.update({ id: 'lk-1', disabled: true });
-
-  expect(provider.state.licenseKeys[0]!.status).toBe('disabled');
+const provider = createInMemoryProvider({
+  orders: [
+    { id: 'ord-1', customerId: 'cus-1', amount: 2900, currency: 'usd', status: 'paid' },
+    { id: 'ord-2', customerId: 'cus-1', amount: 2900, status: 'partially_refunded', refundStatus: 'partial' },
+  ],
 });
+const { items } = await createClient({ provider }).orders.list({ customerId: 'cus-1' });
+
+expect(items.map((order) => order.status)).toEqual(['paid', 'partially_refunded']);
 ```
 
-Override `capabilities: { licenseKeys: false }` to exercise the Stripe and Paddle fallback path.
+### Seeded license keys
+
+`licenseKeys` seeds surface on `state.licenseKeys`, and `licenseKeys.update` writes into them. Override
+`capabilities: { licenseKeys: false }` to exercise the Stripe and Paddle fallback path.
+
+```ts
+const provider = createInMemoryProvider({
+  licenseKeys: [{ id: 'lk-1', key: 'AAAA-BBBB', activationLimit: 3 }],
+});
+
+await createClient({ provider }).licenseKeys.update({ id: 'lk-1', disabled: true });
+
+expect(provider.state.licenseKeys[0]!.status).toBe('disabled');
+```
 
 :::note
 The in-memory provider deliberately does **not** implement `validateLicenseKey`, `activateLicenseKey`,
@@ -362,28 +253,10 @@ The returned record uses lowercase header names: `webhook-id` / `webhook-timesta
 Paddle, and `x-signature` for Lemon Squeezy.
 
 :::note
-Dodo Payments derives its HMAC key by stripping `whsec_` and base64-decoding the remainder, so a test
-secret must be `whsec_` followed by valid base64 — anything else throws `RevenueError` with code
-`validation`. Polar uses its secret verbatim and accepts any string.
+A Dodo Payments test secret must be `whsec_` followed by valid base64 — its key derivation
+base64-decodes the remainder, so anything else throws `RevenueError` with code `validation`. Polar uses
+its secret verbatim and accepts any string.
 :::
-
-## Behavior of the mutating operations
-
-| Call                          | Effect on state                                                                  |
-| ----------------------------- | --------------------------------------------------------------------------------- |
-| `checkouts.create`            | Appends a `Checkout` with a generated ID, `status: 'open'`, a fake URL, and `expiresAt` carried through from the params. |
-| `subscriptions.cancel`        | Sets `cancelAtPeriodEnd: true` and `endsAt = currentPeriodEnd`. Status unchanged.  |
-| `subscriptions.uncancel`      | Clears `cancelAtPeriodEnd` and `endsAt`.                                          |
-| `subscriptions.changePlan`    | Sets `productId` to `params.product`, and `quantity` when given.                   |
-| `subscriptions.endTrial`      | Sets `status: 'active'` and clears `trialEndsAt`.                                 |
-| `subscriptions.pause`         | With `behavior: 'period_end'` sets `pauseAtPeriodEnd: true` and leaves the status alone; otherwise sets `status: 'paused'`. Stores `resumesAt` when given. |
-| `subscriptions.resume`        | Sets `status: 'active'`, clears `pauseAtPeriodEnd` and `resumesAt`.                |
-| `subscriptions.revoke`        | Sets `status: 'canceled'`, clears `cancelAtPeriodEnd`, and sets `endedAt`.         |
-| `customerPortal.createSession`| Returns a fake portal URL, or throws `not_found` for an unknown customer.          |
-| `usage.report`                | Appends an `InMemoryUsageEvent`; `value` is merged into `payload`.                 |
-| `licenseKeys.update`          | Sets `status` to `disabled`/`active` from `disabled`, and writes `activationLimit` and `expiresAt` when given (`null` clears them). |
-
-Anything looked up by an ID that isn't seeded throws `RevenueError` with code `not_found`.
 
 ## Pagination is exercised
 
@@ -409,11 +282,83 @@ count; // 3
 Cursors are tagged with the simulated provider `name`, so they behave exactly like real ones — including
 rejecting a cursor from a different provider.
 
+## Seed reference
+
+`products`, `customers`, `subscriptions`, `orders`, and `licenseKeys` are arrays; every field is
+optional and gets a sensible default. Missing IDs are generated (`product-1`, `price-2`, `customer-3`,
+…).
+
+<TypeTable
+  type={{
+    products: {
+      type: 'InMemoryProductSeed[]',
+      required: false,
+      description: '{ id?, name?, description?, prices? }. name defaults to the id.',
+    },
+    customers: {
+      type: 'InMemoryCustomerSeed[]',
+      required: false,
+      description: '{ id?, email?, name?, metadata? }. email defaults to <id>@example.com.',
+    },
+    subscriptions: {
+      type: 'InMemorySubscriptionSeed[]',
+      required: false,
+      description:
+        '{ id?, status?, cancelAtPeriodEnd?, pauseAtPeriodEnd?, customerId?, productId?, quantity?, currency?, amount?, interval?, currentPeriodEnd?, trialEndsAt?, resumesAt?, endsAt?, metadata? }.',
+    },
+    orders: {
+      type: 'InMemoryOrderSeed[]',
+      required: false,
+      description:
+        '{ id?, status?, amount?, currency?, customerId?, customerEmail?, subscriptionId?, createdAt?, refundStatus?, metadata? }. status defaults to paid; nothing else is defaulted, so an unseeded field stays undefined.',
+    },
+    licenseKeys: {
+      type: 'InMemoryLicenseKeySeed[]',
+      required: false,
+      description:
+        '{ id?, key?, status?, activationLimit?, activationCount?, expiresAt?, customerId?, productId? }. key defaults to the id, status to active.',
+    },
+  }}
+/>
+
+Price seeds default to a `fixed`, `recurring`, monthly price of `1000` in `usd`, and `checkoutRef`
+defaults to the parent product's ID:
+
+<TypeTable
+  type={{
+    id: { type: 'string', required: false, description: 'Generated when omitted.' },
+    checkoutRef: { type: 'string', required: false, description: "Defaults to the parent product's id." },
+    type: { type: "'one_time' | 'recurring'", required: false, default: 'recurring', description: 'Price type.' },
+    model: { type: 'PriceModel', required: false, default: 'fixed', description: 'Pricing model.' },
+    amount: { type: 'number | null', required: false, default: '1000', description: 'Minor units. Pass null explicitly for non-fixed models.' },
+    currency: { type: 'string', required: false, default: 'usd', description: 'Lowercase ISO 4217 code.' },
+    interval: { type: 'BillingInterval', required: false, default: 'month', description: "Omitted when type is 'one_time'." },
+    intervalCount: { type: 'number', required: false, description: 'Intervals per billing cycle.' },
+    trialDays: { type: 'number', required: false, description: 'Trial length in days.' },
+  }}
+/>
+
+## Behavior of the mutating operations
+
+| Call                          | Effect on state                                                                  |
+| ----------------------------- | --------------------------------------------------------------------------------- |
+| `checkouts.create`            | Appends a `Checkout` with a generated ID, `status: 'open'`, a fake URL, and `expiresAt` carried through from the params. |
+| `subscriptions.cancel`        | Sets `cancelAtPeriodEnd: true` and `endsAt = currentPeriodEnd`. Status unchanged.  |
+| `subscriptions.uncancel`      | Clears `cancelAtPeriodEnd` and `endsAt`.                                          |
+| `subscriptions.changePlan`    | Sets `productId` to `params.product`, and `quantity` when given.                   |
+| `subscriptions.endTrial`      | Sets `status: 'active'` and clears `trialEndsAt`.                                 |
+| `subscriptions.pause`         | With `behavior: 'period_end'` sets `pauseAtPeriodEnd: true` and leaves the status alone; otherwise sets `status: 'paused'`. Stores `resumesAt` when given. |
+| `subscriptions.resume`        | Sets `status: 'active'`, clears `pauseAtPeriodEnd` and `resumesAt`.                |
+| `subscriptions.revoke`        | Sets `status: 'canceled'`, clears `cancelAtPeriodEnd`, and sets `endedAt`.         |
+| `customerPortal.createSession`| Returns a fake portal URL, or throws `not_found` for an unknown customer.          |
+| `usage.report`                | Appends an `InMemoryUsageEvent`; `value` is merged into `payload`.                 |
+| `licenseKeys.update`          | Sets `status` to `disabled`/`active` from `disabled`, and writes `activationLimit` and `expiresAt` when given (`null` clears them). |
+
 <CardGroup cols={2}>
+  <Card title="Polar" icon="circle-dot" href="/docs/providers/polar">
+    The first real provider.
+  </Card>
   <Card title="Capabilities" icon="toggle-right" href="/docs/concepts/capabilities">
     What the overrides actually gate.
-  </Card>
-  <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
-    The real values to simulate.
   </Card>
 </CardGroup>

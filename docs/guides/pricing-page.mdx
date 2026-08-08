@@ -71,10 +71,20 @@ function toRows(products: Product[]): PlanRow[] {
 }
 ```
 
-:::note
-`amount` is in the currency's **minor units** — `2900` is `$29.00`. It is `null` for every model other
-than `fixed`; see [Products & prices](/docs/concepts/products-and-prices).
-:::
+`amount` is `null` for every price model other than `fixed` — that is what the "Contact us" fallback
+covers; see [Products & prices](/docs/concepts/products-and-prices).
+
+Real catalogs also carry metered prices and one-off products you don't want on a pricing page, so filter
+the rows deliberately:
+
+```ts
+const sellable = toRows(products).filter(
+  (row) => row.interval !== undefined && row.price !== 'Contact us',
+);
+```
+
+Archived products are already excluded by the SDK where the provider supports it (Polar, Stripe, Paddle,
+and Dodo Payments all list only active products).
 
 ## Monthly / yearly toggle
 
@@ -152,18 +162,6 @@ Invalidate the cache from a webhook or a deploy hook when you change prices, rat
 TTL. A stale `checkoutRef` fails loudly with `not_found` at checkout time, so the failure mode is
 visible rather than silent.
 :::
-
-## Handle a partly unsupported catalog
-
-Real catalogs contain archived products, metered prices, and one-off products you don't want on the
-pricing page. Filter deliberately:
-
-```ts
-const sellable = rows.filter((row) => row.interval !== undefined && row.price !== 'Contact us');
-```
-
-Archived products are already excluded by the SDK where the provider supports it (Polar, Stripe, Paddle,
-and Dodo Payments all list only active products).
 
 <CardGroup cols={2}>
   <Card title="Next: Checkout flow" icon="shopping-cart" href="/docs/guides/checkout-flow">

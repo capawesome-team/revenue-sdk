@@ -1,106 +1,31 @@
 ---
 title: Capabilities
-description: RevenueCapabilities field by field, the fail-loud philosophy behind the unsupported error, and how to check capabilities before you call.
+description: How the client advertises what the configured provider can do, and why an option it cannot honor throws unsupported instead of being silently dropped.
 sidebar:
   label: Capabilities
 ---
 
-Billing providers are not interchangeable. Paddle has no API-hosted checkout; Lemon Squeezy can't revoke
-a subscription immediately; Dodo Payments can't end a trial early; Polar has no "switch now, bill
-nothing" proration mode. Rather than hide these differences and silently drop options, `revenue-sdk`
-**advertises** each provider's capabilities and **gates** on them.
-
-## RevenueCapabilities
-
-Every provider exposes a `capabilities` object, also surfaced on `client.capabilities`:
-
-<TypeTable
-  type={{
-    cancellationReason: {
-      type: 'boolean',
-      description: 'Whether subscriptions.cancel forwards reason/comment to the provider. false for Lemon Squeezy and Paddle.',
-    },
-    checkoutCustomAmount: {
-      type: 'boolean',
-      description: 'Whether checkouts.create accepts customAmount, the buyer-chosen price of a pay-what-you-want product. false for Stripe, Paddle, and Dodo Payments.',
-    },
-    checkoutExpiresAt: {
-      type: 'boolean',
-      description: 'Whether checkouts.create accepts expiresAt. false for Polar, Paddle, and Dodo Payments, which expire checkouts on a fixed schedule.',
-    },
-    checkoutStatus: {
-      type: 'boolean',
-      description: 'Whether Checkout.status is populated. false for Lemon Squeezy, whose checkouts carry no lifecycle status.',
-    },
-    checkoutSuccessUrl: {
-      type: 'boolean',
-      description: 'Whether checkouts.create accepts successUrl. false for Paddle — configure the redirect in Paddle.js instead.',
-    },
-    customerMetadata: {
-      type: 'boolean',
-      description: 'Whether customers.create and customers.update accept metadata. false for Lemon Squeezy, whose customer object has no metadata field.',
-    },
-    endTrial: {
-      type: 'boolean',
-      description: 'Whether subscriptions.endTrial is supported. false for Dodo Payments.',
-    },
-    hostedCheckout: {
-      type: 'boolean',
-      description: 'Whether checkouts.create returns a ready-to-use provider-hosted URL. false for Paddle, which needs your own Paddle.js page.',
-    },
-    licenseKeys: {
-      type: 'boolean',
-      description: 'Whether the licenseKeys namespace is supported. false for Stripe and Paddle. Validating and activating keys needs no client — see License keys.',
-    },
-    listOrdersByCustomer: {
-      type: 'boolean',
-      description: 'Whether orders.list accepts a customerId filter. false for Lemon Squeezy, whose orders filter by store, email, and order number only.',
-    },
-    listSubscriptionsByCustomer: {
-      type: 'boolean',
-      description: 'Whether subscriptions.list accepts a customerId filter. false for Lemon Squeezy.',
-    },
-    pause: {
-      type: 'boolean',
-      description: 'Whether subscriptions.pause and subscriptions.resume are supported. false for Dodo Payments.',
-    },
-    pauseBehaviors: {
-      type: "('immediately' | 'period_end')[]",
-      description: 'The pause behaviors subscriptions.pause accepts on this provider. Empty when pause is false.',
-    },
-    portalReturnUrl: {
-      type: 'boolean',
-      description: 'Whether customerPortal.createSession accepts returnUrl. false for Lemon Squeezy and Paddle.',
-    },
-    prorationBehaviors: {
-      type: "('prorate' | 'invoice_now' | 'none')[]",
-      description: 'The proration behaviors subscriptions.changePlan accepts on this provider.',
-    },
-    revoke: {
-      type: 'boolean',
-      description: 'Whether subscriptions.revoke (cancel immediately) is supported. false for Lemon Squeezy.',
-    },
-    uncancel: {
-      type: 'boolean',
-      description: 'Whether a scheduled cancellation can be reverted via subscriptions.uncancel. true everywhere today.',
-    },
-    usageReporting: {
-      type: 'boolean',
-      description: 'Whether usage.report is supported. false for Lemon Squeezy and Paddle.',
-    },
-  }}
-/>
+Providers are not interchangeable, so `revenue-sdk` publishes what the configured one can do as plain
+data on `client.capabilities` and **throws** rather than quietly dropping an option it cannot honor.
+Branch on the data before you call:
 
 ```ts
-const client = createClient({ provider: paddle({ apiKey: process.env.PADDLE_API_KEY! }) });
+// Only offer a "cancel immediately" button where it exists.
+if (client.capabilities.revoke) {
+  showRevokeButton();
+}
 
-client.capabilities.hostedCheckout; // false
-client.capabilities.checkoutSuccessUrl; // false
-client.capabilities.prorationBehaviors; // ['invoice_now', 'none', 'prorate']
+// Only render a "why are you leaving?" survey where the reason is forwarded.
+const reason = client.capabilities.cancellationReason ? survey.reason : undefined;
+await client.subscriptions.cancel({ id, reason });
+
+// Pick a proration behavior the provider actually has.
+const proration = client.capabilities.prorationBehaviors.includes('none') ? 'none' : 'prorate';
+await client.subscriptions.changePlan({ id, product, prorationBehavior: proration });
 ```
 
-The complete five-provider table is in
-[the capability matrix](/docs/reference/capability-matrix).
+Every field of `RevenueCapabilities`, and its value on all five providers, lives in the
+[capability matrix](/docs/reference/capability-matrix).
 
 ## Fail loud, never silently drop
 
@@ -120,50 +45,24 @@ The alternative — quietly ignoring `successUrl` — would ship a checkout that
 provider's page with no way back, and you'd find out from a support ticket. A thrown error surfaces the
 difference at integration time, in your own test suite.
 
-The client gates on:
+## How the gating works
 
-- `checkouts.create({ successUrl })` — requires `checkoutSuccessUrl`
-- `checkouts.create({ expiresAt })` — requires `checkoutExpiresAt`
-- `checkouts.create({ customAmount })` — requires `checkoutCustomAmount`
-- `customers.create/update({ metadata })` — requires `customerMetadata`
-- `orders.list/listAll({ customerId })` — requires `listOrdersByCustomer`
-- `subscriptions.list/listAll({ customerId })` — requires `listSubscriptionsByCustomer`
-- `subscriptions.cancel({ reason | comment })` — requires `cancellationReason`
-- `subscriptions.uncancel` — requires `uncancel`
-- `subscriptions.endTrial` — requires `endTrial`
-- `subscriptions.pause` and `subscriptions.resume` — require `pause`
-- `subscriptions.pause({ behavior })` — the value must be in `pauseBehaviors`
-- `subscriptions.revoke` — requires `revoke`
-- `subscriptions.changePlan({ prorationBehavior })` — the value must be in `prorationBehaviors`
-- `customerPortal.createSession({ returnUrl })` — requires `portalReturnUrl`
-- `usage.report` — requires `usageReporting`
-- `licenseKeys.list/listAll/get/update` — require `licenseKeys`
+- **A boolean capability that is `false`** makes the operation or the option it guards throw
+  `unsupported`. For a whole namespace — `usage.report`, `licenseKeys.*`, `subscriptions.pause` — that
+  is the call itself; for an option — `successUrl`, `metadata`, `customerId`, `returnUrl` — it is only
+  triggered by **passing** the option. Omitting it is always safe.
+- **A list capability** — `pauseBehaviors`, `prorationBehaviors` — throws when the value you pass is not
+  in the list. Omitting the value uses the provider's own default, so portable code can leave it out.
+- **Adapters raise `unsupported` too**, for the finer-grained limits a boolean can't express: a Polar
+  checkout with `quantity > 1`, a Lemon Squeezy checkout with more than one item or a `customerId`, a
+  Polar or Lemon Squeezy plan change with `quantity > 1`.
+- **`unsupported` is not `validation`.** `validation` means the arguments are malformed and would be
+  wrong on every provider — an empty ID, a negative `limit`. `unsupported` means they are well-formed
+  but this provider has nowhere to put them. See [Errors](/docs/concepts/errors).
 
-Adapters raise `unsupported` for the finer-grained limits a boolean can't express — a Polar checkout
-with `quantity > 1`, a Lemon Squeezy checkout with more than one item or a `customerId`, or a Polar or
-Lemon Squeezy plan change with `quantity > 1`.
+## `hostedCheckout` changes your architecture
 
-## Check before you call
-
-Because capabilities are plain data, you can branch on them to build a UI that adapts to whichever
-provider is configured:
-
-```ts
-// Only offer a "cancel immediately" button where it exists.
-if (client.capabilities.revoke) {
-  showRevokeButton();
-}
-
-// Only render a "why are you leaving?" survey where the reason is forwarded.
-const reason = client.capabilities.cancellationReason ? survey.reason : undefined;
-await client.subscriptions.cancel({ id, reason });
-
-// Pick a proration behavior the provider actually has.
-const proration = client.capabilities.prorationBehaviors.includes('none') ? 'none' : 'prorate';
-await client.subscriptions.changePlan({ id, product, prorationBehavior: proration });
-```
-
-`hostedCheckout` is the one capability that changes your *architecture* rather than an argument: when it
+Most capabilities change one argument. `hostedCheckout` changes the shape of your integration: when it
 is `false` you must render your own Paddle.js page instead of redirecting to the returned URL. Decide
 that at build time, not per request.
 
@@ -195,7 +94,7 @@ await expect(client.subscriptions.revoke({ id: 'sub-1' })).rejects.toMatchObject
 
 <CardGroup cols={2}>
   <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
-    The complete five-provider reference.
+    Every capability, every provider.
   </Card>
   <Card title="Testing provider" icon="flask-conical" href="/docs/providers/testing">
     Seed state and override capabilities in your tests.

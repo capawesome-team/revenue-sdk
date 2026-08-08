@@ -65,9 +65,14 @@ otherwise reach the provider as `null` or `"NaN"`. A provider without the `usage
 throws `unsupported`, also pre-flight.
 
 :::warning
-An `eventName` no meter is configured for is **not** an error you can catch. The event is accepted and
-silently never billed. The same is true of a customer the provider doesn't know on Stripe and Dodo
-Payments. Treat the meter name as a shared constant between your code and the provider dashboard.
+**A resolved `usage.report` is not a confirmation that the usage was billed.** Providers validate the
+request synchronously but process the event asynchronously, so an `eventName` no meter is configured
+for — or, on Stripe and Dodo Payments, a customer the provider doesn't know — is dropped **silently**
+and is not an error you can catch. On Stripe the only signals are the
+`v1.billing.meter.error_report_triggered` and `v1.billing.meter.no_meter_found` thin webhooks, which
+this SDK does not parse; subscribe to them in the dashboard if silent revenue loss is a concern — see
+[Stripe](/docs/providers/stripe). Treat the meter name as a shared constant between your code and the
+provider dashboard.
 :::
 
 ## `value` versus `metadata`
@@ -104,25 +109,10 @@ if (client.capabilities.usageReporting) {
 All three supporting providers expose a **batch** ingest endpoint; `usage.report` sends a one-event
 batch. Batch reporting is not part of the unified API — see [Out of scope](#out-of-scope).
 
-Two Polar limits worth knowing before you design your event payload:
-
-- `metadata` is capped at **50 pairs**, keys at **40 characters** and string values at **500
-  characters**.
-- Polar can also key events by your own `external_customer_id`. The unified `customerId` is always the
-  provider's ID, so external keying needs Polar's native API.
-
-### Why Lemon Squeezy and Paddle are unsupported
-
-**Lemon Squeezy** does have `POST /v1/usage-records`, but it keys on a **subscription-item ID** rather
-than a customer. Reaching that ID costs an extra lookup and is ambiguous as soon as a customer has more
-than one subscription. It also has **no idempotency at all** and `increment` semantics, so a single
-replayed request double-bills. Reporting it through the unified API would be a footgun, so the capability
-is `false`.
-
-**Paddle** has no usage API. Paddle's own guidance is to meter externally (OpenMeter, m3ter, or your own
-store) and bill the result as a one-time charge — `POST /subscriptions/{id}/charge` with a price you
-compute yourself. That is a different operation with different money semantics, so the SDK does not
-pretend it is usage reporting.
+Lemon Squeezy and Paddle have no safely idempotent ingestion upstream, so `usageReporting` is `false`
+there and `usage.report` throws `unsupported` — see [Lemon Squeezy](/docs/providers/lemon-squeezy) and
+[Paddle](/docs/providers/paddle). Polar caps `metadata` and can key events by your own customer ID; see
+[Polar](/docs/providers/polar).
 
 ## Usage writes are never retried
 
@@ -165,26 +155,6 @@ On **Dodo Payments** the `event_id` is required by the API, so the SDK generates
 replay-safe**. Pass your own key whenever a retry is possible.
 :::
 
-## Stripe: a `2xx` is not a confirmation
-
-Stripe validates meter events synchronously but **processes them asynchronously**.
-
-:::warning
-A `usage.report` that resolves on Stripe means the request was well-formed — **not** that the usage was
-recorded. An unknown customer, or an `eventName` with no matching meter, is dropped **silently**.
-Failures surface only through the `v1.billing.meter.error_report_triggered` and
-`v1.billing.meter.no_meter_found` thin webhooks, which this SDK does not parse. Subscribe to them in the
-Stripe dashboard and handle them with the raw payload if silent revenue loss is a concern.
-:::
-
-Two more Stripe specifics:
-
-- `stripe_customer_id` and `value` are the meter's **default** payload keys
-  (`customer_mapping.event_payload_key` and `value_settings.event_payload_key`). A meter configured with
-  custom keys needs them passed through `metadata` instead.
-- The meter-event endpoint allows 1,000 events per second, but only **one concurrent call per customer
-  per meter**. Parallelize across customers, never within one.
-
 ## Backdating windows differ sharply
 
 `timestamp` is not portable. The three supporting providers disagree on how far into the past an event
@@ -196,14 +166,9 @@ may be dated, and on what a backdated event means for money:
 | **Stripe**        | past 35 calendar days, up to 5 minutes ahead | error                | which billing period the usage lands in |
 | **Dodo Payments** | past **1 hour**, up to 5 minutes ahead       | `400` → `validation` | which billing period the usage lands in |
 
-- **Polar** accepts any past timestamp, but attributes events to billing periods by **receipt time** and
-  never issues a retroactive invoice. Backdating is a reporting convenience, not a billing correction.
-- **Stripe** rejects anything older than 35 calendar days or more than 5 minutes ahead.
-- **Dodo Payments** rejects anything older than **one hour**. You cannot backfill: a queue that has been
-  down for two hours has lost its billable window, so report as close to real time as you can.
-
-Omitting `timestamp` — reporting at the moment the usage happens — is the only behavior that is the same
-everywhere.
+Dodo Payments is the one to design around: a queue that has been down for two hours has lost its
+billable window, and there is no way to backfill it. Omitting `timestamp` — reporting at the moment the
+usage happens — is the only behavior that is the same everywhere.
 
 ## Reading usage back: `Subscription.meters`
 
@@ -234,57 +199,19 @@ subscription. On every other provider the field is `undefined` — treat it as a
 portable API, and guard with `subscription.meters ?? []`.
 :::
 
-There is no `usage.getCurrent`, and there will not be one until the providers can answer the same
-question: Polar exposes usage inline on the subscription, Stripe needs a meter ID plus a minute-aligned
-time window and keys on customer + meter rather than subscription, and Dodo Payments only returns
-**closed** billing cycles with no current-period-so-far endpoint. A unified read would return something
-different on each provider, which is exactly what this SDK exists to avoid.
-
 ## Testing
 
-The in-memory provider from `revenue-sdk/testing` records every reported event on
-`state.usageEvents`, so you can assert on what your code would have billed:
-
-```ts
-import { expect, test } from 'vitest';
-import { createClient } from 'revenue-sdk';
-import { createInMemoryProvider } from 'revenue-sdk/testing';
-
-test('an API call reports one unit of usage', async () => {
-  const provider = createInMemoryProvider();
-  const client = createClient({ provider });
-
-  await client.usage.report({
-    customerId: 'cus-1',
-    eventName: 'api_request',
-    value: 25,
-    metadata: { region: 'eu' },
-  });
-
-  expect(provider.state.usageEvents).toEqual([
-    {
-      customerId: 'cus-1',
-      eventName: 'api_request',
-      payload: { value: 25, region: 'eu' },
-      idempotencyKey: undefined,
-      timestamp: undefined,
-    },
-  ]);
-});
-```
-
-`payload` is `metadata` with `value` already merged in — exactly what a real provider receives. Override
-`capabilities: { usageReporting: false }` to test the fallback path for Lemon Squeezy and Paddle.
+The in-memory provider records every reported event on `state.usageEvents`, so you can assert on what
+your code would have billed, and `capabilities: { usageReporting: false }` exercises the Lemon Squeezy
+and Paddle fallback path. See [Testing provider](/docs/providers/testing).
 
 ## Out of scope
 
-`usage.report` is the whole feature. Deliberately absent:
-
-- **Meter CRUD and management.** Create and configure meters in the provider dashboard.
-- **Reading usage back** beyond Polar's inline `Subscription.meters`, for the reason above.
-- **Normalized amounts for metered and tiered prices.** `Price.amount` stays `null` for every model
-  other than `fixed` — see [Products & prices](/docs/concepts/products-and-prices).
-- **Batch reporting**, tier tables, and seat management.
+- Meter CRUD and management — configure meters in the provider dashboard.
+- Reading usage back beyond Polar's inline `Subscription.meters`; there is no `usage.getCurrent`.
+- Normalized amounts for metered and tiered prices — `Price.amount` stays `null` outside `fixed`, see
+  [Products & prices](/docs/concepts/products-and-prices).
+- Batch reporting, tier tables, and seat management.
 
 <CardGroup cols={2}>
   <Card title="Next: License keys" icon="key-round" href="/docs/concepts/license-keys">

@@ -106,22 +106,19 @@ negative number, a fraction, and `NaN` with a `RevenueError` of code `validation
 meaningless value on the wire. There is no upper bound to reject against: a limit above the provider's
 maximum is clamped to it silently.
 
-| Provider          | Default | Maximum |
-| ----------------- | ------- | ------- |
-| **Polar**         | 10      | 100     |
-| **Lemon Squeezy** | 10      | 100     |
-| **Stripe**        | 10      | 100     |
-| **Paddle**        | 10      | 200     |
-| **Dodo Payments** | 10      | 100     |
-| **Testing**       | fixed 2 | fixed 2 |
+| Provider          | Default | Maximum                                    |
+| ----------------- | ------- | ------------------------------------------ |
+| **Polar**         | 10      | 100                                        |
+| **Lemon Squeezy** | 10      | 100                                        |
+| **Stripe**        | 10      | 100                                        |
+| **Paddle**        | 10      | 200, but **30** on `orders.list`           |
+| **Dodo Payments** | 10      | 100                                        |
+| **Testing**       | fixed 2 | fixed 2                                    |
 
 ```ts
 // Clamped to 100 on Polar; no error is thrown.
 const { items } = await client.products.list({ limit: 1000 });
 ```
-
-Paddle is the one exception to its own row: `/transactions` rejects a `per_page` above **30**, so
-`orders.list` clamps to 30 there while every other Paddle collection allows 200.
 
 :::note
 The in-memory testing provider ignores `limit` and always returns **2 items per page**, on purpose — so
@@ -129,33 +126,8 @@ your cursor-following code is exercised by even a small seed. See
 [Testing provider](/docs/providers/testing).
 :::
 
-## How the providers actually page
-
-You never see this, but it explains the differences in page counts:
-
-| Provider          | Native paging                                                                   |
-| ----------------- | --------------------------------------------------------------------------------- |
-| **Polar**         | `page` + `limit`, with `pagination.max_page` in the response                     |
-| **Lemon Squeezy** | JSON:API `page[number]` / `page[size]`, with `meta.page.lastPage`                 |
-| **Stripe**        | keyset paging via `starting_after` + `has_more`                                    |
-| **Paddle**        | a `meta.pagination.next` URL + `has_more`                                          |
-| **Dodo Payments** | zero-based `page_number` + `page_size`, **no** `has_more` — a short page ends it  |
-
-Dodo Payments is the notable one: because it reports no total or "has more" flag, the SDK treats a full
-page as "there may be more" and a short page as the end. A collection whose size is an exact multiple of
-the page size therefore costs one extra empty request.
-
-### Lemon Squeezy orders page in two phases
-
-`orders.list` on Lemon Squeezy is the only call that pages across **two** collections: a payment is
-either an order or a subscription invoice, and the two are independently paginated. The cursor therefore
-carries the phase it is in — `/v1/orders` is drained first, then `/v1/subscription-invoices` — and the
-last page of orders always hands over to the first page of invoices rather than ending the iteration.
-
-The consequence is that a Lemon Squeezy page is **not** globally chronological, where every other
-provider returns newest-first. Merge-sorting two independently paginated sources cannot be expressed in
-an opaque cursor, so `listAll` yields everything and leaves the ordering to you — see
-[Orders](/docs/concepts/orders).
+`orders.list` on Lemon Squeezy is the one call that pages across two collections, so its pages are not
+globally chronological — see [Lemon Squeezy](/docs/providers/lemon-squeezy).
 
 Pagination is one of several places the five APIs pull apart — see
 [how the Stripe, Polar, Lemon Squeezy, Paddle, and Dodo Payments APIs differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences)

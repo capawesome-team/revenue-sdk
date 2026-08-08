@@ -87,7 +87,7 @@ calling a bound method through a property access (`someBinding.fetch(...)` store
 
 ## A complete Worker
 
-Routing, a checkout endpoint, a portal redirect, and a webhook handler in one module:
+Routing, a checkout endpoint, a portal redirect, and a webhook route in one module:
 
 ```ts
 import { createClient } from 'revenue-sdk';
@@ -98,8 +98,6 @@ export interface Env {
   POLAR_WEBHOOK_SECRET: string;
   PROCESSED: KVNamespace;
 }
-
-const DEDUPE_TTL_SECONDS = 60 * 60 * 24 * 3;
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -136,28 +134,15 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
   const headers = request.headers;
   const body = await request.text();
 
+  // The secret comes off `env`, never a module-scope constant.
   if (!(await verifyWebhook({ headers, body, secret: env.POLAR_WEBHOOK_SECRET }))) {
     return new Response('invalid signature', { status: 401 });
   }
 
-  // `idempotencyKey` is always set and stable across the provider's retries.
   const event = await parseWebhookEvent({ headers, body });
-  if ((await env.PROCESSED.get(event.idempotencyKey)) !== null) {
-    return new Response(null, { status: 204 });
-  }
 
-  switch (event.type) {
-    case 'subscription.created':
-    case 'subscription.updated':
-    case 'subscription.canceled':
-      await upsertSubscription(env, event.subscription);
-      break;
-    case 'order.paid':
-      await recordPayment(env, event.order);
-      break;
-  }
-
-  await env.PROCESSED.put(event.idempotencyKey, '1', { expirationTtl: DEDUPE_TTL_SECONDS });
+  // Dedupe on env.PROCESSED, then persist. Both live in the webhook handler guide.
+  await persist(env, event);
 
   // Non-critical follow-up work, after the response.
   ctx.waitUntil(notifySlack(event));
@@ -166,18 +151,16 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
 }
 ```
 
-Web Crypto is used for signature verification, so `verifyWebhook` works on Workers unchanged — no
-polyfill, no `nodejs_compat`.
+`persist` is the dedupe-and-upsert body from
+[the webhook handler guide](/docs/guides/webhook-handler) — `env.PROCESSED` is the KV namespace its
+`alreadyProcessed`/`markProcessed` pair writes to. Web Crypto is used for signature verification, so
+`verifyWebhook` works on Workers unchanged — no polyfill, no `nodejs_compat`.
 
 ## `ctx.waitUntil` caveats
 
-`ctx.waitUntil` extends the isolate's lifetime past the response. It is useful, and it is not a queue:
-
-- **No retries.** If the promise rejects, the work is simply lost — and the provider has already been
-  told the delivery succeeded.
-- **Not durable.** An eviction or a crash drops it.
-- **Bounded.** It still runs under the Worker's CPU and duration limits.
-- **No back-pressure.** A burst of deliveries starts a burst of background work.
+`ctx.waitUntil` extends the isolate's lifetime past the response, and that is all it does. It is not a
+queue: an eviction or a crash drops the work, it still runs under the Worker's CPU and duration limits,
+and a burst of deliveries starts a burst of background work with no back-pressure.
 
 So the rule is: **anything the customer's access depends on happens before the response.** Only
 best-effort work goes in `waitUntil`.
@@ -218,11 +201,9 @@ An abort rejects with the original `AbortError`, so it is distinguishable from a
   request — cache the catalog in KV rather than listing it on every page view.
 - **Cursors are opaque strings**, so they round-trip safely through KV, a query string, or a Durable
   Object.
-- **Concurrent deliveries land in separate isolates**, sharing no lock. Deduping on
-  `event.idempotencyKey` stops the *same* event being processed twice, but two different events for one
-  state change can still interleave — keep the read and the write of subscription state in one
-  conditional statement, or behind a Durable Object. See
-  [the read-then-upsert race](/docs/guides/webhook-handler#3-persist--upsert-by-subscription-id).
+- **Concurrent deliveries land in separate isolates**, sharing no lock — so an in-process mutex buys you
+  nothing against
+  [the read-then-upsert race](/docs/guides/webhook-handler#why-does-provisioning-fire-twice-the-read-then-upsert-race).
 
 <CardGroup cols={2}>
   <Card title="Client & providers" icon="layers" href="/docs/concepts/client-and-providers">

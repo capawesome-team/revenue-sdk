@@ -62,8 +62,10 @@ const client = createClient({
   provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
 });
 
+const [product] = (await client.products.list()).items;
+
 const checkout = await client.checkouts.create({
-  items: [{ product: 'PRODUCT_ID' }],
+  items: [{ product: product.prices[0].checkoutRef }],
   customerEmail: 'ada@example.com',
   successUrl: 'https://example.com/thanks',
 });

@@ -8,6 +8,24 @@ sidebar:
 `products.list` and `products.get` return a normalized `Product` with its `prices` already attached, so
 you can render a pricing page from one call without knowing how the provider models its catalog.
 
+```ts
+const { items: products } = await client.products.list();
+
+for (const product of products) {
+  for (const price of product.prices) {
+    // Correct across all five providers.
+    console.log(product.name, price.checkoutRef, price.amount, price.currency);
+  }
+}
+```
+
+:::warning
+Never hand `Product.id` to `checkouts.create`. Always pass `Price.checkoutRef` — it is the same string
+as `Product.id` on Polar and Dodo Payments, but a *different* object on Stripe and Paddle. Using
+`checkoutRef` everywhere keeps your code provider-agnostic, and the same rule applies to
+`subscriptions.changePlan({ product })`.
+:::
+
 ## The models
 
 <TypeTable
@@ -65,38 +83,8 @@ This is the single most important mapping in the SDK. Providers disagree about w
 | **Paddle**        | a Paddle **product**             | Paddle product ID       | the **price ID** (`pri_…`)     |
 | **Dodo Payments** | a Dodo **product**               | Dodo product ID         | the **product ID**             |
 
-:::warning
-Never hand `Product.id` to `checkouts.create`. Always pass `Price.checkoutRef` — it is the same string
-as `Product.id` on Polar and Dodo Payments, but a *different* object on Stripe and Paddle. Using
-`checkoutRef` everywhere keeps your code provider-agnostic.
-:::
-
-```ts
-const { items: products } = await client.products.list();
-
-for (const product of products) {
-  for (const price of product.prices) {
-    // Correct across all five providers.
-    console.log(product.name, price.checkoutRef, price.amount, price.currency);
-  }
-}
-```
-
-The same rule applies to `subscriptions.changePlan({ product })` — the `product` parameter is a
-`checkoutRef`, not a `Product.id`.
-
-## Lemon Squeezy: products are variants
-
-Lemon Squeezy's own "product" is a container; the thing a checkout can actually sell is a **variant**.
-`revenue-sdk` therefore maps `Product` to a variant and reads the variant's *current* price from its
-`price-model` relationship. (The `/v1/prices` collection is an append-only price history and must not be
-used for the current price.)
-
-The practical consequences:
-
-- One `Product` always has exactly **one** `Price`.
-- All Lemon Squeezy IDs are numeric on the wire and are coerced to strings by the SDK.
-- Prices carry the **store's** currency, since a variant price doesn't carry its own.
+On Lemon Squeezy that means one `Product` always has exactly **one** `Price`, carrying the store's
+currency — see [Lemon Squeezy](/docs/providers/lemon-squeezy).
 
 ## Only `fixed` prices are fully normalized
 

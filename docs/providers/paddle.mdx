@@ -1,6 +1,6 @@
 ---
 title: Paddle
-description: Configure the Paddle provider — API key, sandbox, the Paddle.js checkout requirement, webhooks, capabilities, and quirks.
+description: Configure the Paddle provider — API key, sandbox, the Paddle.js checkout requirement, webhooks, and its limitations.
 sidebar:
   label: Paddle
 ---
@@ -36,19 +36,32 @@ const client = createClient({
 Create an API key in the Paddle dashboard under **Developer tools → Authentication**. The SDK pins
 `Paddle-Version: 1` on every request.
 
-:::warning
-**Paddle reports authentication failures as HTTP 403**, not 401. The SDK inspects the response's error
-code and re-maps `authentication_malformed`, `authentication_missing`, and `invalid_token` to
-`RevenueError { code: 'unauthorized' }`, so a bad key doesn't masquerade as a permissions problem.
-:::
-
-## Sandbox
+## Sandbox & test mode
 
 Paddle's sandbox is a separate environment with its own dashboard, its own keys, and its own catalog:
 
 ```ts
 paddle({ apiKey: process.env.PADDLE_SANDBOX_API_KEY!, server: 'sandbox' });
 ```
+
+## Limitations
+
+- **No API-hosted checkout.** `hostedCheckout` is `false` and `checkouts.create({ successUrl })` throws
+  `unsupported` — the returned URL only works through your own Paddle.js page (see below).
+- **No license keys.** `licenseKeys` is `false` and all four `client.licenseKeys` methods throw
+  `unsupported`: Paddle Billing dropped the Classic license feature with no equivalent. See
+  [License keys](/docs/concepts/license-keys).
+- **No usage API.** `usage.report` throws `unsupported`. Paddle's own guidance is to meter externally
+  and bill the result as a one-time charge — `POST /subscriptions/{id}/charge` with a price you compute
+  yourself. See [Usage-based billing](/docs/concepts/usage-based-billing).
+- **No checkout expiry.** A transaction carries no expiry field, so `checkouts.create({ expiresAt })`
+  throws `unsupported` and `Checkout.expiresAt` is always `undefined`.
+- **No pay-what-you-want.** `checkouts.create({ customAmount })` throws `unsupported`.
+- **No cancellation reasons.** Passing `reason` or `comment` throws `unsupported`.
+- **`orders.list({ limit })` clamps to 30.** `/transactions` rejects `per_page > 30`, unlike every other
+  Paddle collection (200).
+
+Full values for every capability: [capability matrix](/docs/reference/capability-matrix).
 
 ## Checkout requires Paddle.js on your own domain
 
@@ -101,145 +114,66 @@ if (client.capabilities.hostedCheckout) {
 ## Webhooks
 
 Create a notification destination in **Developer tools → Notifications**, choose "Webhook", and copy the
-**secret key** Paddle generates for it.
+**secret key** Paddle generates for it. Verification and parsing come from the subpath:
 
 ```ts
 import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/paddle';
-
-const headers = request.headers;
-const body = await request.text();
-
-if (!(await verifyWebhook({ headers, body, secret: env.PADDLE_WEBHOOK_SECRET }))) {
-  return new Response('invalid signature', { status: 401 });
-}
-
-const event = await parseWebhookEvent({ headers, body });
 ```
 
-The `Paddle-Signature` header has the form `ts=…;h1=…`, where `h1` is a hex HMAC-SHA256 of
-`` `${ts}:${rawBody}` `` keyed by the secret used verbatim. Multiple `h1` values can appear during
-secret rotation, and any match is accepted. Deliveries older than 300 seconds are rejected — a friendlier
-bound than Paddle's own 5-second default, which is hostile to serverless clock skew and retries.
+See [Handle webhooks](/docs/guides/webhook-handler) for the full handler.
 
 Events worth subscribing to: `subscription.created`, `subscription.activated`, `subscription.updated`,
 `subscription.imported`, `subscription.trialing`, `subscription.past_due`, `subscription.paused`,
 `subscription.resumed`, `subscription.canceled`, `transaction.completed`.
 
-:::note
-Scheduling a cancellation emits `subscription.updated` (carrying `scheduled_change`), **never**
-`subscription.canceled` — that only fires on the effective date. `transaction.paid` is left unmapped so
-that `transaction.completed` is the single "money received" signal and payments don't fire twice.
-`subscription.imported` covers subscriptions migrated in from another system and normalizes to
-`subscription.updated` — upsert, don't insert.
-:::
-
-Paddle names three of the five transitions `subscriptionChange` covers:
-
-| `event.subscriptionChange` | Paddle event            |
-| -------------------------- | ----------------------- |
-| `past_due`                 | `subscription.past_due` |
-| `paused`                   | `subscription.paused`   |
-| `resumed`                  | `subscription.resumed`  |
-
-Scheduling a cancellation and undoing one both arrive as `subscription.updated` with
-`subscriptionChange` `undefined`, so `cancel_scheduled` and `uncanceled` never occur on Paddle — read
-`event.subscription.cancelAtPeriodEnd` instead.
-
 :::warning
-`event.idempotencyKey` is built from the envelope's **`event_id`**, not `notification_id`. The latter
-identifies one *delivery* to one destination and a dashboard replay mints a new one, so keying dedupe on
-it would let every replay through. `event.createdAt` comes from `occurred_at`.
+**Dedupe on `event_id`, never `notification_id`.** `event.idempotencyKey` is built from the envelope's
+`event_id`; `notification_id` identifies one *delivery* to one destination and a dashboard replay mints
+a new one, so keying dedupe on it would let every replay through. See
+[Webhooks](/docs/concepts/webhooks).
 :::
+
+- **Scheduling a cancellation emits `subscription.updated`** (carrying `scheduled_change`), never
+  `subscription.canceled` — that only fires on the effective date. Undoing one arrives the same way, so
+  `subscriptionChange` is `undefined` for both: read `event.subscription.cancelAtPeriodEnd` instead.
+- **`transaction.paid` is left unmapped** so `transaction.completed` is the single "money received"
+  signal and payments don't fire twice.
+- **`subscription.imported`** covers subscriptions migrated in from another system and normalizes to
+  `subscription.updated` — upsert, don't insert.
 
 ## Orders
 
-A unified `Order` is a **Paddle transaction** — the same entity a unified `Checkout` maps to, read at a
-later point in its life. `orders.list` reads `/transactions` and `orders.get` reads
-`/transactions/{id}`.
+See [Orders](/docs/concepts/orders) for the model. A unified `Order` is a **Paddle transaction** — the
+same entity a unified `Checkout` maps to, read later in its life. Paddle specifics:
 
-- **Only completed transactions are listed.** `draft` and `ready` transactions are abandoned checkouts
-  and Paddle returns them by default, so the SDK sends `status=completed`. Every listed order is
-  therefore `paid`.
-- **Sorted by `billed_at[DESC]`.** Paddle's default order is `id[DESC]`, which is not chronological.
-- **`per_page` is capped at 30** on `/transactions`, unlike every other Paddle collection (200), so
-  `orders.list({ limit })` clamps to 30.
-- **`refundStatus` needs an include.** Refunds are separate Adjustment entities, so both `orders.list`
-  and `orders.get` send `include=adjustments_totals` and compare
-  `adjustments_totals.breakdown.refund` against the order amount — no extra request.
-- **`amount` is `grand_total`**, falling back to `total`. `total` overstates the charge whenever a
-  credit absorbed part of the bill.
-- **`createdAt` is `billed_at`**, falling back to `created_at`.
-- **Invoice URLs live for one hour.** `getInvoiceUrl` calls `GET /transactions/{id}/invoice` with
-  `disposition=inline`, so it is fetched per click and never stored. A transaction that was never
-  billed, or whose total is zero, has no invoice and throws `not_found`.
+- **Only completed transactions are listed.** `draft` and `ready` transactions are abandoned checkouts,
+  so the SDK filters them out and every listed order is `paid`; the rest are only visible through a
+  direct `orders.get`.
+- **Invoice URLs live for one hour**, so they are fetched per click and never stored.
+- **A transaction that was never billed, or whose total is zero, has no invoice** and
+  `orders.getInvoiceUrl` throws `not_found`.
 
-See [Orders](/docs/concepts/orders) for the model and the cross-provider comparison.
+## Provider notes
 
-## Capabilities
-
-| Capability                    | Value                                  |
-| ----------------------------- | -------------------------------------- |
-| `cancellationReason`          | `false`                                |
-| `checkoutCustomAmount`        | `false`                                |
-| `checkoutExpiresAt`           | `false`                                |
-| `checkoutStatus`              | `true`                                 |
-| `checkoutSuccessUrl`          | `false`                                |
-| `customerMetadata`            | `true`                                 |
-| `endTrial`                    | `true`                                 |
-| `hostedCheckout`              | `false`                                |
-| `licenseKeys`                 | `false`                                |
-| `listOrdersByCustomer`        | `true`                                 |
-| `listSubscriptionsByCustomer` | `true`                                 |
-| `pause`                       | `true`                                 |
-| `pauseBehaviors`              | `['immediately', 'period_end']`        |
-| `portalReturnUrl`             | `false`                                |
-| `prorationBehaviors`          | `['invoice_now', 'none', 'prorate']`   |
-| `revoke`                      | `true`                                 |
-| `uncancel`                    | `true`                                 |
-| `usageReporting`              | `false`                                |
-
-## Quirks
-
-- **`Price.checkoutRef` is the price ID** (`pri_…`), not the product ID. `Product.id` is the `pro_…`.
-- **A unified `Checkout` is a Paddle transaction.** `checkouts.get({ id })` reads
-  `GET /transactions/{id}`.
-- **No checkout expiry.** A transaction carries no expiry field at all, so `checkoutExpiresAt` is
-  `false`, `checkouts.create({ expiresAt })` throws `unsupported`, and `Checkout.expiresAt` is always
-  `undefined`.
-- **Amounts are string integers** on the wire (`"2499"`) and are parsed into numbers in minor units.
+- **`Price.checkoutRef` is the price ID** (`pri_…`), not the product ID (`pro_…`), and a unified
+  `Checkout` is a Paddle transaction — `checkouts.get({ id })` reads `GET /transactions/{id}`.
 - **`customerEmail` resolves to a customer.** Paddle transactions take a `customer_id`, so the SDK looks
-  the email up and creates the customer if it doesn't exist. That costs one or two extra requests.
-- **No cancellation reasons.** Passing `reason` or `comment` throws `unsupported`.
-- **Cancel and revoke are the same endpoint.** `subscriptions.cancel` posts
-  `effective_from: next_billing_period`; `subscriptions.revoke` posts `effective_from: immediately`.
-- **Uncancel clears the schedule** with `PATCH { scheduled_change: null }`.
-- **Both pause behaviors are supported.** `period_end` maps to `effective_from: next_billing_period`,
-  which Paddle also uses when `behavior` is omitted. A scheduled pause is a `scheduled_change` with
-  `action: 'pause'`, so `status` stays `active` and `pauseAtPeriodEnd` is `true` until it takes effect.
-  `subscriptions.resume` always posts `effective_from: immediately`; Paddle's `on_resume` option is not
-  exposed.
+  the email up and creates the customer if it doesn't exist — one or two extra requests.
+- **A taken customer email is a `409`.** `customers.create` with an existing address surfaces as
+  `RevenueError { code: 'conflict' }` with the existing customer's ID in the message. Paddle's own
+  checkout flow silently reuses that customer; the direct API call does not.
 - **`PATCH` list fields are full replacements.** `items` is replaced wholesale, so a plan change swaps
   every item for the new price. The unified model targets single-product subscriptions.
-- **Proration is always sent** on a plan change, because Paddle requires the field whenever `items`
-  changes. Omitting `prorationBehavior` behaves as `prorate` (`prorated_next_billing_period`).
-- **No usage API.** `usage.report` throws `unsupported`. Paddle's own guidance is to meter externally
-  (OpenMeter, m3ter, or your own store) and bill the result as a one-time charge —
-  `POST /subscriptions/{id}/charge` with a price you compute yourself. See
-  [Usage-based billing](/docs/concepts/usage-based-billing).
-- **No license keys.** Paddle Classic generated and activated them
-  (`POST /api/2.0/product/generate_license`), but Billing v1 dropped the feature with no equivalent —
-  Paddle's own migration matrix lists license keys as Classic-only — and Classic takes no new signups.
-  `licenseKeys` is `false` and all four `client.licenseKeys` methods throw `unsupported`. See
-  [License keys](/docs/concepts/license-keys).
-- **`management_urls` is absent from webhook payloads**, so portal links must come from
-  `customerPortal.createSession` (`POST /customers/{id}/portal-sessions`). `returnUrl` is unsupported.
-- **A taken customer email is a `409`.** `customers.create` with an address that already exists fails
-  with Paddle's `customer_already_exists`, surfaced as `RevenueError { code: 'conflict' }`; the existing
-  customer's ID is in the message. Paddle's own checkout flow silently reuses that customer instead —
-  the direct API call does not.
 - **`custom_data` is replaced, never merged.** `customers.update({ metadata })` sends the object as
-  given, exactly like the `items` list field. The SDK deliberately does not read-then-merge: that would
-  make clearing a key impossible and would resurrect entries the caller left out.
+  given. The SDK deliberately does not read-then-merge: that would make clearing a key impossible and
+  would resurrect entries the caller left out.
+- **Proration is always sent** on a plan change, because Paddle requires the field whenever `items`
+  changes. Omitting `prorationBehavior` behaves as `prorate`.
+- **`subscriptions.resume` always takes effect immediately**, and Paddle's `on_resume` option is not
+  exposed. Both pause behaviors are supported; a scheduled pause leaves `status` `active` with
+  `pauseAtPeriodEnd: true` until it takes effect.
+- **`management_urls` is absent from webhook payloads**, so portal links must come from
+  `customerPortal.createSession`. `returnUrl` is unsupported.
 
 <CardGroup cols={2}>
   <Card title="Dodo Payments" icon="bird" href="/docs/providers/dodo-payments">

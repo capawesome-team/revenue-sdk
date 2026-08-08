@@ -30,6 +30,10 @@ verified webhook handler, and an entitlement check.
       }),
     });
     ```
+
+    No account yet? Swap the factory for `createInMemoryProvider()` from `revenue-sdk/testing` and
+    the rest of this guide runs unchanged — no API keys, no sandbox, no test cards. See
+    [Testing provider](/docs/providers/testing).
   </Step>
   <Step title="Create a checkout">
     `checkouts.create` takes one or more items and returns a normalized `Checkout` with a `url` you

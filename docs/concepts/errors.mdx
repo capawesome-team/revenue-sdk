@@ -1,170 +1,74 @@
 ---
 title: Errors
-description: The RevenueError class, its normalized code union, retry semantics, the client's bounded retry, and secret redaction.
+description: Every failure throws one RevenueError with a normalized code — how to branch on it, where the provider body lives, and what the client retries for you.
 sidebar:
   label: Errors
 ---
 
 Every failure in `revenue-sdk` throws a single error type — **`RevenueError`** — with a normalized
-`code`, so you branch on the failure without parsing provider-specific status codes or message strings.
+`code`, so you branch on the failure without parsing provider-specific statuses or message strings.
 
-## RevenueError
+## Branch on `code`
 
 ```ts
 import { RevenueError } from 'revenue-sdk';
 
 try {
-  await client.subscriptions.get({ id: 'sub_missing' });
+  await client.subscriptions.changePlan({ id, product });
 } catch (error) {
-  if (error instanceof RevenueError) {
-    error.code; // normalized failure code
-    error.provider; // 'polar' | 'lemon-squeezy' | 'stripe' | 'paddle' | 'dodo-payments' | 'testing'
-    error.status; // HTTP status, when the failure came from a response
-    error.retryable; // whether retrying may succeed
-    error.retryAfter; // seconds, when the provider sent Retry-After
-    error.cause; // the underlying JS error (fetch TypeError, JSON SyntaxError)
-    error.responseBody; // the provider's parsed error body — non-enumerable
+  if (!(error instanceof RevenueError)) throw error;
+
+  switch (error.code) {
+    case 'unauthorized':
+      // credentials are wrong or revoked
+      break;
+    case 'not_found':
+      // the subscription or product no longer exists
+      break;
+    case 'payment_required':
+      // the customer's payment failed — surface it, don't retry
+      break;
+    case 'unsupported':
+      // this provider lacks the capability — check client.capabilities
+      break;
+    default:
+      if (error.retryable) {
+        // transient — retry with back-off, waiting error.retryAfter seconds if set
+      }
   }
+  throw error;
 }
 ```
 
-<TypeTable
-  type={{
-    code: { type: 'RevenueErrorCode', description: 'Normalized failure code — the field to branch on.' },
-    provider: { type: 'ProviderName', required: false, description: 'Which provider produced the error.' },
-    status: { type: 'number', required: false, description: 'HTTP status, when the failure came from a response.' },
-    retryable: { type: 'boolean', description: "Whether retrying may succeed. True for rate_limited, network_error and any 5xx, unless the provider overrides it — Stripe's Stripe-Should-Retry does." },
-    retryAfter: { type: 'number', required: false, description: 'Seconds to wait, parsed from the provider Retry-After header (numeric or HTTP-date).' },
-    cause: { type: 'unknown', required: false, description: 'The underlying JavaScript error — a fetch TypeError, or a SyntaxError from an unparseable body. Never the provider payload.' },
-    responseBody: { type: 'unknown', required: false, description: "The provider's parsed error response body. Non-enumerable, and never redacted." },
-  }}
-/>
+`RevenueErrorCode` is a **closed union of ten values**: `unauthorized`, `forbidden`, `not_found`,
+`conflict`, `rate_limited`, `payment_required`, `validation`, `unsupported`, `provider_error`,
+`network_error`. Alongside `code`, every error carries `provider`, `status`, `retryable`, `retryAfter`,
+`cause`, and `responseBody`. The full field reference, the HTTP-status mapping and the per-provider
+quirks are in [Error codes](/docs/reference/error-codes).
 
-### `cause` carries the JS error, `responseBody` carries the provider's
+`validation` and `unsupported` are frequently raised **before any HTTP request** — a bad parameter, or a
+capability the active provider does not have.
+
+## `cause` is the JS error, `responseBody` is the provider's
 
 `cause` is the ordinary `Error` chain: the `TypeError` `fetch` throws on a dead connection, or the
 `SyntaxError` from a response that wasn't JSON. The provider's own error payload lives on
 `responseBody`, installed as a **non-enumerable** property — `console.error(error)`, `util.inspect`,
-`JSON.stringify(error)` and error reporters such as Sentry all skip it, so a provider body never lands in
-your logs by accident, while `error.responseBody` reads it whenever you actually want it.
+`JSON.stringify(error)` and reporters such as Sentry all skip it, so a provider body never lands in your
+logs by accident, while `error.responseBody` reads it whenever you want it.
 
-```ts
-if (error.code === 'validation') {
-  // Deliberate read — this is the only way the body reaches you.
-  logger.debug({ detail: error.responseBody });
-}
-```
+Known secrets are redacted from `error.message` before the error is constructed. `responseBody` is
+deliberately **not** redacted — it holds customer PII no secrets list can enumerate, and
+non-enumerability is what keeps it out of logs. The same caveat applies to the enumerable `raw` field on
+every model, which serializes normally and appears on success too.
 
-:::warning
-**This is a change.** `cause` used to hold the provider body, and it reached logs only because Node
-hard-codes `cause` in its inspector. If you read `error.cause` to inspect a provider response, switch to
-`error.responseBody`.
-:::
+## The client retries once
 
-## The code union
-
-`RevenueErrorCode` is a **closed union of ten values**:
-
-| `code`            | Meaning                                                                     | `retryable` (default) |
-| ----------------- | ---------------------------------------------------------------------------- | --------------- |
-| `unauthorized`    | Missing, invalid, or expired credentials.                                    | no              |
-| `forbidden`       | Authenticated, but not allowed to do this.                                   | no              |
-| `not_found`       | The resource does not exist (or is gone).                                    | no              |
-| `conflict`        | The request conflicts with current state, or a precondition failed.          | no              |
-| `rate_limited`    | The provider's rate limit was hit.                                           | **yes**         |
-| `payment_required`| The provider refused for billing reasons (HTTP 402) — e.g. a declined card.  | no              |
-| `validation`      | Bad parameters, from the provider or from a client-side check.               | no              |
-| `unsupported`     | The active provider can't do what was requested.                             | no              |
-| `provider_error`  | An unclassified provider response.                                           | only when `5xx` |
-| `network_error`   | The request never completed (DNS, TLS, connection, timeout).                 | **yes**         |
-
-The full HTTP-status mapping lives in [the error codes reference](/docs/reference/error-codes).
-
-```ts
-switch (error.code) {
-  case 'rate_limited':
-    // back off using error.retryAfter
-    break;
-  case 'unauthorized':
-    // rotate or refresh the API key
-    break;
-  case 'payment_required':
-    // the customer's payment failed — surface it, don't retry
-    break;
-  case 'unsupported':
-    // this provider lacks the capability — see Capabilities
-    break;
-}
-```
-
-### `unsupported` and `validation` are usually pre-flight
-
-Both are frequently raised **before any HTTP request is made**:
-
-- **`validation`** — an empty `id`, an empty `items` array, an empty `items[].product`, a `quantity`
-  that isn't a positive integer, a checkout `expiresAt` that is an invalid `Date` or isn't in the future,
-  an empty `customerId` or `eventName` on `usage.report`, a usage `value` — or any numeric `metadata`
-  entry — that isn't a finite number, or a `licenseKeys.update({ activationLimit })` that is neither
-  `null` nor a positive integer.
-- **`unsupported`** — capability gating: `successUrl` on Paddle, `expiresAt` on Polar, Paddle or Dodo
-  Payments, `returnUrl` on Lemon Squeezy or Paddle, `customerId` on a Lemon Squeezy subscription list,
-  `reason`/`comment` on a provider without `cancellationReason`,
-  `uncancel`/`endTrial`/`pause`/`resume`/`revoke` where unsupported, `usage.report` on Lemon Squeezy or
-  Paddle, all four `licenseKeys` methods on Stripe or Paddle, a `behavior` outside
-  `capabilities.pauseBehaviors`, and a `prorationBehavior` outside `capabilities.prorationBehaviors`.
-
-Adapters raise `unsupported` for the finer-grained cases the capability object can't express — a Polar
-checkout with `quantity > 1`, a Lemon Squeezy checkout with more than one item, and so on.
-
-## `retryable` and `retryAfter`
-
-`retryable` defaults to `true` for `rate_limited` and `network_error`, and for any error whose HTTP
-`status` is `5xx` — and a provider may override it in either direction when it says so explicitly.
-Stripe does: its `Stripe-Should-Retry` header sets `retryable` verbatim, so a 429 the header vetoes is
-`retryable: false` and a lock conflict it endorses is `retryable: true`. The client reads the field, so
-the veto also cancels its own retry.
-
-When the provider sent a `Retry-After` header — numeric seconds or an HTTP date — `retryAfter` carries
-the number of seconds to wait.
-
-```ts
-if (error.retryable) {
-  await sleep((error.retryAfter ?? 1) * 1000);
-  // retry with your own back-off policy
-}
-```
-
-Provider notes:
-
-- **Polar** sends `Retry-After` on 429. It also runs FastAPI, so a `422` answers with `detail` as an
-  array of validation entries; the adapter summarizes them as `loc.path: msg` (up to three, then
-  `(+N more)`) so `error.message` names the failing fields. Each entry's echoed `input` is left out of
-  the message — read `error.responseBody` for the untouched array.
-- **Stripe** does not send `Retry-After`; it signals retryability via `Stripe-Should-Retry`, which the
-  adapter maps onto `retryable`. Expect `retryAfter` to be `undefined` on Stripe rate limits — the
-  client falls back to a one-second delay, and your own back-off should too.
-- **Paddle** reports authentication failures as HTTP **403**. The adapter inspects the error code and
-  re-maps `authentication_malformed`, `authentication_missing`, and `invalid_token` to `unauthorized`,
-  so a bad API key doesn't masquerade as a permissions problem.
-
-## The client's single bounded retry
-
-The client retries **at most once per call**, on one of two triggers:
-
-| Trigger                                             | Reads (`get*`, `list*`, `listAll`) | Writes (`create*`, `cancel`, `pause`, `changePlan`, …) |
-| --------------------------------------------------- | ---------------------------------- | ------------------------------------------------------ |
-| `rate_limited`, unless `retryable` is `false`       | retried                            | retried                                                |
-| Any other `retryable` error (`network_error`, `5xx`) | retried                            | **never** retried                                      |
-| Anything else                                        | not retried                        | not retried                                            |
-
-A rate limit is safe to replay on anything: the provider rejected the request before it did any work. A
-transport failure is not — the request may have landed and only the response was lost — so a write that
-dies mid-flight is surfaced to you rather than repeated. None of the SDK's write calls carry an
-idempotency key, so replaying one could create a second checkout.
-
-The wait before the retry is `retryAfter` when the provider sent a `Retry-After` header, and **one
-second** when it didn't (Stripe never does, and no provider sends one on a network error or a `5xx`).
-Either way the wait is capped:
+The client retries **at most once per call**: on `rate_limited` anywhere, and on any other `retryable`
+error (`network_error`, `5xx`) for reads only. A rate limit is safe to replay because the provider
+rejected the request before doing any work; a transport failure is not, since the request may have
+landed and no SDK write carries an idempotency key. The wait is `retryAfter`, or one second when the
+provider sent no `Retry-After`, and it is skipped entirely above `maxRetryAfterSeconds`:
 
 ```ts
 const client = createClient({
@@ -173,91 +77,18 @@ const client = createClient({
 });
 ```
 
-A `retryAfter` above `maxRetryAfterSeconds` skips the retry entirely rather than waiting the cap out, so
-the error surfaces immediately with `retryAfter` intact and you decide what to do with it. The retry is
-deliberately conservative: it smooths over a one-second burst limit without turning a serverless request
-into a multi-minute hang. Everything beyond it — exponential back-off, queues, dead-lettering — is yours
-to build on top of `retryable` and `retryAfter`.
+The retry covers every page fetched inside `listAll`, and its wait is interrupted by the `signal` you
+passed. `usage.report` is the one call it never covers — see
+[Usage-based billing](/docs/concepts/usage-based-billing).
 
-The retry also applies inside `listAll`, so a rate limit hit halfway through an iteration doesn't abort
-the whole walk.
-
-The wait honors the `signal` you passed: aborting a call rejects it immediately with the abort reason
-instead of sleeping out the delay first.
-
-:::note
-`usage.report` is the one call no retry ever covers, not even for a rate limit. A replayed usage event is
-deduplicated only when you passed an `idempotencyKey`, so retrying automatically could over-bill the
-customer — see [Usage-based billing](/docs/concepts/usage-based-billing).
-:::
-
-## Secret redaction
-
-`RevenueError` **redacts known secrets** from its message before the error is constructed. The API key
-or access token the failing provider was configured with is replaced with `[redacted]`, so an error that
-bubbles into your logs or error tracker won't leak the credential that produced it.
-
-```ts
-// Even if a provider echoes the key back in an error body:
-error.message; // "… Bearer [redacted] …"
-```
-
-Redaction covers the **message**, and only the message.
-
-### Why `responseBody` is never redacted
-
-`error.responseBody` holds the provider's body verbatim, and that is a decision rather than an oversight.
-The `secrets` hook already covers secrets; what remains in an error body is customer PII — Stripe's
-`billing_details` on a `402`, Polar's echoed values on a `422` — and no secrets list can enumerate that.
-Redacting would also corrupt the same payload where the SDK hands it back as data — a rejected license
-validation carries it as `LicenseKeyValidation.raw` — and it would ship a false assurance that the field
-is safe to log. Non-enumerability is the actual protection: the body stays out of logs unless you reach
-for it.
-
-:::warning
-The same PII consideration applies to the enumerable `raw` field on every model. `Customer.raw`,
-`Subscription.raw`, and `Order.raw` are untouched provider payloads, they serialize with
-`JSON.stringify`, and they appear on **success**, not only on failure — so if you have a no-PII-in-logs
-rule, `raw` is the larger surface, not `responseBody`.
-:::
-
-Some values are secrets by design: a customer portal URL is a signed, ready-to-use link into someone's
-billing account. Never log those.
-
-## Handling errors
-
-```ts
-import { RevenueError } from 'revenue-sdk';
-
-try {
-  await client.checkouts.create({ items: [{ product: checkoutRef }] });
-} catch (error) {
-  if (error instanceof RevenueError) {
-    switch (error.code) {
-      case 'unauthorized':
-        // credentials are wrong or revoked
-        break;
-      case 'not_found':
-        // the product/price no longer exists in the provider
-        break;
-      case 'unsupported':
-        // the active provider lacks this capability
-        break;
-      default:
-        if (error.retryable) {
-          // transient — retry with back-off
-        }
-    }
-  }
-  throw error;
-}
-```
+Everything beyond that — exponential back-off, queues, dead-lettering — is yours to build on
+`retryable` and `retryAfter`.
 
 <CardGroup cols={2}>
   <Card title="Next: Capabilities" icon="toggle-right" href="/docs/concepts/capabilities">
     How providers advertise what they can and can't do.
   </Card>
   <Card title="Error codes reference" icon="list" href="/docs/reference/error-codes">
-    The full union with HTTP-status mapping.
+    Every code, the HTTP mapping, and the per-provider notes.
   </Card>
 </CardGroup>
