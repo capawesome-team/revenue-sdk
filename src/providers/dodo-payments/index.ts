@@ -28,11 +28,13 @@ const MAX_PAGE_SIZE = 100;
 
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
+  checkoutCustomAmount: false,
   // Dodo expires a checkout session 24 hours after creation (15 minutes with `confirm=true`) and
   // accepts no override.
   checkoutExpiresAt: false,
   checkoutStatus: true,
   checkoutSuccessUrl: true,
+  customerMetadata: true,
   // Dodo has no end-trial operation.
   endTrial: false,
   hostedCheckout: true,

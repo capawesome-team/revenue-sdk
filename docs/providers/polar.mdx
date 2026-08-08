@@ -196,9 +196,11 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
 | Capability                    | Value                        |
 | ----------------------------- | ---------------------------- |
 | `cancellationReason`          | `true`                       |
+| `checkoutCustomAmount`        | `true`                       |
 | `checkoutExpiresAt`           | `false`                      |
 | `checkoutStatus`              | `true`                       |
 | `checkoutSuccessUrl`          | `true`                       |
+| `customerMetadata`            | `true`                       |
 | `endTrial`                    | `true`                       |
 | `hostedCheckout`              | `true`                       |
 | `licenseKeys`                 | `true`                       |
@@ -218,6 +220,9 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   take `products: string[]`, not price IDs.
 - **No item quantities.** A checkout item with `quantity` other than `1` throws `unsupported`; so does a
   plan change with a quantity.
+- **`customAmount` maps to the top-level `amount`**, in cents, beside `products`. It applies to
+  pay-what-you-want prices only — Polar **ignores** it for fixed and free ones rather than failing, and
+  the accepted range comes from the price's own `minimum_amount`/`maximum_amount`.
 - **Checkout expiry is fixed at 24 hours.** Polar applies it server-side and accepts no override, so
   `checkoutExpiresAt` is `false` and `checkouts.create({ expiresAt })` throws `unsupported`. The
   resulting `Checkout.expiresAt` is still populated on the read side.

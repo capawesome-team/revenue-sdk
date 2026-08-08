@@ -55,6 +55,13 @@ step.
     :::
 
     :::note
+    Selling a pay-what-you-want product? Pass the amount the buyer picked as `customAmount`, in minor
+    units, gated by the `checkoutCustomAmount` capability (Polar and Lemon Squeezy). Omit it and the
+    buyer names the amount on the provider's page instead. See
+    [pay what you want](/docs/concepts/checkouts#pay-what-you-want).
+    :::
+
+    :::note
     Only Stripe and Lemon Squeezy let you set when the link stops working — `expiresAt`, gated by the
     `checkoutExpiresAt` capability. Polar and Dodo Payments fix it at 24 hours, and Paddle transactions
     have no expiry field. An invalid or past date throws `validation` before the request. See

@@ -24,6 +24,7 @@ import type {
   ListOrdersParams,
   ListProductsParams,
   ListSubscriptionsParams,
+  Metadata,
   Order,
   Page,
   PauseSubscriptionParams,
@@ -170,6 +171,13 @@ export function createClient(options: CreateClientOptions): RevenueClient {
     }
   }
 
+  // The upper bound belongs to the price the buyer is paying for, which only the provider knows.
+  function checkCustomAmount(amount: number | undefined): void {
+    if (amount !== undefined && (!Number.isInteger(amount) || amount < 1)) {
+      fail('validation', 'The customAmount parameter must be a positive integer');
+    }
+  }
+
   // No upper bound: every provider clamps a limit to its own maximum page size.
   function checkLimit(limit: number | undefined): void {
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
@@ -191,6 +199,12 @@ export function createClient(options: CreateClientOptions): RevenueClient {
     }
     if (expiresAt.getTime() <= Date.now()) {
       fail('validation', 'The expiresAt parameter must be in the future');
+    }
+  }
+
+  function requireCustomerMetadata(metadata: Metadata | undefined): void {
+    if (metadata !== undefined && !provider.capabilities.customerMetadata) {
+      fail('unsupported', `${provider.name} does not support customer metadata`);
     }
   }
 
@@ -321,6 +335,10 @@ export function createClient(options: CreateClientOptions): RevenueClient {
           fail('unsupported', `${provider.name} does not support a checkout expiry`);
         }
         checkExpiresAt(params.expiresAt);
+        if (params.customAmount !== undefined && !provider.capabilities.checkoutCustomAmount) {
+          fail('unsupported', `${provider.name} does not support a custom checkout amount`);
+        }
+        checkCustomAmount(params.customAmount);
         return runWrite(params, () => provider.createCheckout(params));
       },
       get: async (params) => {
@@ -341,6 +359,7 @@ export function createClient(options: CreateClientOptions): RevenueClient {
         // and a client-side format rule would reject addresses the provider accepts.
         requireNonEmpty(params.email, 'email');
         requireNonEmpty(params.name, 'name');
+        requireCustomerMetadata(params.metadata);
         return runWrite(params, () => provider.createCustomer(params));
       },
       // An omitted field leaves the stored value alone; an empty one would overwrite it with a
@@ -353,6 +372,7 @@ export function createClient(options: CreateClientOptions): RevenueClient {
         if (params.name !== undefined) {
           requireNonEmpty(params.name, 'name');
         }
+        requireCustomerMetadata(params.metadata);
         return runWrite(params, () => provider.updateCustomer(params));
       },
     },

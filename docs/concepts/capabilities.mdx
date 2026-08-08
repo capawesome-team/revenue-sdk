@@ -20,6 +20,10 @@ Every provider exposes a `capabilities` object, also surfaced on `client.capabil
       type: 'boolean',
       description: 'Whether subscriptions.cancel forwards reason/comment to the provider. false for Lemon Squeezy and Paddle.',
     },
+    checkoutCustomAmount: {
+      type: 'boolean',
+      description: 'Whether checkouts.create accepts customAmount, the buyer-chosen price of a pay-what-you-want product. false for Stripe, Paddle, and Dodo Payments.',
+    },
     checkoutExpiresAt: {
       type: 'boolean',
       description: 'Whether checkouts.create accepts expiresAt. false for Polar, Paddle, and Dodo Payments, which expire checkouts on a fixed schedule.',
@@ -31,6 +35,10 @@ Every provider exposes a `capabilities` object, also surfaced on `client.capabil
     checkoutSuccessUrl: {
       type: 'boolean',
       description: 'Whether checkouts.create accepts successUrl. false for Paddle — configure the redirect in Paddle.js instead.',
+    },
+    customerMetadata: {
+      type: 'boolean',
+      description: 'Whether customers.create and customers.update accept metadata. false for Lemon Squeezy, whose customer object has no metadata field.',
     },
     endTrial: {
       type: 'boolean',
@@ -116,6 +124,8 @@ The client gates on:
 
 - `checkouts.create({ successUrl })` — requires `checkoutSuccessUrl`
 - `checkouts.create({ expiresAt })` — requires `checkoutExpiresAt`
+- `checkouts.create({ customAmount })` — requires `checkoutCustomAmount`
+- `customers.create/update({ metadata })` — requires `customerMetadata`
 - `orders.list/listAll({ customerId })` — requires `listOrdersByCustomer`
 - `subscriptions.list/listAll({ customerId })` — requires `listSubscriptionsByCustomer`
 - `subscriptions.cancel({ reason | comment })` — requires `cancellationReason`
@@ -130,7 +140,7 @@ The client gates on:
 - `licenseKeys.list/listAll/get/update` — require `licenseKeys`
 
 Adapters raise `unsupported` for the finer-grained limits a boolean can't express — a Polar checkout
-with `quantity > 1`, a Lemon Squeezy checkout with more than one item or a `customerId`, a Polar or
+with `quantity > 1`, a Lemon Squeezy checkout with more than one item or a `customerId`, or a Polar or
 Lemon Squeezy plan change with `quantity > 1`.
 
 ## Check before you call

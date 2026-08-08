@@ -242,12 +242,16 @@ export interface WebhookEvent {
 export interface RevenueCapabilities {
   /** Whether `subscriptions.cancel` forwards `reason`/`comment` to the provider. */
   cancellationReason: boolean;
+  /** Whether `checkouts.create` supports `customAmount` for a pay-what-you-want price. */
+  checkoutCustomAmount: boolean;
   /** Whether `checkouts.create` supports `expiresAt`. The others expire checkouts on a fixed schedule. */
   checkoutExpiresAt: boolean;
   /** Whether `Checkout.status` is populated. */
   checkoutStatus: boolean;
   /** Whether `checkouts.create` supports `successUrl`. Paddle configures redirects in Paddle.js instead. */
   checkoutSuccessUrl: boolean;
+  /** Whether `customers.create` and `customers.update` support `metadata`. */
+  customerMetadata: boolean;
   /** Whether `subscriptions.endTrial` is supported. */
   endTrial: boolean;
   /** Whether `checkouts.create` returns a ready-to-use provider-hosted URL. Paddle requires a merchant-hosted Paddle.js page instead. */
@@ -297,6 +301,12 @@ export interface CreateCheckoutParams extends BaseParams {
   customerEmail?: string;
   /** Copied onto the resulting order/subscription where the provider supports it. */
   metadata?: Metadata;
+  /**
+   * The amount to charge for a pay-what-you-want price (`Price.model === 'custom'`), in the
+   * currency's minor units — the currency is the product's own. Requires the
+   * `checkoutCustomAmount` capability; providers reject or ignore it on any other price model.
+   */
+  customAmount?: number;
   /**
    * When the checkout link stops working. Requires the `checkoutExpiresAt` capability — the other
    * providers apply a fixed lifetime instead. Stripe accepts 30 minutes to 24 hours from creation and

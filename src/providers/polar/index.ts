@@ -28,10 +28,12 @@ const LISTED_ORDER_STATUSES = ['pending', 'paid', 'refunded', 'partially_refunde
 
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
+  checkoutCustomAmount: true,
   // Polar expires every checkout 24 hours after creation and accepts no override.
   checkoutExpiresAt: false,
   checkoutStatus: true,
   checkoutSuccessUrl: true,
+  customerMetadata: true,
   endTrial: true,
   hostedCheckout: true,
   licenseKeys: true,
@@ -157,6 +159,8 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
         method: 'POST',
         body: {
           products,
+          // Applies to custom prices only; Polar ignores it for fixed and free ones.
+          amount: params.customAmount,
           success_url: params.successUrl,
           customer_id: params.customerId,
           customer_email: params.customerEmail,

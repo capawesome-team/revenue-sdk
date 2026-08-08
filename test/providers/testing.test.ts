@@ -50,6 +50,16 @@ describe('createInMemoryProvider', () => {
     });
   });
 
+  it('keeps the custom amount on the recorded checkout', async () => {
+    const provider = createInMemoryProvider();
+    const checkout = await provider.createCheckout({
+      items: [{ product: 'product-1' }],
+      customAmount: 2500,
+    });
+    expect(provider.capabilities.checkoutCustomAmount).toBe(true);
+    expect(checkout.raw).toMatchObject({ customAmount: 2500 });
+  });
+
   it('creates and updates customers in state', async () => {
     const provider = createInMemoryProvider();
     const created = await provider.createCustomer({

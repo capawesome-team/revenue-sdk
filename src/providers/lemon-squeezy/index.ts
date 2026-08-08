@@ -30,9 +30,12 @@ const MAX_PAGE_SIZE = 100;
 
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: false,
+  checkoutCustomAmount: true,
   checkoutExpiresAt: true,
   checkoutStatus: false,
   checkoutSuccessUrl: true,
+  // The customer object has no metadata field at all — not even a custom-data one.
+  customerMetadata: false,
   endTrial: true,
   hostedCheckout: true,
   licenseKeys: true,
@@ -270,6 +273,7 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
             type: 'checkouts',
             attributes: {
               ...(Object.keys(checkoutData).length > 0 ? { checkout_data: checkoutData } : {}),
+              ...(params.customAmount !== undefined ? { custom_price: params.customAmount } : {}),
               ...(params.expiresAt !== undefined
                 ? { expires_at: params.expiresAt.toISOString() }
                 : {}),

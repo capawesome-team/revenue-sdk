@@ -199,9 +199,11 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
 | Capability                    | Value                                  |
 | ----------------------------- | -------------------------------------- |
 | `cancellationReason`          | `false`                                |
+| `checkoutCustomAmount`        | `true`                                 |
 | `checkoutExpiresAt`           | `true`                                 |
 | `checkoutStatus`              | `false`                                |
 | `checkoutSuccessUrl`          | `true`                                 |
+| `customerMetadata`            | `false`                                |
 | `endTrial`                    | `true`                                 |
 | `hostedCheckout`              | `true`                                 |
 | `licenseKeys`                 | `true`                                 |
@@ -236,6 +238,10 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   store is sent as a JSON:API relationship, so new customers always land in the factory's `storeId`.
 - **Empty objects serialize as `[]`.** Lemon Squeezy returns `[]` where an empty object is expected
   (`custom`, `billing_address`); the mappers tolerate it.
+- **`customAmount` maps to `custom_price`**, a positive integer in cents sent as a sibling of
+  `checkout_data` in the checkout attributes. Lemon Squeezy applies it to the variant being bought; on
+  a subscription it becomes the price of every renewal too, until the subscription moves to another
+  variant.
 - **One item per checkout, and no `customerId`.** More than one item throws `unsupported`; attaching an
   existing customer throws `unsupported` — pass `customerEmail` instead. Quantities above `1` are
   supported (via `variant_quantities`).

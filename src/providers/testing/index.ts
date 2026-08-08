@@ -26,9 +26,11 @@ const PAGE_SIZE = 2;
 
 const DEFAULT_CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
+  checkoutCustomAmount: true,
   checkoutExpiresAt: true,
   checkoutStatus: true,
   checkoutSuccessUrl: true,
+  customerMetadata: true,
   endTrial: true,
   hostedCheckout: true,
   licenseKeys: true,

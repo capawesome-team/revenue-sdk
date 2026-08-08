@@ -102,6 +102,8 @@ describe('polar', () => {
     expect(provider.name).toBe('polar');
     expect(provider.capabilities.hostedCheckout).toBe(true);
     expect(provider.capabilities.checkoutExpiresAt).toBe(false);
+    expect(provider.capabilities.checkoutCustomAmount).toBe(true);
+    expect(provider.capabilities.customerMetadata).toBe(true);
     expect(provider.capabilities.prorationBehaviors).toEqual(['invoice_now', 'prorate']);
     expect(provider.capabilities.pause).toBe(true);
     expect(provider.capabilities.pauseBehaviors).toEqual(['period_end']);
@@ -202,6 +204,18 @@ describe('polar', () => {
         metadata: { organization_id: 'org_1' },
       });
       expect(checkout.expiresAt).toEqual(new Date('2026-08-07T00:00:00Z'));
+    });
+
+    it('posts a custom amount for a pay-what-you-want product', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { id: 'checkout-1', status: 'open', url: 'https://polar.sh/checkout/secret' },
+      }));
+      await provider.createCheckout({ items: [{ product: 'prod-uuid-1' }], customAmount: 2500 });
+      // Cents, top level beside `products` — Polar ignores it for fixed and free prices.
+      expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
+        products: ['prod-uuid-1'],
+        amount: 2500,
+      });
     });
 
     it('rejects item quantities', async () => {

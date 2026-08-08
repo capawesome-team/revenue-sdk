@@ -164,9 +164,11 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
 | Capability                    | Value                       |
 | ----------------------------- | --------------------------- |
 | `cancellationReason`          | `true`                      |
+| `checkoutCustomAmount`        | `false`                     |
 | `checkoutExpiresAt`           | `false`                     |
 | `checkoutStatus`              | `true`                      |
 | `checkoutSuccessUrl`          | `true`                      |
+| `customerMetadata`            | `true`                      |
 | `endTrial`                    | `false`                     |
 | `hostedCheckout`              | `true`                      |
 | `licenseKeys`                 | `true`                      |
@@ -219,6 +221,12 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
 - **Checkout expiry is fixed at 24 hours** — 15 minutes when the session is created with `confirm=true`
   — and cannot be overridden, so `checkoutExpiresAt` is `false` and `checkouts.create({ expiresAt })`
   throws `unsupported`.
+- **Pay-what-you-want is deliberately not wired up.** Dodo does have the field — `amount` on a
+  `product_cart` entry, "the amount the customer pays if `pay_what_you_want` is enabled" — but it is
+  **per cart item and one-time products only**, while `customAmount` is one checkout-level amount. With
+  several items there is no non-arbitrary item to apply it to, so `checkoutCustomAmount` is `false` and
+  `checkouts.create({ customAmount })` throws `unsupported`. Let the buyer name the amount on Dodo's own
+  checkout page instead. See [Pay what you want](/docs/concepts/checkouts#pay-what-you-want).
 - **Validate cannot be scoped.** `POST /licenses/validate` answers with literally `{ "valid": boolean }`
   — no product, business, customer, or expiry — so a key from any Dodo Payments merchant for any product
   validates as `true`, and `LicenseKeyValidation.licenseKey` is **always `undefined`**. Only

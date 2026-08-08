@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createClient } from '../../src/client.ts';
 import { RevenueError } from '../../src/errors.ts';
 import { decodeCursor, encodeCursor } from '../../src/pagination.ts';
 import { lemonSqueezy } from '../../src/providers/lemon-squeezy/index.ts';
@@ -114,6 +115,8 @@ describe('lemonSqueezy', () => {
     expect(provider.name).toBe('lemon-squeezy');
     expect(provider.capabilities.checkoutStatus).toBe(false);
     expect(provider.capabilities.checkoutExpiresAt).toBe(true);
+    expect(provider.capabilities.checkoutCustomAmount).toBe(true);
+    expect(provider.capabilities.customerMetadata).toBe(false);
     expect(provider.capabilities.revoke).toBe(false);
     expect(provider.capabilities.listSubscriptionsByCustomer).toBe(false);
     expect(provider.capabilities.listOrdersByCustomer).toBe(false);
@@ -302,6 +305,26 @@ describe('lemonSqueezy', () => {
       expect(checkout.expiresAt).toEqual(new Date('2026-08-08T00:00:00.000000Z'));
     });
 
+    it('sends custom_price beside checkout_data for a pay-what-you-want variant', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { data: { type: 'checkouts', id: 'c1', attributes: { url: 'https://x' } } },
+      }));
+      await provider.createCheckout({ items: [{ product: '1615641' }], customAmount: 5000 });
+      const attributes = JSON.parse(stub.requests[0]!.body!).data.attributes;
+      // Cents, and a sibling of checkout_data/product_options — never nested inside them.
+      expect(attributes.custom_price).toBe(5000);
+      expect(attributes.product_options.custom_price).toBeUndefined();
+    });
+
+    it('omits custom_price when no custom amount is given', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { data: { type: 'checkouts', id: 'c1', attributes: { url: 'https://x' } } },
+      }));
+      await provider.createCheckout({ items: [{ product: '1615641' }] });
+      const attributes = JSON.parse(stub.requests[0]!.body!).data.attributes;
+      expect('custom_price' in attributes).toBe(false);
+    });
+
     it('omits expires_at when no expiry is given', async () => {
       const { provider, stub } = setup(() => ({
         json: { data: { type: 'checkouts', id: 'c1', attributes: { url: 'https://x' } } },
@@ -386,6 +409,20 @@ describe('lemonSqueezy', () => {
       expect(JSON.parse(request.body!)).toEqual({
         data: { type: 'customers', id: '1', attributes: { email: 'ada@example.com' } },
       });
+    });
+
+    it('reports customerMetadata false, so the client refuses metadata before any request', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: CUSTOMER } }));
+      const client = createClient({ provider });
+      await expectRevenueError(
+        client.customers.create({ email: 'user@example.com', name: 'Ada', metadata: { org: '1' } }),
+        'unsupported',
+      );
+      await expectRevenueError(
+        client.customers.update({ id: '1', metadata: { org: '1' } }),
+        'unsupported',
+      );
+      expect(stub.requests).toHaveLength(0);
     });
   });
 

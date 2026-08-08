@@ -31,11 +31,16 @@ const MAX_TRANSACTION_PAGE_LIMIT = 30;
 
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: false,
+  // A transaction item is either a catalog `price_id` (which carries no amount field) or a
+  // fully specified ad-hoc `price` object — mutually exclusive, and neither re-prices a catalog
+  // price.
+  checkoutCustomAmount: false,
   // Transactions carry no checkout expiry field.
   checkoutExpiresAt: false,
   checkoutStatus: true,
   // Success redirects are configured in Paddle.js on the merchant's checkout page.
   checkoutSuccessUrl: false,
+  customerMetadata: true,
   endTrial: true,
   // The returned checkout URL requires the merchant's own Paddle.js page (default payment
   // link) — there is no Paddle-hosted checkout via the API.

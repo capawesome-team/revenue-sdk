@@ -32,6 +32,7 @@ redirect(checkout.url);
     customerId: { type: 'string', required: false, description: 'Attach an existing provider customer.' },
     customerEmail: { type: 'string', required: false, description: 'Prefill the email for a new customer.' },
     metadata: { type: 'Record<string, string | number | boolean>', required: false, description: 'Copied onto the resulting order/subscription where the provider supports it.' },
+    customAmount: { type: 'number', required: false, description: 'What to charge for a pay-what-you-want price, in minor units. Requires the checkoutCustomAmount capability.' },
     expiresAt: { type: 'Date', required: false, description: 'When the checkout link stops working. Requires the checkoutExpiresAt capability.' },
     signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
   }}
@@ -132,6 +133,46 @@ Stripe rejects an out-of-range date itself, and that `400` arrives as a `validat
 `Checkout.expiresAt` is the read side of the same field. It is populated on Polar, Lemon Squeezy, and
 Stripe — Polar included, which reports the expiry it picked without letting you choose it. Paddle
 transactions and Dodo Payments checkout sessions carry no expiry at all, so it stays `undefined` there.
+
+## Pay what you want
+
+A price whose `model` is `custom` has no fixed amount: the buyer picks one. `customAmount` supplies that
+amount from your own UI instead — an integer in the currency's **minor units** (`2500` is $25.00), in
+whatever currency the product is priced in. It is gated by the `checkoutCustomAmount` capability:
+
+```ts
+await client.checkouts.create({
+  items: [{ product: price.checkoutRef }],
+  customAmount: client.capabilities.checkoutCustomAmount ? 2500 : undefined,
+});
+```
+
+| Provider          | `customAmount` | Wire field                                          |
+| ----------------- | -------------- | --------------------------------------------------- |
+| **Polar**         | yes            | top-level `amount`, cents                           |
+| **Lemon Squeezy** | yes            | `custom_price` in the checkout attributes, cents     |
+| **Stripe**        | **no**         | —                                                   |
+| **Paddle**        | **no**         | —                                                   |
+| **Dodo Payments** | **no**         | —                                                   |
+
+The client rejects a `customAmount` that is not a positive integer with `validation`, and one passed to a
+provider without the capability with `unsupported` — both before any request. The **upper** bound is the
+provider's to enforce: Polar checks the price's own `minimum_amount`/`maximum_amount`, and only the
+provider knows them.
+
+:::note
+Neither provider fails when the price is not a pay-what-you-want one. Polar states it outright — the
+amount "will be ignored for fixed and free prices" — so a `customAmount` aimed at the wrong price
+charges the catalog amount instead. Confirm `price.model === 'custom'` before you send one.
+:::
+
+Omit `customAmount` and the buyer enters the amount on the provider's own checkout page, which is the
+right choice whenever you have no reason to preset it.
+
+Dodo Payments is the near miss: it has a pay-what-you-want `amount`, but per **cart item** and for
+one-time products only, which cannot be expressed as one checkout-level amount once a checkout carries
+several items — so `checkoutCustomAmount` stays `false` there rather than guessing which item to apply it
+to.
 
 ## Metadata propagation
 

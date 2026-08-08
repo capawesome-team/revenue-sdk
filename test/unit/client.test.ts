@@ -5,9 +5,11 @@ import type { Page, RevenueCapabilities, RevenueProvider, Subscription } from '.
 
 const ALL_CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
+  checkoutCustomAmount: true,
   checkoutExpiresAt: true,
   checkoutStatus: true,
   checkoutSuccessUrl: true,
+  customerMetadata: true,
   endTrial: true,
   hostedCheckout: true,
   licenseKeys: true,
@@ -188,6 +190,24 @@ describe('createClient', () => {
           items: [{ product: 'p1' }],
           expiresAt: new Date(Date.now() - 1000),
         }),
+        'validation',
+      );
+      expect(createCheckout).not.toHaveBeenCalled();
+    });
+
+    it('rejects a custom amount that is not a positive integer', async () => {
+      const createCheckout = vi.fn();
+      const client = createClient({ provider: fakeProvider({ createCheckout }) });
+      await expectRevenueError(
+        client.checkouts.create({ items: [{ product: 'p1' }], customAmount: 0 }),
+        'validation',
+      );
+      await expectRevenueError(
+        client.checkouts.create({ items: [{ product: 'p1' }], customAmount: 9.99 }),
+        'validation',
+      );
+      await expectRevenueError(
+        client.checkouts.create({ items: [{ product: 'p1' }], customAmount: -500 }),
         'validation',
       );
       expect(createCheckout).not.toHaveBeenCalled();
@@ -416,6 +436,54 @@ describe('createClient', () => {
         'unsupported',
       );
       expect(listLicenseKeys).not.toHaveBeenCalled();
+    });
+
+    it('rejects a custom checkout amount when unsupported', async () => {
+      const createCheckout = vi.fn();
+      const client = createClient({
+        provider: fakeProvider({ createCheckout }, { checkoutCustomAmount: false }),
+      });
+      await expectRevenueError(
+        client.checkouts.create({ items: [{ product: 'p1' }], customAmount: 2500 }),
+        'unsupported',
+      );
+      expect(createCheckout).not.toHaveBeenCalled();
+    });
+
+    it('still creates a checkout without a custom amount when unsupported', async () => {
+      const createCheckout = vi.fn().mockResolvedValue({ id: 'c1', url: 'https://x', raw: {} });
+      const client = createClient({
+        provider: fakeProvider({ createCheckout }, { checkoutCustomAmount: false }),
+      });
+      await client.checkouts.create({ items: [{ product: 'p1' }] });
+      expect(createCheckout).toHaveBeenCalledOnce();
+    });
+
+    it('rejects customer metadata on create and update when unsupported', async () => {
+      const createCustomer = vi.fn();
+      const updateCustomer = vi.fn();
+      const client = createClient({
+        provider: fakeProvider({ createCustomer, updateCustomer }, { customerMetadata: false }),
+      });
+      await expectRevenueError(
+        client.customers.create({ email: 'ada@example.com', name: 'Ada', metadata: { org: '1' } }),
+        'unsupported',
+      );
+      await expectRevenueError(
+        client.customers.update({ id: 'c1', metadata: { org: '1' } }),
+        'unsupported',
+      );
+      expect(createCustomer).not.toHaveBeenCalled();
+      expect(updateCustomer).not.toHaveBeenCalled();
+    });
+
+    it('still writes customers without metadata when metadata is unsupported', async () => {
+      const createCustomer = vi.fn().mockResolvedValue({ id: 'c1', email: 'a@b.c', raw: {} });
+      const client = createClient({
+        provider: fakeProvider({ createCustomer }, { customerMetadata: false }),
+      });
+      await client.customers.create({ email: 'ada@example.com', name: 'Ada' });
+      expect(createCustomer).toHaveBeenCalledOnce();
     });
 
     it('rejects a portal return URL when unsupported', async () => {

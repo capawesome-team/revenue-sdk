@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createClient } from '../../src/client.ts';
 import { RevenueError } from '../../src/errors.ts';
 import { stripe } from '../../src/providers/stripe/index.ts';
 import { createFetchStub, type StubHandler, type StubRequest } from '../helpers/fetch-stub.ts';
@@ -109,6 +110,8 @@ describe('stripe', () => {
     expect(provider.name).toBe('stripe');
     expect(provider.capabilities.hostedCheckout).toBe(true);
     expect(provider.capabilities.checkoutExpiresAt).toBe(true);
+    expect(provider.capabilities.checkoutCustomAmount).toBe(false);
+    expect(provider.capabilities.customerMetadata).toBe(true);
     expect(provider.capabilities.usageReporting).toBe(true);
     expect(provider.capabilities.licenseKeys).toBe(false);
     expect(provider.capabilities.listOrdersByCustomer).toBe(true);
@@ -286,6 +289,17 @@ describe('stripe', () => {
       });
       const form = new URLSearchParams(stub.requests[1]!.body);
       expect(form.get('expires_at')).toBe('1786147200');
+    });
+
+    it('refuses a custom amount before any request', async () => {
+      // A Stripe price carries its own `custom_unit_amount`; the session takes no override.
+      const { provider, stub } = setup(() => ({ json: {} }));
+      const client = createClient({ provider });
+      await expectRevenueError(
+        client.checkouts.create({ items: [{ product: 'price_1' }], customAmount: 2500 }),
+        'unsupported',
+      );
+      expect(stub.requests).toHaveLength(0);
     });
 
     it('prefers an existing customer over customer_email', async () => {

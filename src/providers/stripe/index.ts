@@ -33,9 +33,14 @@ const PRICES_PER_PRODUCT_LIMIT = 100;
 
 const CAPABILITIES: RevenueCapabilities = {
   cancellationReason: true,
+  // `custom_unit_amount` is pay-what-you-want configuration on the Price and the buyer types the
+  // amount on the hosted page; `line_items[].price_data` mints a new inline price rather than
+  // re-pricing an existing one, so a session takes no amount for the price it was given.
+  checkoutCustomAmount: false,
   checkoutExpiresAt: true,
   checkoutStatus: true,
   checkoutSuccessUrl: true,
+  customerMetadata: true,
   endTrial: true,
   hostedCheckout: true,
   // Stripe has no license-key API. Billing Entitlements is not a substitute: it is a derived
