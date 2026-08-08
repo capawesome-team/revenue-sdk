@@ -11,5 +11,5 @@ PLAN.md
 .wrangler
 .agents
 skills-lock.json
-.claude
+.claude/settings.local.json
 *.tgz

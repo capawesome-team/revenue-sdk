@@ -1,0 +1,10 @@
+---
+paths:
+  - 'src/polar.ts'
+  - 'src/providers/polar/**'
+  - 'test/**/polar*'
+---
+
+# Polar quirks
+
+Checkout `amount` (cents, top level beside `products`) is the `customAmount` wire field — custom prices only, silently ignored for fixed and free ones, range enforced against the price's `minimum_amount`/`maximum_amount`. Trailing slashes in collection paths are load-bearing (`/v1/checkouts/`). Sandbox = separate host (`sandbox-api.polar.sh`). `Retry-After` on 429. Checkout takes `products: string[]`; `external_customer_id` links your user IDs. No idempotency keys. Pause is period-end only and the pause fields must be PATCHed alone (`SubscriptionUpdate` is an exclusive union); resume = `{ resume: true }`. Usage ingest is `/v1/events/ingest` — an action, so NO trailing slash; metadata caps 50 pairs / 40-char keys / 500-char string values; ingest also accepts `external_customer_id` (not exposed by the unified API). Subscriptions carry inline `meters`. `POST /v1/customers/` (trailing slash) vs `PATCH /v1/customers/{id}` (none); customer email must be UNIQUE per organization (422 → `validation`); no `organization_id` is sent (the org access token implies it); `external_id` is immutable once set and not exposed by the unified API. License routes are `/v1/customer-portal/license-keys/{validate,activate,deactivate}` and must send NO `Authorization` (401 otherwise); validate 404 = EVERY kind of rejection (unknown/revoked/disabled/expired/unmatched activation) → `valid: false`, other statuses still throw; activate 403 = limit reached OR no activation limit configured at all → route-scoped `mapActivateError` re-maps it to `validation` (the decided contract; validate/deactivate keep `codeFromStatus`); `LicenseKey.productId` never set (a key hangs off `benefit_id`, and a benefit is not a product); `activationCount` only populated by `getLicenseKey` (list and PATCH return no activations array); `update({ disabled: true })` writes `disabled`, NOT `revoked` — `revoked` is owned by the benefit lifecycle and flips back to `granted` on the next grant cycle.
