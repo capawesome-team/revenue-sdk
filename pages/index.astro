@@ -173,6 +173,60 @@ if (entitled && subscription.cancelAtPeriodEnd) {
   banner(\`Your plan ends on \${subscription.endsAt?.toLocaleDateString()}.\`);
 }`;
 
+const switchDiff = ` import { createClient } from 'revenue-sdk';
+-import { polar } from 'revenue-sdk/polar';
++import { stripe } from 'revenue-sdk/stripe';
+
+ const client = createClient({
+-  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
++  provider: stripe({ secretKey: process.env.STRIPE_SECRET_KEY! }),
+ });
+
+ // Everything below stays exactly the same.
+ const checkout = await client.checkouts.create({
+   items: [{ product: price.checkoutRef }],
+   successUrl: 'https://example.com/thanks',
+ });`;
+
+const specRows = [
+  { term: 'Providers', detail: 'Stripe, Polar, Paddle, Lemon Squeezy, Dodo Payments' },
+  { term: 'Runtime dependencies', detail: 'Zero — fetch and Web Crypto only' },
+  { term: 'Runs on', detail: 'Node.js ≥ 22, Cloudflare Workers, Deno, Bun' },
+  { term: 'Language', detail: 'TypeScript, fully typed, ESM only' },
+  { term: 'License', detail: 'MIT — free for commercial use' },
+];
+
+const licenseCode = `// In the shipped app — no merchant credential required.
+import { validateLicenseKey } from 'revenue-sdk/polar';
+
+const { valid } = await validateLicenseKey({
+  key: enteredKey,
+  organizationId: 'YOUR_ORG_ID',
+});
+
+// On your server, with the merchant credential.
+const licenseKey = await client.licenseKeys.get({ id: event.licenseKeyId });`;
+
+const usageCode = `// Meter AI tokens, API calls, seats — anything countable.
+await client.usage.report({
+  customerId: 'cus_123',
+  eventName: 'api_request',
+  value: 25,
+  idempotencyKey: 'req_8f3a2c', // safe to replay, never double-billed
+});`;
+
+const testingCode = `import { createClient } from 'revenue-sdk';
+import { createInMemoryProvider } from 'revenue-sdk/testing';
+
+const provider = createInMemoryProvider({
+  products: [{ id: 'pro', name: 'Pro', prices: [{ amount: 2900, interval: 'month' }] }],
+  customers: [{ id: 'cus-1', email: 'ada@example.com' }],
+  subscriptions: [{ id: 'sub-1', customerId: 'cus-1', productId: 'pro', status: 'active' }],
+});
+
+// No account, no API keys, no test cards.
+const client = createClient({ provider });`;
+
 const capabilityRows = [
   { label: 'Provider-hosted checkout', values: [true, true, true, false, true] },
   { label: 'Checkout success URL', values: [true, true, true, false, true] },
@@ -207,12 +261,98 @@ const docCards = [
   },
 ];
 
-const runtimes = ['Node.js ≥ 22', 'Cloudflare Workers', 'Deno', 'Bun'];
 const codeThemes = { light: 'github-light', dark: 'github-dark' } as const;
 
 // Longer than the site description so the home page's meta description reads well in search results.
 const pageDescription =
   'A unified, normalized TypeScript API over Polar, Lemon Squeezy, Stripe, Paddle, and Dodo Payments — zero dependencies, Workers-ready, fully typed.';
+
+const faqs = [
+  {
+    question: 'Which billing providers does revenue-sdk support?',
+    answer:
+      'Stripe, Polar, Paddle, Lemon Squeezy, and Dodo Payments — each behind the same unified API, each on its own import subpath so unused providers never reach your bundle. You can also plug in any other provider with a custom adapter.',
+    href: '/docs/guides/custom-provider',
+    linkLabel: 'Write a custom adapter',
+  },
+  {
+    question: 'Can I switch billing providers without a rewrite?',
+    answer:
+      'Yes. The provider factory is the only provider-specific line in your code — swap polar() for stripe() and every call, type, and webhook handler stays the same. Real differences are surfaced through a typed capability object instead of silent behavior changes.',
+    href: '/docs/concepts/capabilities',
+    linkLabel: 'See how capabilities work',
+  },
+  {
+    question: 'Does revenue-sdk run on Cloudflare Workers?',
+    answer:
+      'Yes. revenue-sdk has zero runtime dependencies and no node:* imports, so it runs on Cloudflare Workers without the nodejs_compat flag — and on Node.js 22+, Deno, and Bun.',
+    href: '/docs/guides/cloudflare-workers',
+    linkLabel: 'Read the Workers guide',
+  },
+  {
+    question: 'How does revenue-sdk handle webhooks?',
+    answer:
+      'Each provider subpath exports standalone verifyWebhook and parseWebhookEvent helpers that check the provider’s signature scheme and normalize events into one typed union — no client instance required.',
+    href: '/docs/guides/webhook-handler',
+    linkLabel: 'Build a webhook handler',
+  },
+  {
+    question: 'How do I test a billing integration without a sandbox account?',
+    answer:
+      'Use the in-memory provider from revenue-sdk/testing: seed products, customers, and subscriptions, then run every client call against it in your test runner — no API keys, no fetch stubs, no test cards.',
+    href: '/docs/providers/testing',
+    linkLabel: 'Explore the testing provider',
+  },
+  {
+    question: 'Is revenue-sdk free to use?',
+    answer:
+      'Yes. revenue-sdk is open source under the MIT license and free for commercial use; you pay only your billing provider’s regular fees.',
+    href: 'https://github.com/capawesome-team/revenue-sdk',
+    linkLabel: 'View the source on GitHub',
+  },
+  {
+    question: 'Is revenue-sdk a payment processor?',
+    answer:
+      'No. revenue-sdk is an open-source TypeScript SDK that talks to your billing provider’s API — you keep your own Stripe, Polar, Paddle, Lemon Squeezy, or Dodo Payments account, and money always flows through the provider.',
+    href: '/docs/quickstart',
+    linkLabel: 'Start the quickstart',
+  },
+];
+
+const siteUrl = config.site ? config.site.replace(/\/$/, '') : null;
+const structuredData = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'SoftwareApplication',
+      name: 'revenue-sdk',
+      description: pageDescription,
+      applicationCategory: 'DeveloperApplication',
+      operatingSystem: 'Node.js 22+, Cloudflare Workers, Deno, Bun',
+      offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+      license: 'https://opensource.org/license/MIT',
+      ...(siteUrl ? { url: siteUrl, publisher: { '@id': `${siteUrl}#organization` } } : {}),
+    },
+    {
+      '@type': 'FAQPage',
+      mainEntity: faqs.map((faq) => ({
+        '@type': 'Question',
+        name: faq.question,
+        acceptedAnswer: { '@type': 'Answer', text: faq.answer },
+      })),
+    },
+    ...(siteUrl
+      ? [
+          {
+            '@id': `${siteUrl}#organization`,
+            '@type': 'Organization',
+            name: 'Capawesome',
+            url: 'https://capawesome.io/',
+          },
+        ]
+      : []),
+  ],
+};
 ---
 
 <PageLayout
@@ -228,91 +368,90 @@ const pageDescription =
   siteUrl={config.site}
   ogEnabled={config.og.enabled}
   page={{
-    title: 'revenue-sdk — one unified API over five billing providers',
+    title: 'revenue-sdk — the unified billing SDK for TypeScript',
     description: pageDescription,
   }}
 >
   <main class="mx-auto w-full max-w-6xl px-6">
     <!-- Hero -->
     <section class="py-16 sm:py-24">
-      <div class="text-center">
-        <span
-          class="inline-flex items-center gap-1.5 rounded-blume border border-border px-3 py-1 text-xs font-medium text-muted-foreground"
-        >
-          <Icon name="graduation-cap" size={13} />
-          Learn one API · Use any provider
-        </span>
-        <h1
-          class="mx-auto mt-6 max-w-[30ch] text-4xl font-semibold tracking-tight text-balance sm:text-5xl"
-        >
-          One TypeScript API for five billing providers
-        </h1>
-        <p class="mx-auto mt-5 max-w-[48ch] text-lg text-pretty text-muted-foreground">
-          Learn one SDK, then ship on Stripe, Polar, Paddle, Lemon Squeezy, or Dodo Payments — and
-          switch without a rewrite.
-        </p>
-
-        <div class="mx-auto mt-8 flex max-w-md items-center">
-          <div
-            class="flex w-full items-center justify-between gap-2 rounded-blume border border-border bg-code-background px-4 py-3 text-left font-mono text-sm"
+      <div class="grid grid-cols-1 items-center gap-10 lg:grid-cols-2">
+        <div>
+          <span
+            class="inline-flex items-center gap-1.5 rounded-blume border border-border px-3 py-1 text-xs font-medium text-muted-foreground"
           >
-            <span
-              ><span class="select-none text-muted-foreground">$ </span>npm install revenue-sdk</span
+            <Icon name="layers" size={13} />
+            Products · Checkouts · Subscriptions · Webhooks
+          </span>
+          <h1 class="mt-6 max-w-[30ch] text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
+            The unified billing SDK for TypeScript
+          </h1>
+          <p class="mt-5 max-w-[48ch] text-lg text-pretty text-muted-foreground">
+            revenue-sdk is an open-source TypeScript SDK that wraps Stripe, Polar, Paddle, Lemon
+            Squeezy, and Dodo Payments in one normalized API — products, checkouts,
+            subscriptions, customers, and webhooks included.
+          </p>
+
+          <div class="mt-8 flex max-w-md items-center">
+            <div
+              class="flex w-full items-center justify-between gap-2 rounded-blume border border-border bg-code-background px-4 py-3 text-left font-mono text-sm"
             >
-            <button
-              type="button"
-              class="copy-install inline-flex shrink-0 items-center text-muted-foreground transition-colors hover:text-foreground"
-              data-command="npm install revenue-sdk"
-              aria-label="Copy install command"
+              <span
+                ><span class="select-none text-muted-foreground">$ </span>npm install revenue-sdk</span
+              >
+              <button
+                type="button"
+                class="copy-install inline-flex shrink-0 items-center text-muted-foreground transition-colors hover:text-foreground"
+                data-command="npm install revenue-sdk"
+                aria-label="Copy install command"
+              >
+                <span class="copy-idle"><Icon name="copy" size={15} /></span>
+                <span class="copy-done hidden text-accent"><Icon name="check" size={15} /></span>
+              </button>
+            </div>
+          </div>
+
+          <div class="mt-8 flex flex-wrap items-center gap-3">
+            <a
+              href="/docs"
+              class="inline-flex items-center gap-1.5 rounded-blume bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground transition-opacity hover:opacity-90"
             >
-              <span class="copy-idle"><Icon name="copy" size={15} /></span>
-              <span class="copy-done hidden text-accent"><Icon name="check" size={15} /></span>
-            </button>
+              Read the docs
+              <Icon name="arrow-right" size={15} />
+            </a>
+            <a
+              href="/docs/quickstart"
+              class="inline-flex items-center rounded-blume border border-border px-5 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
+            >
+              Quickstart
+            </a>
+            <a
+              href="https://github.com/capawesome-team/revenue-sdk"
+              class="inline-flex items-center gap-1.5 rounded-blume border border-border px-5 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
+            >
+              <Icon name="github" size={15} />
+              GitHub
+            </a>
           </div>
         </div>
 
-        <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
-          <a
-            href="/docs"
-            class="inline-flex items-center gap-1.5 rounded-blume bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground transition-opacity hover:opacity-90"
-          >
-            Read the docs
-            <Icon name="arrow-right" size={15} />
-          </a>
-          <a
-            href="/docs/quickstart"
-            class="inline-flex items-center rounded-blume border border-border px-5 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
-          >
-            Quickstart
-          </a>
-          <a
-            href="https://github.com/capawesome-team/revenue-sdk"
-            class="inline-flex items-center gap-1.5 rounded-blume border border-border px-5 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
-          >
-            <Icon name="github" size={15} />
-            GitHub
-          </a>
-        </div>
-
-        <div
-          class="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm text-muted-foreground"
-        >
-          <span class="inline-flex items-center gap-1.5">
-            <Icon name="feather" size={14} />
-            Zero dependencies
-          </span>
-          <span class="inline-flex items-center gap-1.5">
-            <Icon name="cloud" size={14} />
-            Workers-ready
-          </span>
-          <span class="inline-flex items-center gap-1.5">
-            <Icon name="sparkles" size={14} />
-            AI-ready docs
-          </span>
+        <div class="rounded-blume border border-border p-5 text-left">
+          <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            revenue-sdk at a glance
+          </p>
+          <dl class="mt-2 divide-y divide-border">
+            {
+              specRows.map((row) => (
+                <div class="py-3">
+                  <dt class="text-xs text-muted-foreground">{row.term}</dt>
+                  <dd class="mt-1 text-sm font-medium">{row.detail}</dd>
+                </div>
+              ))
+            }
+          </dl>
         </div>
       </div>
 
-      <!-- Tabbed provider sample -->
       <div
         class="mt-14 overflow-hidden rounded-blume border border-border bg-code-background text-left"
       >
@@ -347,7 +486,10 @@ const pageDescription =
               role="tabpanel"
               id={`panel-${tab.id}`}
               aria-labelledby={`tab-${tab.id}`}
-              class:list={['provider-panel overflow-x-auto p-5 text-sm', index === 0 ? '' : 'hidden']}
+              class:list={[
+                'provider-panel overflow-x-auto p-5 text-sm',
+                index === 0 ? '' : 'hidden',
+              ]}
             >
               <Code code={tab.code} lang="ts" themes={codeThemes} />
             </div>
@@ -356,48 +498,64 @@ const pageDescription =
       </div>
     </section>
 
-    <!-- Providers + runtimes -->
-    <section class="pb-8 text-center">
-      <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Works with</p>
-      <div class="mt-4 flex flex-wrap items-center justify-center gap-3">
-        {
-          providerTabs.map((provider) => (
-            <span class="rounded-blume border border-border px-4 py-1.5 text-sm font-medium">
-              {provider.label}
-            </span>
-          ))
-        }
-      </div>
-      <div
-        class="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-sm text-muted-foreground"
-      >
-        {runtimes.map((runtime) => <span>{runtime}</span>)}
+    <!-- Provider switch -->
+    <section class="py-8">
+      <div class="grid grid-cols-1 items-center gap-10 lg:grid-cols-2">
+        <div>
+          <h2 class="max-w-[40ch] text-2xl font-semibold tracking-tight">
+            Switch billing providers in two lines
+          </h2>
+          <p class="mt-3 max-w-[56ch] text-sm text-muted-foreground lg:pr-8">
+            The provider factory is the only provider-specific code in your integration. Swap it out
+            and every call, every type, and every webhook handler keeps working — revenue-sdk
+            normalizes what the providers spell differently.
+          </p>
+          <a
+            href="/docs/concepts/capabilities"
+            class="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
+          >
+            See what changes when you switch
+            <Icon name="arrow-right" size={14} />
+          </a>
+        </div>
+        <div
+          class="overflow-x-auto rounded-blume border border-border bg-code-background p-5 text-left text-sm"
+        >
+          <Code code={switchDiff} lang="diff" themes={codeThemes} />
+        </div>
       </div>
     </section>
 
     <!-- Features -->
     <section class="py-16">
-      <h2 class="sr-only">Features</h2>
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <h2 class="max-w-[40ch] text-2xl font-semibold tracking-tight">Why revenue-sdk?</h2>
+      <p class="mt-3 max-w-[56ch] text-sm text-muted-foreground">
+        Because billing providers agree on almost nothing. revenue-sdk gives you one set of models,
+        statuses, errors, and events across all five — and tells you exactly where providers differ
+        instead of papering over it.
+      </p>
+      <dl class="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {
           features.map((feature) => (
-            <div class="rounded-blume border border-border p-5 text-left">
+            <div class="rounded-blume border border-border p-5">
               <span class="text-accent">
                 <Icon name={feature.icon} size={18} />
               </span>
-              <h3 class="mt-3 text-sm font-semibold">{feature.title}</h3>
-              <p class="mt-2 text-sm text-muted-foreground">{feature.description}</p>
+              <dt class="mt-3 text-sm font-semibold">{feature.title}</dt>
+              <dd class="mt-2 text-sm text-muted-foreground">{feature.description}</dd>
             </div>
           ))
         }
-      </div>
+      </dl>
     </section>
 
     <!-- Status model -->
     <section class="py-8">
       <div class="grid grid-cols-1 items-center gap-10 lg:grid-cols-2">
-        <div class="text-center lg:text-left">
-          <h2 class="text-2xl font-semibold tracking-tight">One subscription status model</h2>
+        <div>
+          <h2 class="max-w-[40ch] text-2xl font-semibold tracking-tight">
+            One subscription status model
+          </h2>
           <p class="mt-3 text-sm text-muted-foreground lg:pr-8">
             Every provider spells cancellation differently, and most overload one status to mean both
             “ended” and “still paid up until the period ends”. <code class="font-mono">revenue-sdk</code>
@@ -429,8 +587,10 @@ const pageDescription =
         >
           <Code code={webhookCode} lang="ts" themes={codeThemes} />
         </div>
-        <div class="order-1 text-center lg:order-2 lg:text-left">
-          <h2 class="text-2xl font-semibold tracking-tight">Webhooks without the ceremony</h2>
+        <div class="order-1 lg:order-2">
+          <h2 class="max-w-[40ch] text-2xl font-semibold tracking-tight">
+            Webhooks without the ceremony
+          </h2>
           <p class="mt-3 text-sm text-muted-foreground lg:pr-8">
             <code class="font-mono">verifyWebhook</code> and
             <code class="font-mono">parseWebhookEvent</code> are standalone helpers that take a
@@ -448,65 +608,170 @@ const pageDescription =
       </div>
     </section>
 
-    <!-- Capability matrix teaser -->
-    <section class="py-16">
-      <div class="mx-auto max-w-3xl text-center">
-        <h2 class="text-2xl font-semibold tracking-tight">
-          Providers differ. revenue-sdk tells you how.
-        </h2>
-        <p class="mx-auto mt-3 max-w-xl text-sm text-muted-foreground">
-          Every provider ships a typed capability object, and the client throws
-          <code class="font-mono">unsupported</code> instead of silently dropping options.
-        </p>
-        <div class="mt-6 overflow-x-auto rounded-blume border border-border">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-border bg-muted/50 text-left">
-                <th class="px-4 py-2.5 font-medium">Capability</th>
-                {
-                  providerTabs.map((provider) => (
-                    <th class="px-4 py-2.5 text-center font-medium">{provider.label}</th>
-                  ))
-                }
-              </tr>
-            </thead>
-            <tbody>
-              {
-                capabilityRows.map((row) => (
-                  <tr class="border-b border-border text-left last:border-b-0">
-                    <td class="px-4 py-2.5">{row.label}</td>
-                    {row.values.map((supported) => (
-                      <td class="px-4 py-2.5 text-center">
-                        {supported ? (
-                          <span class="inline-flex text-accent" aria-label="Supported">
-                            <Icon name="check" size={15} />
-                          </span>
-                        ) : (
-                          <span class="text-muted-foreground" aria-label="Not supported">
-                            —
-                          </span>
-                        )}
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              }
-            </tbody>
-          </table>
+    <!-- License keys -->
+    <section class="py-8">
+      <div class="grid grid-cols-1 items-center gap-10 lg:grid-cols-2">
+        <div>
+          <h2 class="max-w-[40ch] text-2xl font-semibold tracking-tight">
+            License keys without shipping your secret key
+          </h2>
+          <p class="mt-3 max-w-[56ch] text-sm text-muted-foreground lg:pr-8">
+            Validate, activate, and deactivate license keys straight from your desktop or mobile
+            app. The standalone helpers take no merchant credential, so your API key never leaves
+            the server — supported on Polar, Lemon Squeezy, and Dodo Payments.
+          </p>
+          <a
+            href="/docs/concepts/license-keys"
+            class="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
+          >
+            Read the license key guide
+            <Icon name="arrow-right" size={14} />
+          </a>
         </div>
-        <a
-          href="/docs/reference/capability-matrix"
-          class="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
+        <div
+          class="overflow-x-auto rounded-blume border border-border bg-code-background p-5 text-left text-sm"
         >
-          See the full capability matrix
-          <Icon name="arrow-right" size={14} />
-        </a>
+          <Code code={licenseCode} lang="ts" themes={codeThemes} />
+        </div>
       </div>
     </section>
 
+    <!-- Usage-based billing -->
+    <section class="py-8">
+      <div class="grid grid-cols-1 items-center gap-10 lg:grid-cols-2">
+        <div
+          class="order-2 overflow-x-auto rounded-blume border border-border bg-code-background p-5 text-left text-sm lg:order-1"
+        >
+          <Code code={usageCode} lang="ts" themes={codeThemes} />
+        </div>
+        <div class="order-1 lg:order-2">
+          <h2 class="max-w-[40ch] text-2xl font-semibold tracking-tight">
+            Usage-based billing in one call
+          </h2>
+          <p class="mt-3 max-w-[56ch] text-sm text-muted-foreground lg:pr-8">
+            Report metered usage with one validated call. revenue-sdk never retries usage events on
+            its own, so a flaky network cannot double-bill your customers — supported on Polar,
+            Stripe, and Dodo Payments.
+          </p>
+          <a
+            href="/docs/concepts/usage-based-billing"
+            class="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
+          >
+            Read the usage guide
+            <Icon name="arrow-right" size={14} />
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Testing provider -->
+    <section class="py-8">
+      <div class="grid grid-cols-1 items-center gap-10 lg:grid-cols-2">
+        <div>
+          <h2 class="max-w-[40ch] text-2xl font-semibold tracking-tight">
+            Test billing flows without a sandbox
+          </h2>
+          <p class="mt-3 max-w-[56ch] text-sm text-muted-foreground lg:pr-8">
+            <code class="font-mono">revenue-sdk/testing</code> ships a seedable in-memory provider
+            that implements the full provider interface, plus
+            <code class="font-mono">signWebhook</code> to exercise your webhook handler with
+            genuinely valid signatures.
+          </p>
+          <a
+            href="/docs/providers/testing"
+            class="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
+          >
+            Explore the testing provider
+            <Icon name="arrow-right" size={14} />
+          </a>
+        </div>
+        <div
+          class="overflow-x-auto rounded-blume border border-border bg-code-background p-5 text-left text-sm"
+        >
+          <Code code={testingCode} lang="ts" themes={codeThemes} />
+        </div>
+      </div>
+    </section>
+
+    <!-- Capability matrix teaser -->
+    <section class="py-16">
+      <h2 class="max-w-[40ch] text-2xl font-semibold tracking-tight">
+        Providers differ. revenue-sdk tells you how.
+      </h2>
+      <p class="mt-3 max-w-[56ch] text-sm text-muted-foreground">
+        Every provider ships a typed capability object, and the client throws
+        <code class="font-mono">unsupported</code> instead of silently dropping options.
+      </p>
+      <div class="mt-6 max-w-3xl overflow-x-auto rounded-blume border border-border">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-border bg-muted/50 text-left">
+              <th class="px-4 py-2.5 font-medium">Capability</th>
+              {
+                providerTabs.map((provider) => (
+                  <th class="px-4 py-2.5 text-center font-medium">{provider.label}</th>
+                ))
+              }
+            </tr>
+          </thead>
+          <tbody>
+            {
+              capabilityRows.map((row) => (
+                <tr class="border-b border-border text-left last:border-b-0">
+                  <td class="px-4 py-2.5">{row.label}</td>
+                  {row.values.map((supported) => (
+                    <td class="px-4 py-2.5 text-center">
+                      {supported ? (
+                        <span class="inline-flex text-accent" aria-label="Supported">
+                          <Icon name="check" size={15} />
+                        </span>
+                      ) : (
+                        <span class="text-muted-foreground" aria-label="Not supported">
+                          —
+                        </span>
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            }
+          </tbody>
+        </table>
+      </div>
+      <a
+        href="/docs/reference/capability-matrix"
+        class="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:underline"
+      >
+        See the full capability matrix
+        <Icon name="arrow-right" size={14} />
+      </a>
+    </section>
+
+    <!-- FAQ -->
+    <section class="py-16">
+      <h2 class="max-w-[40ch] text-2xl font-semibold tracking-tight">
+        Frequently asked questions
+      </h2>
+      <dl class="mt-8 grid grid-cols-1 gap-10 lg:grid-cols-2">
+        {
+          faqs.map((faq) => (
+            <div>
+              <dt class="text-sm font-semibold">{faq.question}</dt>
+              <dd class="mt-2 text-sm text-muted-foreground">
+                {faq.answer}
+                <a href={faq.href} class="ml-1 font-medium text-accent hover:underline">
+                  {faq.linkLabel}
+                </a>
+              </dd>
+            </div>
+          ))
+        }
+      </dl>
+    </section>
+
     <!-- Doc entry cards -->
-    <section class="pb-24">
-      <h2 class="text-center text-2xl font-semibold tracking-tight">Start here</h2>
+    <section class="py-16">
+      <h2 class="max-w-[40ch] text-2xl font-semibold tracking-tight">Start here</h2>
       <div class="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {
           docCards.map((card) => (
@@ -529,6 +794,54 @@ const pageDescription =
         }
       </div>
     </section>
+
+    <!-- Closing CTA -->
+    <section class="pb-24 pt-8 text-center">
+      <h2 class="mx-auto max-w-[40ch] text-2xl font-semibold tracking-tight">
+        Ship billing once, keep every provider open
+      </h2>
+      <p class="mx-auto mt-3 max-w-[56ch] text-sm text-muted-foreground">
+        Install revenue-sdk, wire up the provider you use today, and keep the freedom to change your
+        mind tomorrow.
+      </p>
+      <div class="mx-auto mt-8 flex max-w-md items-center">
+        <div
+          class="flex w-full items-center justify-between gap-2 rounded-blume border border-border bg-code-background px-4 py-3 text-left font-mono text-sm"
+        >
+          <span
+            ><span class="select-none text-muted-foreground">$ </span>npm install revenue-sdk</span
+          >
+          <button
+            type="button"
+            class="copy-install inline-flex shrink-0 items-center text-muted-foreground transition-colors hover:text-foreground"
+            data-command="npm install revenue-sdk"
+            aria-label="Copy install command"
+          >
+            <span class="copy-idle"><Icon name="copy" size={15} /></span>
+            <span class="copy-done hidden text-accent"><Icon name="check" size={15} /></span>
+          </button>
+        </div>
+      </div>
+      <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
+        <a
+          href="/docs"
+          class="inline-flex items-center gap-1.5 rounded-blume bg-accent px-5 py-2.5 text-sm font-medium text-accent-foreground transition-opacity hover:opacity-90"
+        >
+          Read the docs
+          <Icon name="arrow-right" size={15} />
+        </a>
+        <a
+          href="https://github.com/capawesome-team/revenue-sdk"
+          class="inline-flex items-center gap-1.5 rounded-blume border border-border px-5 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
+        >
+          <Icon name="github" size={15} />
+          GitHub
+        </a>
+      </div>
+    </section>
+
+    {/* PageLayout exposes no head slot; JSON-LD is valid anywhere in the document. */}
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(structuredData)} />
   </main>
 
   <footer slot="footer" class="border-t border-border">
