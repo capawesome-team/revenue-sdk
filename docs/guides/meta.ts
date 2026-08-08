@@ -9,5 +9,6 @@ export default defineMeta({
     'webhook-handler',
     'subscription-management',
     'cloudflare-workers',
+    'custom-provider',
   ],
 });

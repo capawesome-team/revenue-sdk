@@ -23,7 +23,7 @@ const client = createClient({
 
 client.products; // list / listAll / get
 client.checkouts; // create / get
-client.customers; // get / list / listAll
+client.customers; // get / list / listAll / create / update
 client.subscriptions; // get / list / listAll / cancel / uncancel / changePlan / endTrial / pause / resume / revoke
 client.customerPortal; // createSession
 client.usage; // report
@@ -149,7 +149,10 @@ lives in the client, not the adapter:
 </CardGroup>
 
 The payoff: a new provider only has to implement the thin adapter, and it instantly inherits all of the
-client's behavior.
+client's behavior. That applies to **your** providers too — `RevenueProvider` is exported from the root
+and `createClient` accepts any object that satisfies it, so an in-house billing system or a provider the
+SDK doesn't ship plugs into the same client. See
+[Bring your own provider](/docs/guides/custom-provider).
 
 ## Tree shaking
 

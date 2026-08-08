@@ -230,3 +230,5 @@ JSON-LD, so both blog pages build their own schema.org graph. Verify with `npx b
 ## Status
 
 v0.1.0 feature-complete: all five providers, client, testing provider, docs site, CI/release/live workflows. Published as in-development (0.x) — APIs may change. Deferred post-v1: discounts, webhook-endpoint management, `tokenProvider`-style auth.
+
+`RevenueProvider` is a PUBLIC extension point — user-defined adapters are documented in `docs/guides/custom-provider.mdx`. Adding a method to the interface or a field to `RevenueCapabilities` breaks them; keep that guide's skeleton method-agnostic ("implement what you support, throw `unsupported` for the rest") so it does not drift with every addition.

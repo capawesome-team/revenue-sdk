@@ -1,0 +1,341 @@
+---
+title: Bring your own provider
+description: Implement the RevenueProvider contract for a billing system revenue-sdk does not ship — the skeleton, honest capabilities, the normalization rules, and what the client adds for free.
+sidebar:
+  label: Custom provider
+---
+
+`RevenueProvider` is a public export, and `createClient({ provider })` accepts **any** object that
+satisfies it. Implement the contract against your own backend and it gets the same namespaces, the same
+parameter validation, the same capability gating, and the same `listAll` iterators as Polar or Stripe —
+no fork, no registry entry, no change to the SDK.
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { internalBilling } from './internal-billing.ts';
+
+const client = createClient({ provider: internalBilling({ apiKey: process.env.BILLING_KEY! }) });
+
+const subscription = await client.subscriptions.get({ id: 'sub-1' });
+```
+
+## When this is worth doing
+
+- **An in-house billing system.** An invoicing service, an ERP, or a ledger you already own — wrapping it
+  in the contract lets one codebase read subscriptions from it and from a real provider.
+- **A provider the SDK doesn't ship.** The five built-ins are the ones with maintained adapters; the
+  contract is not reserved for them.
+
+Two things this is *not* for. Tweaking a shipped provider — every factory already takes `baseUrl` and an
+injectable `fetch`, so a gateway or a proxy mount point needs no new adapter. And test doubles — reach for
+[the in-memory provider](/docs/providers/testing) instead of hand-rolling one.
+
+## The contract
+
+`RevenueProvider` is two fields plus one flat method per operation. No classes, no base class to extend,
+no lifecycle hooks:
+
+<TypeTable
+  type={{
+    name: {
+      type: 'string',
+      description: 'Identifies the adapter. Surfaces as client.providerName and as provider on errors the client raises.',
+    },
+    capabilities: {
+      type: 'RevenueCapabilities',
+      description: 'Read by the client before every gated call — see Declare capabilities honestly.',
+    },
+  }}
+/>
+
+Every method takes a single params object — all of them extend `BaseParams`, so `signal` is always
+available — and returns a normalized model or a `Page<T>`. There is no partial implementation: the object
+literal does not compile until every method exists, which is deliberate. A new method added to the
+contract should break your build rather than fail at runtime.
+
+:::note
+`name` accepts any string (the shipped provider names still autocomplete), so pick one that names your
+adapter. The client reads it in exactly two places — `client.providerName` and the `provider` field of
+the errors it raises — so the value is a label, never a dispatch key.
+:::
+
+## The skeleton
+
+Implement the operations you have, refuse the rest, and keep the mapping in small pure functions:
+
+```ts
+import { RevenueError } from 'revenue-sdk';
+import type { Page, Product, RevenueCapabilities, RevenueProvider } from 'revenue-sdk';
+
+// Honest to the point of pessimism: everything unimplemented is false.
+const CAPABILITIES: RevenueCapabilities = {
+  cancellationReason: false,
+  checkoutCustomAmount: false,
+  checkoutExpiresAt: false,
+  checkoutStatus: true,
+  checkoutSuccessUrl: true,
+  customerMetadata: true,
+  endTrial: false,
+  hostedCheckout: true,
+  licenseKeys: false,
+  listOrdersByCustomer: true,
+  listSubscriptionsByCustomer: true,
+  pause: false,
+  pauseBehaviors: [],
+  portalReturnUrl: false,
+  prorationBehaviors: ['none'],
+  revoke: true,
+  uncancel: false,
+  usageReporting: false,
+};
+
+interface WirePlan {
+  id: number;
+  title: string;
+  cents: number;
+}
+
+function toProduct(plan: WirePlan): Product {
+  return {
+    id: String(plan.id), // IDs are strings in the normalized model, even when yours are numbers.
+    name: plan.title,
+    prices: [
+      {
+        id: String(plan.id),
+        checkoutRef: String(plan.id),
+        type: 'recurring',
+        model: 'fixed',
+        amount: plan.cents, // Integer minor units.
+        currency: 'usd', // Lowercase ISO 4217.
+        interval: 'month',
+        raw: plan,
+      },
+    ],
+    raw: plan, // Always set: the escape hatch for everything you did not normalize.
+  };
+}
+
+export interface InternalBillingOptions {
+  apiKey: string;
+  baseUrl?: string;
+  fetch?: typeof fetch;
+}
+
+export function internalBilling(options: InternalBillingOptions): RevenueProvider {
+  // Detached from any holder object — workerd throws `Illegal invocation` on `holder.fetch(...)`.
+  const fetchImpl = options.fetch ?? fetch;
+  const baseUrl = options.baseUrl ?? 'https://billing.internal';
+
+  async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
+    const response = await fetchImpl(`${baseUrl}${path}`, {
+      headers: { authorization: `Bearer ${options.apiKey}` },
+      signal,
+    });
+    const body: unknown = await response.json();
+    if (!response.ok) {
+      throw toRevenueError(response, body); // See "Errors" below.
+    }
+    return body as T;
+  }
+
+  function unsupported(operation: string): never {
+    throw new RevenueError(`internal billing cannot ${operation}`, {
+      code: 'unsupported',
+      provider: 'internal-billing',
+    });
+  }
+
+  return {
+    name: 'internal-billing',
+    capabilities: CAPABILITIES,
+
+    async listProducts({ cursor, signal }): Promise<Page<Product>> {
+      const query = cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`;
+      const page = await request<{ plans: WirePlan[]; next?: string }>(`/plans${query}`, signal);
+      return { items: page.plans.map(toProduct), cursor: page.next };
+    },
+
+    async getProduct({ id, signal }) {
+      return toProduct(await request<WirePlan>(`/plans/${id}`, signal));
+    },
+
+    // …the reads and writes you actually support, each one a request plus a to<Model>() mapper.
+
+    // Everything the capabilities above report as false. Refusing here rather than returning a
+    // half-truth is the same rule the built-in adapters follow.
+    async endSubscriptionTrial() {
+      return unsupported('end a trial early');
+    },
+    async pauseSubscription() {
+      return unsupported('pause a subscription');
+    },
+    async reportUsage() {
+      return unsupported('report usage');
+    },
+  };
+}
+```
+
+## Declare capabilities honestly
+
+`RevenueCapabilities` is the contract's other half, and the client trusts it completely. Getting it wrong
+is the one way a custom adapter breaks callers silently: claim `pause: true` and the client will happily
+route a pause into a method that has nothing to pause.
+
+A `false` capability is enforced at two different depths:
+
+| Capability                                                              | Effect when `false`                                                                    |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `uncancel`, `endTrial`, `pause`, `usageReporting`, `revoke`, `licenseKeys` | The client throws `unsupported` **before dispatch** — your method is never called.      |
+| Everything else                                                          | Only the *parameter* is gated (`successUrl`, `customAmount`, `metadata`, `customerId` filters, …). The method still runs. |
+
+So the methods behind a gated capability can be one-line throws for symmetry, while every ungated method
+you don't implement — `createCheckout`, `createCustomerPortalSession`, `getOrderInvoiceUrl`, and so on —
+**must refuse for itself** with `code: 'unsupported'`. Nothing upstream will do it for you.
+
+Capabilities are plain data, so a caller can branch on them exactly as it does for a real provider — see
+[Capabilities](/docs/concepts/capabilities).
+
+## Normalize the way the SDK does
+
+The client does not inspect or repair what an adapter returns. Whatever you put in a model is what
+application code sees, so the normalization rules are yours to uphold:
+
+- **IDs are `string`.** Coerce numeric IDs with `String()` rather than leaking a number through.
+- **Dates are `Date`.** Not ISO strings, not unix seconds.
+- **Amounts are integer minor units**, and `currency` is a lowercase ISO 4217 code.
+- **`raw` is set on every model** — the untouched payload the model was built from. It's what callers
+  reach for when they need a field the normalized shape doesn't carry.
+- **Statuses map into the closed unions.** `SubscriptionStatus`, `OrderStatus`, `CheckoutStatus`, and
+  `LicenseKeyStatus` are exhaustive; an unrecognized value from your backend maps to the nearest member
+  rather than throwing, the way the built-in adapters treat every provider enum as open.
+- **`canceled` is terminal.** A cancellation scheduled for the end of the period is
+  `cancelAtPeriodEnd: true` with the status left alone (plus `endsAt`), and a scheduled pause is
+  `pauseAtPeriodEnd: true` with `resumesAt`. See
+  [the status mapping reference](/docs/reference/status-mapping).
+
+## Pagination
+
+Return `Page<T>` — `{ items, cursor? }`. The cursor is **opaque to the client**: it hands back exactly
+what you returned on the next call, and `listAll` stops when it is `undefined`. Any encoding works, and a
+short or empty page is fine as long as the cursor is right.
+
+```ts
+async listSubscriptions({ cursor, limit, signal }) {
+  const page = await request<WirePage>(`/subscriptions${toQuery({ cursor, limit })}`, signal);
+  return {
+    items: page.rows.map(toSubscription),
+    cursor: page.has_more ? page.next_cursor : undefined,
+  };
+}
+```
+
+:::warning
+If your cursor carries a next-page **URL**, check its origin against your `baseUrl` before following it.
+A forged cursor must not be able to redirect an authenticated request — and its credentials — to another
+host. The built-in adapters base64url-encode a provider-tagged state object for the same reason. See
+[Pagination](/docs/concepts/pagination).
+:::
+
+## Errors
+
+Throw `RevenueError` with a code from the closed union. That is what makes a custom adapter
+interchangeable: the client's bounded retry reads `retryable` and `retryAfter`, and application code
+catches one error type no matter which provider is configured.
+
+```ts
+import { RevenueError } from 'revenue-sdk';
+import type { RevenueErrorCode } from 'revenue-sdk';
+
+const CODES: Record<number, RevenueErrorCode> = {
+  400: 'validation',
+  401: 'unauthorized',
+  403: 'forbidden',
+  404: 'not_found',
+  409: 'conflict',
+  429: 'rate_limited',
+};
+
+function toRevenueError(response: Response, body: unknown): RevenueError {
+  return new RevenueError(`internal billing responded with ${response.status}`, {
+    code: CODES[response.status] ?? 'provider_error',
+    provider: 'internal-billing',
+    status: response.status,
+    retryAfter: Number(response.headers.get('retry-after')) || undefined,
+    // Kept verbatim on a non-enumerable property, so it stays out of logs and error reporters.
+    responseBody: body,
+    // Redacts the key from the message if it ever ends up echoed there.
+    secrets: [options.apiKey],
+  });
+}
+```
+
+Keep request values out of the message — the parsed body belongs on `responseBody`, and a `cause` is for
+an underlying JS `Error`. [Error codes](/docs/reference/error-codes) has the full union and the retry
+rules.
+
+## What the client already does
+
+None of this belongs in your adapter:
+
+- **Parameter validation** — empty `id`s, empty item lists, non-positive quantities, non-finite usage
+  values, and past `expiresAt` dates are rejected before your method is called.
+- **Capability gating** — `unsupported` is raised from the capabilities you declared.
+- **One bounded retry** on `rate_limited` (and on `retryable` errors for reads), honoring `retryAfter`.
+  `usage.report` is deliberately excluded, so make `reportUsage` safe to call at least once, not
+  necessarily twice.
+- **`listAll`** — the async generators follow your cursors.
+
+See [Client & providers](/docs/concepts/client-and-providers) for how the split is drawn.
+
+## Webhooks stay outside the contract
+
+`verifyWebhook`, `parseWebhookEvent`, and the credential-free license-key functions are **standalone
+subpath exports rather than `RevenueProvider` methods**, so a custom provider ships its own equivalents —
+return a `WebhookEvent` from yours and every handler in [Webhooks](/docs/concepts/webhooks) applies
+unchanged.
+
+## Test it
+
+The in-memory provider in
+[`src/providers/testing/index.ts`](https://github.com/capawesome-team/revenue-sdk/blob/main/src/providers/testing/index.ts)
+is the worked example: one file, the complete contract, no network. Read it before writing your own, then
+test yours the same way the built-in adapters are tested — inject a `fetch` that answers with recorded
+payloads, drive the adapter through `createClient`, and assert on both the outgoing request and the
+normalized result:
+
+```ts
+import { expect, test } from 'vitest';
+import { createClient } from 'revenue-sdk';
+import { internalBilling } from './internal-billing.ts';
+
+test('a plan normalizes into a product', async () => {
+  const client = createClient({
+    provider: internalBilling({
+      apiKey: 'test-key',
+      fetch: async () =>
+        new Response(JSON.stringify({ id: 7, title: 'Pro', cents: 2900 }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+    }),
+  });
+
+  const product = await client.products.get({ id: '7' });
+
+  expect(product.id).toBe('7');
+  expect(product.prices[0]!.amount).toBe(2900);
+});
+```
+
+The patterns on [Testing provider](/docs/providers/testing) — seeding state, overriding capabilities,
+asserting on effects — carry over unchanged, since your adapter and the in-memory one implement the same
+interface.
+
+<CardGroup cols={2}>
+  <Card title="Client & providers" icon="plug" href="/docs/concepts/client-and-providers">
+    The thin-adapter, fat-client split you're plugging into.
+  </Card>
+  <Card title="Capabilities" icon="toggle-right" href="/docs/concepts/capabilities">
+    Every flag, and what declaring it gates.
+  </Card>
+</CardGroup>

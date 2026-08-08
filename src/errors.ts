@@ -14,7 +14,7 @@ export type RevenueErrorCode =
 
 export interface RevenueErrorOptions {
   code: RevenueErrorCode;
-  provider?: ProviderName;
+  provider?: ProviderName | (string & {});
   status?: number;
   /** Seconds to wait before retrying, taken from the provider's rate-limit response. */
   retryAfter?: number;
@@ -41,7 +41,7 @@ function redactSecrets(message: string, secrets: readonly string[]): string {
 
 export class RevenueError extends Error {
   readonly code: RevenueErrorCode;
-  readonly provider?: ProviderName;
+  readonly provider?: ProviderName | (string & {});
   readonly status?: number;
   readonly retryAfter?: number;
   /**

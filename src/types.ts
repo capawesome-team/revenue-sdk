@@ -495,7 +495,8 @@ export interface ReportUsageParams extends BaseParams {
 }
 
 export interface RevenueProvider {
-  name: ProviderName;
+  /** Custom providers may use any name; `string & {}` keeps autocomplete for the shipped ones. */
+  name: ProviderName | (string & {});
   capabilities: RevenueCapabilities;
   listProducts(params: ListProductsParams): Promise<Page<Product>>;
   getProduct(params: GetProductParams): Promise<Product>;

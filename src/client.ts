@@ -60,7 +60,7 @@ export interface CreateClientOptions {
 }
 
 export interface RevenueClient {
-  providerName: ProviderName;
+  providerName: ProviderName | (string & {});
   capabilities: RevenueCapabilities;
   products: {
     list(params?: ListProductsParams): Promise<Page<Product>>;
