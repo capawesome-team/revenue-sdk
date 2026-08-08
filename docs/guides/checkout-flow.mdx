@@ -134,7 +134,7 @@ step.
 
       switch (event.type) {
         case 'checkout.completed': {
-          const checkout = event.checkout!;
+          const checkout = event.checkout;
           const userId = checkout.metadata?.userId;
           if (typeof userId === 'string' && checkout.customerId) {
             // Bootstrap the mapping so later events don't need metadata at all.
@@ -145,10 +145,10 @@ step.
         case 'subscription.created':
         case 'subscription.updated':
         case 'subscription.canceled':
-          await upsertSubscription(event.subscription!);
+          await upsertSubscription(event.subscription);
           break;
         case 'order.paid':
-          await recordPayment(event.order!);
+          await recordPayment(event.order);
           break;
       }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseWebhookEvent, verifyWebhook } from '../../src/providers/lemon-squeezy/webhooks.ts';
 import { hmacSha256, sha256Hex, toHex } from '../../src/webhooks/verify.ts';
+import { expectEvent } from '../helpers/webhook-events.ts';
 
 const SECRET = 'ls-signing-secret';
 
@@ -56,18 +57,17 @@ describe('lemon-squeezy parseWebhookEvent', () => {
   const DIGEST_KEY = /^lemon-squeezy:sha256:[0-9a-f]{64}$/;
 
   it('maps subscription_created and merges meta.custom_data into metadata', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         meta: { event_name: 'subscription_created', custom_data: { organization_id: 'org_1' } },
         data: subscriptionResource,
       }),
     });
-    expect(event.type).toBe('subscription.created');
-    expect(event.subscription?.metadata).toEqual({ organization_id: 'org_1' });
+    const event = expectEvent(parsed, 'subscription.created');
+    expect(event.subscription.metadata).toEqual({ organization_id: 'org_1' });
     expect(event.idempotencyKey).toMatch(DIGEST_KEY);
     expect(event.createdAt).toBeUndefined();
-    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('keys every delivery on a digest of the raw body', async () => {
@@ -89,23 +89,23 @@ describe('lemon-squeezy parseWebhookEvent', () => {
     ['subscription_resumed', 'uncanceled'],
     ['subscription_unpaused', 'resumed'],
   ])('reports the transition named by %s', async (providerType, subscriptionChange) => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({ meta: { event_name: providerType }, data: subscriptionResource }),
     });
-    expect(event.type).toBe('subscription.updated');
+    const event = expectEvent(parsed, 'subscription.updated');
     expect(event.subscriptionChange).toBe(subscriptionChange);
   });
 
   it('names no transition on subscription_updated', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         meta: { event_name: 'subscription_updated' },
         data: subscriptionResource,
       }),
     });
-    expect(event.type).toBe('subscription.updated');
+    const event = expectEvent(parsed, 'subscription.updated');
     expect(event.subscriptionChange).toBeUndefined();
   });
 
@@ -115,11 +115,10 @@ describe('lemon-squeezy parseWebhookEvent', () => {
       body: JSON.stringify({ meta: { event_name: 'subscription_payment_failed' }, data: {} }),
     });
     expect(event.type).toBe('unknown');
-    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('maps subscription_cancelled to updated with cancelAtPeriodEnd', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         meta: { event_name: 'subscription_cancelled' },
@@ -134,15 +133,15 @@ describe('lemon-squeezy parseWebhookEvent', () => {
         },
       }),
     });
-    expect(event.type).toBe('subscription.updated');
-    expect(event.subscription?.status).toBe('active');
-    expect(event.subscription?.cancelAtPeriodEnd).toBe(true);
+    const event = expectEvent(parsed, 'subscription.updated');
+    expect(event.subscription.status).toBe('active');
+    expect(event.subscription.cancelAtPeriodEnd).toBe(true);
     expect(event.idempotencyKey).toMatch(DIGEST_KEY);
     expect(event.createdAt).toBeUndefined();
   });
 
   it('maps subscription_expired to the terminal subscription.canceled', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         meta: { event_name: 'subscription_expired' },
@@ -152,15 +151,14 @@ describe('lemon-squeezy parseWebhookEvent', () => {
         },
       }),
     });
-    expect(event.type).toBe('subscription.canceled');
-    expect(event.subscription?.status).toBe('canceled');
+    const event = expectEvent(parsed, 'subscription.canceled');
+    expect(event.subscription.status).toBe('canceled');
     expect(event.idempotencyKey).toMatch(DIGEST_KEY);
     expect(event.createdAt).toBeUndefined();
-    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('maps order_created to order.paid', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         meta: { event_name: 'order_created', custom_data: { organization_id: 'org_1' } },
@@ -180,7 +178,7 @@ describe('lemon-squeezy parseWebhookEvent', () => {
         },
       }),
     });
-    expect(event.type).toBe('order.paid');
+    const event = expectEvent(parsed, 'order.paid');
     expect(event.order).toMatchObject({
       id: '11',
       status: 'paid',
@@ -217,8 +215,8 @@ describe('lemon-squeezy parseWebhookEvent', () => {
   }
 
   it('maps subscription_payment_success (an invoice payload) to order.paid', async () => {
-    const event = await parseWebhookEvent({ headers: {}, body: paymentSuccessBody('renewal') });
-    expect(event.type).toBe('order.paid');
+    const parsed = await parseWebhookEvent({ headers: {}, body: paymentSuccessBody('renewal') });
+    const event = expectEvent(parsed, 'order.paid');
     expect(event.order).toMatchObject({
       id: '77',
       status: 'paid',
@@ -238,7 +236,7 @@ describe('lemon-squeezy parseWebhookEvent', () => {
   });
 
   it('maps license_key_created to license.issued with the plaintext key', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         meta: { event_name: 'license_key_created' },
@@ -256,7 +254,7 @@ describe('lemon-squeezy parseWebhookEvent', () => {
         },
       }),
     });
-    expect(event.type).toBe('license.issued');
+    const event = expectEvent(parsed, 'license.issued');
     expect(event.providerType).toBe('license_key_created');
     expect(event.licenseKeyId).toBe('99');
     expect(event.licenseKey).toMatchObject({

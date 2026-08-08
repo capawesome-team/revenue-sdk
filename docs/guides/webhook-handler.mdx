@@ -98,13 +98,13 @@ async function handle(event: WebhookEvent): Promise<void> {
     case 'subscription.created':
     case 'subscription.updated':
     case 'subscription.canceled':
-      await upsertSubscription(event.subscription!);
+      await upsertSubscription(event.subscription);
       break;
     case 'order.paid':
-      await recordPayment(event.order!);
+      await recordPayment(event.order);
       break;
     case 'checkout.completed':
-      await linkCustomerFromCheckout(event.checkout!);
+      await linkCustomerFromCheckout(event.checkout);
       break;
     default:
       logger.debug('unmapped webhook', { providerType: event.providerType });
@@ -173,10 +173,11 @@ Three things this gets right:
   freely. Upsert everywhere and insertion order stops mattering.
 - **A scheduled cancellation is an *update*.** It arrives as `subscription.updated` with
   `cancelAtPeriodEnd: true`; the terminal `subscription.canceled` comes later. Store both fields.
-- **`order.paid` covers renewals.** It is the uniform "money received" signal — on Lemon Squeezy it maps
-  from both `order_created` and `subscription_payment_success`, because renewals emit no order. The
-  attached `Order` is the same shape `client.orders.list` returns, so a delivery you dropped can be
-  reconciled later by ID — see [Orders](/docs/concepts/orders).
+- **`order.paid` covers renewals, and fires once per payment.** It is the uniform "money received"
+  signal — on Lemon Squeezy it maps from both `order_created` and `subscription_payment_success`,
+  because renewals emit no order, while the `initial` invoice that duplicates the first payment is
+  skipped. The attached `Order` is the same shape `client.orders.list` returns, so a delivery you
+  dropped can be reconciled later by ID — see [Orders](/docs/concepts/orders).
 
 Where a side effect really is about a *transition* rather than a state, prefer
 `event.subscriptionChange` — `'past_due'`, `'paused'`, `'uncanceled'` and friends — over diffing rows
@@ -199,10 +200,10 @@ export default {
     // ... verify, dedupe, parse ...
 
     // Durable, fast: write the state the app reads.
-    await upsertSubscription(event.subscription!);
+    await upsertSubscription(event.subscription);
 
     // Slow and non-critical: after the response.
-    ctx.waitUntil(sendWelcomeEmail(event.subscription!));
+    ctx.waitUntil(sendWelcomeEmail(event.subscription));
 
     return new Response(null, { status: 204 });
   },
@@ -235,9 +236,13 @@ no-op by design.
 logger.info('webhook', {
   type: event.type,
   providerType: event.providerType,
-  subscriptionId: event.subscription?.id,
-  orderId: event.order?.id,
+  idempotencyKey: event.idempotencyKey,
 });
+
+// The payload lives on the narrowed event, so log it inside the branch that has it.
+if (event.type === 'order.paid') {
+  logger.info('payment', { orderId: event.order.id, amount: event.order.amount });
+}
 ```
 
 Log the normalized fields, not the raw envelope. Provider payloads can contain customer addresses and
@@ -247,16 +252,14 @@ partial payment details, and error `cause` values hold the provider's response b
 ## Serving several providers from one endpoint
 
 ```ts
-import { detectWebhookProvider, type ProviderName } from 'revenue-sdk';
+import { detectWebhookProvider, type ProviderName, type ProviderWebhooks } from 'revenue-sdk';
 import * as dodoPayments from 'revenue-sdk/dodo-payments';
 import * as lemonSqueezy from 'revenue-sdk/lemon-squeezy';
 import * as paddle from 'revenue-sdk/paddle';
 import * as polar from 'revenue-sdk/polar';
 import * as stripe from 'revenue-sdk/stripe';
 
-type WebhookHelpers = Pick<typeof polar, 'verifyWebhook' | 'parseWebhookEvent'>;
-
-const HANDLERS: Record<string, WebhookHelpers> = {
+const HANDLERS: Record<string, ProviderWebhooks> = {
   'dodo-payments': dodoPayments,
   'lemon-squeezy': lemonSqueezy,
   paddle,

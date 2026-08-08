@@ -112,21 +112,41 @@ type WebhookEventType =
   | 'unknown';
 ```
 
+`WebhookEvent` is a **discriminated union on `type`**. Narrowing it — a `switch`, an `if` — hands you
+exactly the payload that event carries, as a required field:
+
+```ts
+if (event.type === 'order.paid') {
+  await recordPayment(event.order); // `order` is required here, no `!` needed
+}
+```
+
+Every member carries the same base fields:
+
 <TypeTable
   type={{
-    type: { type: 'WebhookEventType', description: 'The normalized event type.' },
+    type: { type: 'WebhookEventType', description: 'The normalized event type — the discriminant.' },
     providerType: { type: 'string', description: "The provider's original event type string, always preserved." },
     idempotencyKey: { type: 'string', description: 'Provider-namespaced dedupe key (<provider>:<id>). Always set, stable across retries and dashboard replays.' },
-    subscriptionChange: { type: 'SubscriptionChange', required: false, description: 'Which lifecycle transition the provider named, when it named one. Only ever set on subscription.updated.' },
     createdAt: { type: 'Date', required: false, description: "When the event occurred, from the provider's envelope. Absent on Lemon Squeezy, which sends none." },
-    subscription: { type: 'Subscription', required: false, description: 'Set on subscription.* events.' },
-    order: { type: 'Order', required: false, description: 'Set on order.paid. Fully mapped — including status, createdAt, and refundStatus.' },
-    checkout: { type: 'Checkout', required: false, description: 'Set on checkout.completed (and on not-yet-complete checkout events, which report unknown).' },
-    licenseKeyId: { type: 'string', required: false, description: 'Which key a license.issued event refers to. Always set on that event, even when licenseKey is not.' },
-    licenseKey: { type: 'LicenseKey', required: false, description: 'The issued key. Absent on Polar, which sends only a masked form — fetch it with licenseKeys.get.' },
     raw: { type: 'unknown', description: 'The untouched provider envelope.' },
   }}
 />
+
+and adds the payload its own type is defined by:
+
+| Event type                                      | Payload fields                                                                                                                               |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `subscription.created`, `subscription.canceled` | `subscription: Subscription`                                                                                                                 |
+| `subscription.updated`                          | `subscription: Subscription`, plus `subscriptionChange?: SubscriptionChange` where the provider named a transition                           |
+| `order.paid`                                    | `order: Order` — fully mapped, including `status`, `createdAt` and `refundStatus`                                                            |
+| `checkout.completed`                            | `checkout: Checkout`                                                                                                                         |
+| `license.issued`                                | `licenseKeyId: string`, plus `licenseKey?: LicenseKey` — absent on Polar, which sends only a masked form, so fetch it with `licenseKeys.get` |
+| `unknown`                                       | nothing but the base fields, except `checkout?: Checkout` on a checkout event that has not reached a paid state                              |
+
+Each member is exported under its own name — `SubscriptionUpdatedEvent`, `OrderPaidEvent`,
+`LicenseIssuedEvent`, … — for typing a handler that takes one kind of event, and `WebhookEventBase` for
+the shared fields.
 
 `createdAt` comes from the envelope's own field — Polar and Dodo Payments `timestamp`, Stripe `created`,
 Paddle `occurred_at` — and never from the `webhook-timestamp` header, which is the delivery *attempt*
@@ -192,23 +212,23 @@ case that *does* throw is an unparseable body — a `RevenueError` with code `va
 switch (event.type) {
   case 'subscription.created':
   case 'subscription.canceled':
-    await upsertSubscription(event.subscription!);
+    await upsertSubscription(event.subscription);
     break;
   case 'subscription.updated':
-    await upsertSubscription(event.subscription!);
+    await upsertSubscription(event.subscription);
     // Opt-in: react to the transition, where the provider named one.
     if (event.subscriptionChange === 'past_due') {
-      await warnAboutFailedPayment(event.subscription!);
+      await warnAboutFailedPayment(event.subscription);
     }
     break;
   case 'order.paid':
-    await recordPayment(event.order!);
+    await recordPayment(event.order);
     break;
   case 'checkout.completed':
-    await fulfill(event.checkout!);
+    await fulfill(event.checkout);
     break;
   case 'license.issued':
-    await recordLicenseKey(event.licenseKeyId!, event.licenseKey);
+    await recordLicenseKey(event.licenseKeyId, event.licenseKey);
     break;
   default:
     // 'unknown' — log providerType and move on.
@@ -225,12 +245,11 @@ The full per-provider event matrix lives in
 endpoint can serve several providers:
 
 ```ts
-import { detectWebhookProvider, type ProviderName } from 'revenue-sdk';
+import { detectWebhookProvider, type ProviderName, type ProviderWebhooks } from 'revenue-sdk';
 import * as polar from 'revenue-sdk/polar';
 import * as stripe from 'revenue-sdk/stripe';
 
-type WebhookHelpers = Pick<typeof polar, 'verifyWebhook' | 'parseWebhookEvent'>;
-const handlers: Partial<Record<ProviderName, WebhookHelpers>> = { polar, stripe };
+const handlers: Partial<Record<ProviderName, ProviderWebhooks>> = { polar, stripe };
 
 export async function POST(request: Request): Promise<Response> {
   const headers = request.headers;
@@ -294,10 +313,10 @@ export default {
       case 'subscription.created':
       case 'subscription.updated':
       case 'subscription.canceled':
-        await upsertSubscription(event.subscription!);
+        await upsertSubscription(event.subscription);
         break;
       case 'order.paid':
-        await recordPayment(event.order!);
+        await recordPayment(event.order);
         break;
     }
 

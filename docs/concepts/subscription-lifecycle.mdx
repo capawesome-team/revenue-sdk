@@ -121,9 +121,9 @@ derived from the event string alone and never from payload state, so it appears 
 ```ts
 switch (event.type) {
   case 'subscription.updated':
-    await upsert(event.subscription!); // the level — always
+    await upsert(event.subscription); // the level — always
     if (event.subscriptionChange === 'cancel_scheduled') {
-      await sendWinBackEmail(event.subscription!); // the edge — once
+      await sendWinBackEmail(event.subscription); // the edge — once
     }
     break;
 }

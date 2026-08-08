@@ -209,9 +209,8 @@ export type WebhookEventType =
 export type SubscriptionChange =
   'cancel_scheduled' | 'past_due' | 'paused' | 'resumed' | 'uncanceled';
 
-export interface WebhookEvent {
-  /** Normalized event type; `unknown` for provider events outside the normalized set. */
-  type: WebhookEventType;
+/** The fields every normalized webhook event carries, whatever its type. */
+export interface WebhookEventBase {
   /** The provider's original event type string. */
   providerType: string;
   /**
@@ -222,22 +221,67 @@ export interface WebhookEvent {
    * Deduplicates redeliveries of one event, not a provider's several events for one state change.
    */
   idempotencyKey: string;
+  /** When the event occurred, per the provider's envelope. Absent on Lemon Squeezy, which sends none. */
+  createdAt?: Date;
+  raw: unknown;
+}
+
+export interface CheckoutCompletedEvent extends WebhookEventBase {
+  type: 'checkout.completed';
+  checkout: Checkout;
+}
+
+export interface LicenseIssuedEvent extends WebhookEventBase {
+  type: 'license.issued';
+  /** Which key the event refers to. Always set, even when `licenseKey` is not. */
+  licenseKeyId: string;
+  /** The issued key. Absent on Polar, which sends only a masked form — fetch it with `licenseKeys.get`. */
+  licenseKey?: LicenseKey;
+}
+
+export interface OrderPaidEvent extends WebhookEventBase {
+  type: 'order.paid';
+  order: Order;
+}
+
+export interface SubscriptionCanceledEvent extends WebhookEventBase {
+  type: 'subscription.canceled';
+  subscription: Subscription;
+}
+
+export interface SubscriptionCreatedEvent extends WebhookEventBase {
+  type: 'subscription.created';
+  subscription: Subscription;
+}
+
+export interface SubscriptionUpdatedEvent extends WebhookEventBase {
+  type: 'subscription.updated';
+  subscription: Subscription;
   /**
    * Which lifecycle transition the provider named, when it named one. Absent where the provider has no
    * dedicated event — see the webhook events reference for per-provider coverage.
    */
   subscriptionChange?: SubscriptionChange;
-  /** When the event occurred, per the provider's envelope. Absent on Lemon Squeezy, which sends none. */
-  createdAt?: Date;
-  subscription?: Subscription;
-  order?: Order;
-  checkout?: Checkout;
-  /** Which key a `license.issued` event refers to. Always set on that event, even when `licenseKey` is not. */
-  licenseKeyId?: string;
-  /** The issued key. Absent on Polar, which sends only a masked form — fetch it with `licenseKeys.get`. */
-  licenseKey?: LicenseKey;
-  raw: unknown;
 }
+
+/** A provider event outside the normalized set. Never an error — provider catalogs keep growing. */
+export interface UnknownEvent extends WebhookEventBase {
+  type: 'unknown';
+  /**
+   * The checkout behind a Polar `checkout.updated` or Stripe `checkout.session.*` that has not reached
+   * a paid state — the event only becomes `checkout.completed` once it has.
+   */
+  checkout?: Checkout;
+}
+
+export type WebhookEvent =
+  | CheckoutCompletedEvent
+  | LicenseIssuedEvent
+  | OrderPaidEvent
+  | SubscriptionCanceledEvent
+  | SubscriptionCreatedEvent
+  | SubscriptionUpdatedEvent
+  | UnknownEvent;
 
 export interface RevenueCapabilities {
   /** Whether `subscriptions.cancel` forwards `reason`/`comment` to the provider. */

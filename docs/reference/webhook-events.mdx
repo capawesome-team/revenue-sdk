@@ -237,6 +237,9 @@ The grant also carries only `display_key`, a **masked** form of the key, so `eve
 
 ## Which model each event carries
 
+`WebhookEvent` is a discriminated union on `type`, so this table is **enforced by the type system**:
+narrow on `event.type` and the payload below is a required field — no optional-field guessing, no `!`.
+
 | Normalized event         | Populated field  |
 | ------------------------ | ---------------- |
 | `subscription.created`   | `subscription`   |

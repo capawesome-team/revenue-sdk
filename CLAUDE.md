@@ -167,6 +167,8 @@ Polar vs Dodo key handling differs even though both are "Standard Webhooks" — 
 
 Exactly four mappings read the PAYLOAD rather than the event string, and that is the complete list — do not add a fifth: the Polar license grant above, plus Polar `checkout.updated` and Stripe `checkout.session.completed`/`.async_payment_succeeded` (→ `checkout.completed` only when the mapped `Checkout.status` is `complete`), plus LS `subscription_payment_success` (→ `unknown` when `billing_reason === 'initial'`, see below). Payload-reading answers "did this reach a terminal state" or "is this the duplicate half of a payment the other event already reported" — nothing else, and never a `subscriptionChange`.
 
+`WebhookEvent` is a DISCRIMINATED UNION on `type`: `WebhookEventBase` (`type`, `providerType`, `idempotencyKey`, `createdAt?`, `raw`) plus one exported interface per member (`SubscriptionUpdatedEvent`, `OrderPaidEvent`, ...), each carrying its payload as a REQUIRED field. `subscriptionChange` lives on `subscription.updated` alone, `licenseKeyId` is always set on `license.issued`, and `UnknownEvent` adds nothing but the optional `checkout` of a not-yet-paid Polar/Stripe checkout event. `ProviderWebhooks` (root export, next to `detectWebhookProvider`) types a routing table of per-subpath `verifyWebhook`/`parseWebhookEvent`.
+
 `WebhookEvent.idempotencyKey` is `<provider>:<id>` — the provider's event id, else a SHA-256 of the raw body. `createdAt` comes from BODY fields only: the `webhook-timestamp` header is the delivery ATTEMPT time and changes on every retry.
 
 ## Provider quirks cheat sheet

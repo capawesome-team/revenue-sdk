@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { bytesToBase64 } from '../../src/base64.ts';
 import { parseWebhookEvent, verifyWebhook } from '../../src/providers/dodo-payments/webhooks.ts';
 import { hmacSha256, sha256Hex } from '../../src/webhooks/verify.ts';
+import { expectEvent } from '../helpers/webhook-events.ts';
 
 // Standard Webhooks secret: whsec_ + base64-encoded key bytes.
 const KEY_BYTES = new TextEncoder().encode('dodo-secret-key-bytes');
@@ -71,7 +72,7 @@ describe('dodo-payments parseWebhookEvent', () => {
   const OCCURRED_AT = '2026-08-06T12:00:00Z';
 
   it('maps lifecycle events to subscription.updated (no created event exists)', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({
         business_id: 'bus_1',
@@ -80,15 +81,15 @@ describe('dodo-payments parseWebhookEvent', () => {
         data: { ...subscriptionData, payload_type: 'Subscription' },
       }),
     });
-    expect(event.type).toBe('subscription.updated');
-    expect(event.subscription?.id).toBe('sub_abc');
+    const event = expectEvent(parsed, 'subscription.updated');
+    expect(event.subscription.id).toBe('sub_abc');
     expect(event.idempotencyKey).toBe('dodo-payments:msg_1');
     expect(event.createdAt).toEqual(new Date(OCCURRED_AT));
     expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('reports past_due for subscription.on_hold', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({
         business_id: 'bus_1',
@@ -96,8 +97,8 @@ describe('dodo-payments parseWebhookEvent', () => {
         data: { ...subscriptionData, status: 'on_hold' },
       }),
     });
-    expect(event.type).toBe('subscription.updated');
-    expect(event.subscription?.status).toBe('past_due');
+    const event = expectEvent(parsed, 'subscription.updated');
+    expect(event.subscription.status).toBe('past_due');
     expect(event.subscriptionChange).toBe('past_due');
   });
 
@@ -107,13 +108,13 @@ describe('dodo-payments parseWebhookEvent', () => {
     'subscription.update_payment_method',
     'subscription.updated',
   ])('maps %s to subscription.updated without naming a transition', async (providerType) => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({ business_id: 'bus_1', type: providerType, data: subscriptionData }),
     });
-    expect(event.type).toBe('subscription.updated');
+    const event = expectEvent(parsed, 'subscription.updated');
     expect(event.providerType).toBe(providerType);
-    expect(event.subscription?.id).toBe('sub_abc');
+    expect(event.subscription.id).toBe('sub_abc');
     expect(event.subscriptionChange).toBeUndefined();
   });
 
@@ -129,8 +130,6 @@ describe('dodo-payments parseWebhookEvent', () => {
     });
     expect(event.type).toBe('unknown');
     expect(event.providerType).toBe('subscription.paused');
-    expect(event.subscription).toBeUndefined();
-    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('reads the idempotency key from webhook-id case-insensitively', async () => {
@@ -193,7 +192,7 @@ describe('dodo-payments parseWebhookEvent', () => {
       'subscription.expired',
       'subscription.failed',
     ]) {
-      const event = await parseWebhookEvent({
+      const parsed = await parseWebhookEvent({
         headers: EVENT_HEADERS,
         body: JSON.stringify({
           business_id: 'bus_1',
@@ -202,16 +201,15 @@ describe('dodo-payments parseWebhookEvent', () => {
           data: { ...subscriptionData, status: 'cancelled' },
         }),
       });
-      expect(event.type).toBe('subscription.canceled');
-      expect(event.subscription?.status).toBe('canceled');
+      const event = expectEvent(parsed, 'subscription.canceled');
+      expect(event.subscription.status).toBe('canceled');
       expect(event.idempotencyKey).toBe('dodo-payments:msg_1');
       expect(event.createdAt).toEqual(new Date(OCCURRED_AT));
-      expect(event.subscriptionChange).toBeUndefined();
     }
   });
 
   it('maps payment.succeeded to order.paid', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({
         business_id: 'bus_1',
@@ -230,7 +228,7 @@ describe('dodo-payments parseWebhookEvent', () => {
         },
       }),
     });
-    expect(event.type).toBe('order.paid');
+    const event = expectEvent(parsed, 'order.paid');
     expect(event.order).toMatchObject({
       id: 'pay_1',
       status: 'paid',
@@ -247,7 +245,7 @@ describe('dodo-payments parseWebhookEvent', () => {
   });
 
   it('maps license_key.created to license.issued with the plaintext key', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({
         business_id: 'bus_1',
@@ -265,7 +263,7 @@ describe('dodo-payments parseWebhookEvent', () => {
         },
       }),
     });
-    expect(event.type).toBe('license.issued');
+    const event = expectEvent(parsed, 'license.issued');
     expect(event.providerType).toBe('license_key.created');
     expect(event.licenseKeyId).toBe('lic_1');
     expect(event.licenseKey).toMatchObject({

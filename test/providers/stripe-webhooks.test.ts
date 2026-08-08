@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseWebhookEvent, verifyWebhook } from '../../src/providers/stripe/webhooks.ts';
 import { hmacSha256, sha256Hex, toHex } from '../../src/webhooks/verify.ts';
+import { expectEvent } from '../helpers/webhook-events.ts';
 
 const SECRET = 'whsec_wRNftLajMZNeslQOP6vEPm4iVx5NlZ6z';
 
@@ -75,7 +76,7 @@ describe('stripe parseWebhookEvent', () => {
   const CREATED = 1754481600;
 
   it('maps customer.subscription.created', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         id: 'evt_1',
@@ -84,11 +85,10 @@ describe('stripe parseWebhookEvent', () => {
         data: { object: subscriptionObject },
       }),
     });
-    expect(event.type).toBe('subscription.created');
-    expect(event.subscription?.id).toBe('sub_1');
+    const event = expectEvent(parsed, 'subscription.created');
+    expect(event.subscription.id).toBe('sub_1');
     expect(event.idempotencyKey).toBe('stripe:evt_1');
     expect(event.createdAt).toEqual(new Date(CREATED * 1000));
-    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('falls back to a body digest when the envelope carries no id', async () => {
@@ -105,7 +105,7 @@ describe('stripe parseWebhookEvent', () => {
     ['customer.subscription.paused', 'paused'],
     ['customer.subscription.resumed', 'resumed'],
   ])('reports the transition named by %s', async (providerType, subscriptionChange) => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         id: 'evt_1',
@@ -114,7 +114,7 @@ describe('stripe parseWebhookEvent', () => {
         data: { object: subscriptionObject },
       }),
     });
-    expect(event.type).toBe('subscription.updated');
+    const event = expectEvent(parsed, 'subscription.updated');
     expect(event.subscriptionChange).toBe(subscriptionChange);
   });
 
@@ -123,7 +123,7 @@ describe('stripe parseWebhookEvent', () => {
     'customer.subscription.pending_update_expired',
     'customer.subscription.updated',
   ])('maps %s to subscription.updated without naming a transition', async (providerType) => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         id: 'evt_1',
@@ -132,14 +132,14 @@ describe('stripe parseWebhookEvent', () => {
         data: { object: subscriptionObject },
       }),
     });
-    expect(event.type).toBe('subscription.updated');
+    const event = expectEvent(parsed, 'subscription.updated');
     expect(event.providerType).toBe(providerType);
-    expect(event.subscription?.id).toBe('sub_1');
+    expect(event.subscription.id).toBe('sub_1');
     expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('maps customer.subscription.deleted to the terminal subscription.canceled', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         id: 'evt_1',
@@ -148,11 +148,10 @@ describe('stripe parseWebhookEvent', () => {
         data: { object: { ...subscriptionObject, status: 'canceled', ended_at: 1754438400 } },
       }),
     });
-    expect(event.type).toBe('subscription.canceled');
-    expect(event.subscription?.status).toBe('canceled');
+    const event = expectEvent(parsed, 'subscription.canceled');
+    expect(event.subscription.status).toBe('canceled');
     expect(event.idempotencyKey).toBe('stripe:evt_1');
     expect(event.createdAt).toEqual(new Date(CREATED * 1000));
-    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('maps checkout.session.completed to checkout.completed only when paid', async () => {
@@ -195,7 +194,7 @@ describe('stripe parseWebhookEvent', () => {
   });
 
   it('maps invoice.paid to order.paid with the parent subscription', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         id: 'evt_1',
@@ -218,7 +217,7 @@ describe('stripe parseWebhookEvent', () => {
         },
       }),
     });
-    expect(event.type).toBe('order.paid');
+    const event = expectEvent(parsed, 'order.paid');
     expect(event.order).toMatchObject({
       id: 'in_1',
       status: 'paid',

@@ -150,10 +150,10 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext):
     case 'subscription.created':
     case 'subscription.updated':
     case 'subscription.canceled':
-      await upsertSubscription(env, event.subscription!);
+      await upsertSubscription(env, event.subscription);
       break;
     case 'order.paid':
-      await recordPayment(env, event.order!);
+      await recordPayment(env, event.order);
       break;
   }
 
@@ -184,11 +184,11 @@ best-effort work goes in `waitUntil`.
 
 ```ts
 // Correct.
-await upsertSubscription(env, event.subscription!); // critical — awaited
-ctx.waitUntil(sendWelcomeEmail(event.subscription!)); // best effort
+await upsertSubscription(env, event.subscription); // critical — awaited
+ctx.waitUntil(sendWelcomeEmail(event.subscription)); // best effort
 
 // Wrong — a dropped promise silently un-subscribes a paying customer.
-ctx.waitUntil(upsertSubscription(env, event.subscription!));
+ctx.waitUntil(upsertSubscription(env, event.subscription));
 ```
 
 For work that must not be lost, push onto a Cloudflare Queue inside the request and process it in a

@@ -408,7 +408,7 @@ const event = await parseWebhookEvent({ headers, body });
 
 if (event.type === 'license.issued') {
   // Set everywhere except Polar, whose grant carries only a masked display_key.
-  const licenseKey = event.licenseKey ?? (await client.licenseKeys.get({ id: event.licenseKeyId! }));
+  const licenseKey = event.licenseKey ?? (await client.licenseKeys.get({ id: event.licenseKeyId }));
   await emailTheKey(licenseKey.key);
 }
 ```
@@ -483,14 +483,14 @@ including Dodo Payments, where no license webhook exists at all:
 switch (event.type) {
   case 'subscription.canceled':
     // Terminal: the subscription is over, so the keys it issued are done too.
-    await markLicensesRevoked(event.subscription!.customerId);
+    await markLicensesRevoked(event.subscription.customerId);
     break;
   case 'subscription.updated':
     // subscriptionChange is the transition the provider named, so this fires once.
     // cancelAtPeriodEnd stays true for the rest of the period and would fire on
     // every later update event.
     if (event.subscriptionChange === 'cancel_scheduled') {
-      await scheduleRevocationNotice(event.subscription!);
+      await scheduleRevocationNotice(event.subscription);
     }
     break;
 }
@@ -498,7 +498,7 @@ switch (event.type) {
 
 `cancel_scheduled` is named by **Polar and Lemon Squeezy only** — Stripe, Paddle, and Dodo Payments
 report a scheduled cancellation as a bare `subscription.updated`. Fall back to
-`event.subscription!.cancelAtPeriodEnd` there, guarded by your own stored state. See
+`event.subscription.cancelAtPeriodEnd` there, guarded by your own stored state. See
 [Subscription lifecycle](/docs/concepts/subscription-lifecycle).
 
 Your database learns why access ended; the app learns *that* it ended from its next validate call.

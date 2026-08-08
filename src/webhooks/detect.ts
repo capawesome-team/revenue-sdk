@@ -1,5 +1,14 @@
-import type { ProviderName } from '../types.ts';
-import { toIncomingWebhook, type WebhookInput } from './verify.ts';
+import type { ProviderName, WebhookEvent } from '../types.ts';
+import { toIncomingWebhook, type VerifyWebhookParams, type WebhookInput } from './verify.ts';
+
+/**
+ * The webhook helpers every provider subpath exports. Type a routing table with it to dispatch a
+ * shared endpoint on `detectWebhookProvider`'s result.
+ */
+export interface ProviderWebhooks {
+  verifyWebhook(params: VerifyWebhookParams): Promise<boolean>;
+  parseWebhookEvent(input: WebhookInput): Promise<WebhookEvent>;
+}
 
 /**
  * Routes a shared webhook endpoint to a provider based on request headers. Routing only —

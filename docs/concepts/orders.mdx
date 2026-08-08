@@ -305,7 +305,7 @@ handler can record the payment without a follow-up read:
 
 ```ts
 if (event.type === 'order.paid') {
-  const order = event.order!;
+  const order = event.order;
   await recordPayment({
     id: order.id,
     subscriptionId: order.subscriptionId,

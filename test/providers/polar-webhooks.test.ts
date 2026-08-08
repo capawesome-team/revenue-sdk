@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { bytesToBase64 } from '../../src/base64.ts';
 import { parseWebhookEvent, verifyWebhook } from '../../src/providers/polar/webhooks.ts';
 import { hmacSha256, sha256Hex } from '../../src/webhooks/verify.ts';
+import { expectEvent } from '../helpers/webhook-events.ts';
 
 const SECRET = 'whsec_ovyN6cPrTv56AApvzCaJno08SSmGJmgb';
 
@@ -87,7 +88,7 @@ describe('polar parseWebhookEvent', () => {
   const OCCURRED_AT = '2026-08-06T12:00:00Z';
 
   it('maps subscription.created', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({
         type: 'subscription.created',
@@ -95,16 +96,15 @@ describe('polar parseWebhookEvent', () => {
         data: subscription,
       }),
     });
-    expect(event.type).toBe('subscription.created');
+    const event = expectEvent(parsed, 'subscription.created');
     expect(event.providerType).toBe('subscription.created');
-    expect(event.subscription?.id).toBe('sub-uuid-1');
+    expect(event.subscription.id).toBe('sub-uuid-1');
     expect(event.idempotencyKey).toBe('polar:msg_1');
     expect(event.createdAt).toEqual(new Date(OCCURRED_AT));
-    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('maps a scheduled cancellation to subscription.updated', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({
         type: 'subscription.canceled',
@@ -112,9 +112,9 @@ describe('polar parseWebhookEvent', () => {
         data: { ...subscription, cancel_at_period_end: true },
       }),
     });
-    expect(event.type).toBe('subscription.updated');
-    expect(event.subscription?.cancelAtPeriodEnd).toBe(true);
-    expect(event.subscription?.status).toBe('active');
+    const event = expectEvent(parsed, 'subscription.updated');
+    expect(event.subscription.cancelAtPeriodEnd).toBe(true);
+    expect(event.subscription.status).toBe('active');
     expect(event.idempotencyKey).toBe('polar:msg_1');
     expect(event.createdAt).toEqual(new Date(OCCURRED_AT));
   });
@@ -126,22 +126,22 @@ describe('polar parseWebhookEvent', () => {
     ['subscription.resumed', 'resumed'],
     ['subscription.uncanceled', 'uncanceled'],
   ])('reports the transition named by %s', async (providerType, subscriptionChange) => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({ type: providerType, timestamp: OCCURRED_AT, data: subscription }),
     });
-    expect(event.type).toBe('subscription.updated');
+    const event = expectEvent(parsed, 'subscription.updated');
     expect(event.subscriptionChange).toBe(subscriptionChange);
   });
 
   it.each(['subscription.active', 'subscription.cycled', 'subscription.updated'])(
     'names no transition on %s',
     async (providerType) => {
-      const event = await parseWebhookEvent({
+      const parsed = await parseWebhookEvent({
         headers: EVENT_HEADERS,
         body: JSON.stringify({ type: providerType, timestamp: OCCURRED_AT, data: subscription }),
       });
-      expect(event.type).toBe('subscription.updated');
+      const event = expectEvent(parsed, 'subscription.updated');
       expect(event.subscriptionChange).toBeUndefined();
     },
   );
@@ -191,7 +191,7 @@ describe('polar parseWebhookEvent', () => {
   });
 
   it('maps subscription.revoked to the terminal subscription.canceled', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({
         type: 'subscription.revoked',
@@ -199,15 +199,14 @@ describe('polar parseWebhookEvent', () => {
         data: { ...subscription, status: 'canceled', ended_at: '2026-08-06T00:00:00Z' },
       }),
     });
-    expect(event.type).toBe('subscription.canceled');
-    expect(event.subscription?.status).toBe('canceled');
+    const event = expectEvent(parsed, 'subscription.canceled');
+    expect(event.subscription.status).toBe('canceled');
     expect(event.idempotencyKey).toBe('polar:msg_1');
     expect(event.createdAt).toEqual(new Date(OCCURRED_AT));
-    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('maps order.paid', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({
         type: 'order.paid',
@@ -224,7 +223,7 @@ describe('polar parseWebhookEvent', () => {
         },
       }),
     });
-    expect(event.type).toBe('order.paid');
+    const event = expectEvent(parsed, 'order.paid');
     expect(event.order).toMatchObject({
       id: 'order-1',
       status: 'paid',
@@ -240,7 +239,7 @@ describe('polar parseWebhookEvent', () => {
   });
 
   it('maps a succeeded checkout.updated to checkout.completed', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({
         type: 'checkout.updated',
@@ -248,14 +247,14 @@ describe('polar parseWebhookEvent', () => {
         data: { id: 'checkout-1', status: 'succeeded', url: null },
       }),
     });
-    expect(event.type).toBe('checkout.completed');
-    expect(event.checkout?.status).toBe('complete');
+    const event = expectEvent(parsed, 'checkout.completed');
+    expect(event.checkout.status).toBe('complete');
     expect(event.idempotencyKey).toBe('polar:msg_1');
     expect(event.createdAt).toEqual(new Date(OCCURRED_AT));
   });
 
   it('maps a license-keys benefit_grant.created to license.issued without the key', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: EVENT_HEADERS,
       body: JSON.stringify({
         type: 'benefit_grant.created',
@@ -271,7 +270,7 @@ describe('polar parseWebhookEvent', () => {
         },
       }),
     });
-    expect(event.type).toBe('license.issued');
+    const event = expectEvent(parsed, 'license.issued');
     expect(event.providerType).toBe('benefit_grant.created');
     expect(event.licenseKeyId).toBe('lk-uuid-1');
     // Polar sends only a masked `display_key`, so the full record is never available here.
@@ -291,7 +290,6 @@ describe('polar parseWebhookEvent', () => {
     });
     expect(event.type).toBe('unknown');
     expect(event.providerType).toBe('benefit_grant.created');
-    expect(event.licenseKeyId).toBeUndefined();
     expect(event.idempotencyKey).toBe('polar:msg_1');
     expect(event.createdAt).toEqual(new Date(OCCURRED_AT));
   });

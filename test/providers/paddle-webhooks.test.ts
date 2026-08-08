@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseWebhookEvent, verifyWebhook } from '../../src/providers/paddle/webhooks.ts';
 import { hmacSha256, sha256Hex, toHex } from '../../src/webhooks/verify.ts';
+import { expectEvent } from '../helpers/webhook-events.ts';
 
 const SECRET = 'pdl_ntfset_01gkpjp8bkm3tm53kdgkx6sms7_secret';
 
@@ -69,7 +70,7 @@ describe('paddle parseWebhookEvent', () => {
   const OCCURRED_AT = '2026-08-06T12:00:00Z';
 
   it('maps subscription.created', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         event_id: 'evt_1',
@@ -78,11 +79,10 @@ describe('paddle parseWebhookEvent', () => {
         data: subscriptionData,
       }),
     });
-    expect(event.type).toBe('subscription.created');
-    expect(event.subscription?.id).toBe('sub_1');
+    const event = expectEvent(parsed, 'subscription.created');
+    expect(event.subscription.id).toBe('sub_1');
     expect(event.idempotencyKey).toBe('paddle:evt_1');
     expect(event.createdAt).toEqual(new Date(OCCURRED_AT));
-    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('keys on event_id and ignores the per-delivery notification_id', async () => {
@@ -115,11 +115,11 @@ describe('paddle parseWebhookEvent', () => {
     ['subscription.paused', 'paused'],
     ['subscription.resumed', 'resumed'],
   ])('reports the transition named by %s', async (eventType, subscriptionChange) => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({ event_id: 'evt_1', event_type: eventType, data: subscriptionData }),
     });
-    expect(event.type).toBe('subscription.updated');
+    const event = expectEvent(parsed, 'subscription.updated');
     expect(event.subscriptionChange).toBe(subscriptionChange);
   });
 
@@ -129,18 +129,18 @@ describe('paddle parseWebhookEvent', () => {
     'subscription.trialing',
     'subscription.updated',
   ])('maps %s to subscription.updated without naming a transition', async (eventType) => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({ event_id: 'evt_1', event_type: eventType, data: subscriptionData }),
     });
-    expect(event.type).toBe('subscription.updated');
+    const event = expectEvent(parsed, 'subscription.updated');
     expect(event.providerType).toBe(eventType);
-    expect(event.subscription?.id).toBe('sub_1');
+    expect(event.subscription.id).toBe('sub_1');
     expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('maps a scheduled cancellation (subscription.updated + scheduled_change)', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         event_id: 'evt_1',
@@ -152,9 +152,9 @@ describe('paddle parseWebhookEvent', () => {
         },
       }),
     });
-    expect(event.type).toBe('subscription.updated');
-    expect(event.subscription?.cancelAtPeriodEnd).toBe(true);
-    expect(event.subscription?.status).toBe('active');
+    const event = expectEvent(parsed, 'subscription.updated');
+    expect(event.subscription.cancelAtPeriodEnd).toBe(true);
+    expect(event.subscription.status).toBe('active');
     expect(event.idempotencyKey).toBe('paddle:evt_1');
     expect(event.createdAt).toEqual(new Date(OCCURRED_AT));
     // Paddle names no transition here: the cancellation is only visible in the payload.
@@ -162,7 +162,7 @@ describe('paddle parseWebhookEvent', () => {
   });
 
   it('maps subscription.canceled as terminal', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         event_id: 'evt_1',
@@ -171,16 +171,15 @@ describe('paddle parseWebhookEvent', () => {
         data: { ...subscriptionData, status: 'canceled', canceled_at: '2026-09-01T00:00:00Z' },
       }),
     });
-    expect(event.type).toBe('subscription.canceled');
-    expect(event.subscription?.status).toBe('canceled');
-    expect(event.subscription?.endedAt).toEqual(new Date('2026-09-01T00:00:00Z'));
+    const event = expectEvent(parsed, 'subscription.canceled');
+    expect(event.subscription.status).toBe('canceled');
+    expect(event.subscription.endedAt).toEqual(new Date('2026-09-01T00:00:00Z'));
     expect(event.idempotencyKey).toBe('paddle:evt_1');
     expect(event.createdAt).toEqual(new Date(OCCURRED_AT));
-    expect(event.subscriptionChange).toBeUndefined();
   });
 
   it('maps transaction.completed to order.paid with parsed string totals', async () => {
-    const event = await parseWebhookEvent({
+    const parsed = await parseWebhookEvent({
       headers: {},
       body: JSON.stringify({
         event_id: 'evt_1',
@@ -198,7 +197,7 @@ describe('paddle parseWebhookEvent', () => {
         },
       }),
     });
-    expect(event.type).toBe('order.paid');
+    const event = expectEvent(parsed, 'order.paid');
     expect(event.order).toMatchObject({
       id: 'txn_1',
       status: 'paid',

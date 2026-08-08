@@ -153,7 +153,7 @@ export default {
 
     if (event.type === 'subscription.updated') {
       // A scheduled cancellation arrives here, not as subscription.canceled.
-      console.log(event.subscription!.status, event.subscription!.cancelAtPeriodEnd);
+      console.log(event.subscription.status, event.subscription.cancelAtPeriodEnd);
     }
     return new Response(null, { status: 204 });
   },
