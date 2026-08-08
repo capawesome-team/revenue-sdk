@@ -1,4 +1,5 @@
 export { createInMemoryProvider } from './providers/testing/index.ts';
+export { signWebhook } from './providers/testing/sign-webhook.ts';
 
 export type {
   InMemoryCustomerSeed,
@@ -13,3 +14,4 @@ export type {
   InMemorySubscriptionSeed,
   InMemoryUsageEvent,
 } from './providers/testing/index.ts';
+export type { SignWebhookParams } from './providers/testing/sign-webhook.ts';

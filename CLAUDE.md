@@ -194,7 +194,7 @@ Exactly four mappings read the PAYLOAD rather than the event string, and that is
 - `test/unit/` — client (fake provider), errors, pagination, Stripe form encoder, webhook verify with precomputed HMAC vectors.
 - `test/providers/<name>.test.ts` — contract tests over `test/helpers/fetch-stub.ts` (hand-rolled, no msw): assert outgoing request (method/path/headers/body) AND normalized result.
 - `test/live/` — read-only, `describe.skipIf(!env)`, prefix `REVENUE_SDK_LIVE_<PROVIDER>_*`. Only providers with accounts.
-- `revenue-sdk/testing` — in-memory provider, `PAGE_SIZE = 2` on purpose.
+- `revenue-sdk/testing` — in-memory provider, `PAGE_SIZE = 2` on purpose, plus `signWebhook({ provider, secret, body, timestamp?, id? })` → the header record that provider's `verifyWebhook` accepts (reuses `webhooks/verify.ts`; Polar keys verbatim, Dodo strips `whsec_` + base64-decodes, pinned by precomputed vectors in `test/providers/testing-sign-webhook.test.ts`).
 
 ## Docs drift checklist
 

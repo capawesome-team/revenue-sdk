@@ -299,6 +299,74 @@ or `deactivateLicenseKey`. Those are subpath exports rather than `RevenueProvide
 `fetch` into them, or stub the module. See [License keys](/docs/concepts/license-keys).
 :::
 
+## Testing webhook handlers
+
+`signWebhook` signs a raw body the way a real provider does and returns the exact headers that
+provider's `verifyWebhook` accepts, so your handler test runs the real verification path instead of
+skipping it:
+
+```ts
+import { expect, test } from 'vitest';
+import { signWebhook } from 'revenue-sdk/testing';
+import { handleWebhook } from './webhook-handler.ts';
+
+const SECRET = 'whsec_ovyN6cPrTv56AApvzCaJno08SSmGJmgb';
+
+test('a paid order is recorded', async () => {
+  const body = JSON.stringify({
+    type: 'order.paid',
+    data: { id: 'order-1', status: 'paid', total_amount: 2900, currency: 'usd' },
+  });
+  const headers = await signWebhook({ provider: 'polar', secret: SECRET, body });
+
+  const response = await handleWebhook(
+    new Request('https://example.com/webhooks/polar', { method: 'POST', headers, body }),
+  );
+
+  expect(response.status).toBe(200);
+});
+```
+
+Sign the exact string your handler will read — every provider signs the raw bytes, so re-serializing
+the JSON in between invalidates the signature.
+
+<TypeTable
+  type={{
+    provider: {
+      type: "'polar' | 'lemon-squeezy' | 'stripe' | 'paddle' | 'dodo-payments'",
+      description: 'Whose signature scheme to use. The in-memory provider sends no webhooks.',
+    },
+    secret: {
+      type: 'string',
+      description:
+        "The signing secret, exactly as the provider's dashboard shows it — the same value your handler verifies with.",
+    },
+    body: { type: 'string', description: 'The raw request body.' },
+    timestamp: {
+      type: 'Date',
+      required: false,
+      description:
+        'Defaults to now. Back-date it by more than 300 seconds to exercise your replay rejection.',
+    },
+    id: {
+      type: 'string',
+      required: false,
+      description:
+        'Message ID for the Standard Webhooks providers (Polar, Dodo Payments). Defaults to a random msg_ id.',
+    },
+  }}
+/>
+
+The returned record uses lowercase header names: `webhook-id` / `webhook-timestamp` /
+`webhook-signature` for Polar and Dodo Payments, `stripe-signature` for Stripe, `paddle-signature` for
+Paddle, and `x-signature` for Lemon Squeezy.
+
+:::note
+Dodo Payments derives its HMAC key by stripping `whsec_` and base64-decoding the remainder, so a test
+secret must be `whsec_` followed by valid base64 — anything else throws `RevenueError` with code
+`validation`. Polar uses its secret verbatim and accepts any string.
+:::
+
 ## Behavior of the mutating operations
 
 | Call                          | Effect on state                                                                  |
