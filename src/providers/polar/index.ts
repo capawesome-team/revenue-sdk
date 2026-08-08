@@ -1,8 +1,7 @@
-import { RevenueError } from '../../errors.ts';
 import { HttpClient } from '../../http.ts';
-import { clampLimit, decodeCursor, encodeCursor } from '../../pagination.ts';
+import { pageNumberCursor } from '../../pagination.ts';
 import type { ProrationBehavior, RevenueCapabilities, RevenueProvider } from '../../types.ts';
-import { toUsagePayload } from '../shared.ts';
+import { requireOptions, toUsagePayload, unsupported } from '../shared.ts';
 import {
   mapError,
   toBaseUrl,
@@ -58,10 +57,6 @@ export interface PolarProviderOptions {
   fetch?: typeof fetch;
 }
 
-interface PageCursorState {
-  page: number;
-}
-
 interface PolarCustomerSession {
   customer_portal_url: string;
 }
@@ -92,14 +87,20 @@ function toProrationBehavior(behavior: ProrationBehavior | undefined): string | 
     case 'prorate':
       return 'prorate';
     default:
-      throw new RevenueError(`Polar does not support the ${behavior} proration behavior`, {
-        code: 'unsupported',
-        provider: 'polar',
-      });
+      throw unsupported('polar', `the ${behavior} proration behavior`);
   }
 }
 
+const pages = pageNumberCursor('polar', {
+  startPage: 1,
+  defaultLimit: DEFAULT_PAGE_LIMIT,
+  maxLimit: MAX_PAGE_LIMIT,
+  pageKey: 'page',
+  limitKey: 'limit',
+});
+
 export function polar(options: PolarProviderOptions): RevenueProvider {
+  requireOptions('polar', { accessToken: options.accessToken });
   const http = new HttpClient({
     provider: 'polar',
     baseUrl: toBaseUrl(options),
@@ -108,15 +109,6 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
     mapError,
     secrets: () => [options.accessToken],
   });
-
-  function pageQuery(cursor: string | undefined, limit: number | undefined) {
-    const page = cursor ? decodeCursor<PageCursorState>('polar', cursor).page : 1;
-    return { page, limit: clampLimit(limit, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT) };
-  }
-
-  function nextCursor(page: number, maxPage: number): string | undefined {
-    return page < maxPage ? encodeCursor<PageCursorState>('polar', { page: page + 1 }) : undefined;
-  }
 
   async function patchSubscription(
     id: string,
@@ -136,14 +128,14 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
     capabilities: CAPABILITIES,
 
     async listProducts(params) {
-      const { page, limit } = pageQuery(params.cursor, params.limit);
+      const { page, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<PolarListResponse<PolarProduct>>('/v1/products/', {
-        query: { page, limit, is_archived: false },
+        query: { ...query, is_archived: false },
         signal: params.signal,
       });
       return {
         items: data.items.map(toProduct),
-        cursor: nextCursor(page, data.pagination.max_page),
+        cursor: pages.next(page, page < data.pagination.max_page),
       };
     },
 
@@ -157,10 +149,7 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
     async createCheckout(params) {
       const products = params.items.map((item) => {
         if (item.quantity !== undefined && item.quantity !== 1) {
-          throw new RevenueError('Polar checkouts do not support item quantities', {
-            code: 'unsupported',
-            provider: 'polar',
-          });
+          throw unsupported('polar', 'item quantities on checkouts');
         }
         return item.product;
       });
@@ -193,14 +182,14 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
     },
 
     async listCustomers(params) {
-      const { page, limit } = pageQuery(params.cursor, params.limit);
+      const { page, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<PolarListResponse<PolarCustomer>>('/v1/customers/', {
-        query: { page, limit, email: params.email },
+        query: { ...query, email: params.email },
         signal: params.signal,
       });
       return {
         items: data.items.map(toCustomer),
-        cursor: nextCursor(page, data.pagination.max_page),
+        cursor: pages.next(page, page < data.pagination.max_page),
       };
     },
 
@@ -212,14 +201,14 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
     },
 
     async listSubscriptions(params) {
-      const { page, limit } = pageQuery(params.cursor, params.limit);
+      const { page, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<PolarListResponse<PolarSubscription>>('/v1/subscriptions/', {
-        query: { page, limit, customer_id: params.customerId },
+        query: { ...query, customer_id: params.customerId },
         signal: params.signal,
       });
       return {
         items: data.items.map(toSubscription),
-        cursor: nextCursor(page, data.pagination.max_page),
+        cursor: pages.next(page, page < data.pagination.max_page),
       };
     },
 
@@ -241,10 +230,7 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
 
     async changeSubscriptionPlan(params) {
       if (params.quantity !== undefined && params.quantity !== 1) {
-        throw new RevenueError('Polar plan changes do not support quantities', {
-          code: 'unsupported',
-          provider: 'polar',
-        });
+        throw unsupported('polar', 'quantities on plan changes');
       }
       return patchSubscription(
         params.id,
@@ -322,15 +308,15 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
     },
 
     async listOrders(params) {
-      const { page, limit } = pageQuery(params.cursor, params.limit);
+      const { page, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<PolarListResponse<PolarOrder>>('/v1/orders/', {
         // Polar already sorts by `-created_at`.
-        query: { page, limit, customer_id: params.customerId, status: LISTED_ORDER_STATUSES },
+        query: { ...query, customer_id: params.customerId, status: LISTED_ORDER_STATUSES },
         signal: params.signal,
       });
       return {
         items: data.items.map(toOrder),
-        cursor: nextCursor(page, data.pagination.max_page),
+        cursor: pages.next(page, page < data.pagination.max_page),
       };
     },
 
@@ -352,14 +338,14 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
     },
 
     async listLicenseKeys(params) {
-      const { page, limit } = pageQuery(params.cursor, params.limit);
+      const { page, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<PolarListResponse<PolarLicenseKey>>('/v1/license-keys/', {
-        query: { page, limit },
+        query,
         signal: params.signal,
       });
       return {
         items: data.items.map(toLicenseKey),
-        cursor: nextCursor(page, data.pagination.max_page),
+        cursor: pages.next(page, page < data.pagination.max_page),
       };
     },
 

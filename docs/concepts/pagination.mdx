@@ -64,7 +64,10 @@ for await (const customer of client.customers.listAll()) {
 }
 ```
 
-The bounded rate-limit retry applies to every page fetch, not just the first.
+The client's [single bounded retry](/docs/concepts/errors) applies to every page fetch, not just the
+first — and because a page fetch is a read, that covers a transport failure or a `5xx` as well as a rate
+limit. The wait honors the `signal` you passed, so aborting an iteration interrupts it immediately
+instead of sleeping out the delay first.
 
 ## Cursors are opaque and provider-bound
 
@@ -98,8 +101,10 @@ This makes cursors safe to round-trip through your own storage or a query string
 
 ## Limits
 
-`limit` is a hint for the page size and is clamped into the provider's supported range. Values below `1`
-are raised to `1`; values above the maximum are lowered to it; fractions are truncated.
+`limit` is a hint for the page size and must be a **positive integer**. The client rejects `0`, a
+negative number, a fraction, and `NaN` with a `RevenueError` of code `validation` instead of putting a
+meaningless value on the wire. There is no upper bound to reject against: a limit above the provider's
+maximum is clamped to it silently.
 
 | Provider          | Default | Maximum |
 | ----------------- | ------- | ------- |

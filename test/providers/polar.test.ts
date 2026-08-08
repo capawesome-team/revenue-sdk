@@ -91,6 +91,12 @@ async function expectRevenueError(promise: Promise<unknown>, code: string): Prom
 }
 
 describe('polar', () => {
+  it('rejects a factory call without an access token', () => {
+    expect(() => polar({ accessToken: '' })).toThrow(RevenueError);
+    // The message names the missing option; a provided one is never echoed back.
+    expect(() => polar({ accessToken: '' })).toThrow(/accessToken/);
+  });
+
   it('exposes name and capabilities', () => {
     const { provider } = setup(() => ({ json: emptyPage() }));
     expect(provider.name).toBe('polar');

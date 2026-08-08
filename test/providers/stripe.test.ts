@@ -91,6 +91,11 @@ async function expectRevenueError(promise: Promise<unknown>, code: string): Prom
 }
 
 describe('stripe', () => {
+  it('rejects a factory call without a secret key', () => {
+    expect(() => stripe({ secretKey: '' })).toThrow(RevenueError);
+    expect(() => stripe({ secretKey: '' })).toThrow(/secretKey/);
+  });
+
   it('sends the pinned Stripe-Version and bearer auth', async () => {
     const { provider, stub } = setup(routes({ '/v1/products': { data: [], has_more: false } }));
     await provider.listProducts({});

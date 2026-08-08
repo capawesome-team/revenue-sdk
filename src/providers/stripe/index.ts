@@ -7,7 +7,7 @@ import type {
   RevenueCapabilities,
   RevenueProvider,
 } from '../../types.ts';
-import { toUsagePayload } from '../shared.ts';
+import { requireOptions, toUsagePayload, unsupported } from '../shared.ts';
 import {
   toCheckout,
   toCustomer,
@@ -69,13 +69,6 @@ interface CursorState {
   after: string;
 }
 
-function unsupported(feature: string): RevenueError {
-  return new RevenueError(`Stripe does not support ${feature}`, {
-    code: 'unsupported',
-    provider: 'stripe',
-  });
-}
-
 function mapError(status: number, body: unknown, response: Response): ProviderErrorInfo {
   // Stripe never sends `Retry-After`, so `Stripe-Should-Retry` is the only signal it gives about
   // whether replaying the request can succeed — including on a 429.
@@ -103,6 +96,7 @@ function toProrationBehavior(behavior: ProrationBehavior | undefined): string | 
 }
 
 export function stripe(options: StripeProviderOptions): RevenueProvider {
+  requireOptions('stripe', { secretKey: options.secretKey });
   const http = new HttpClient({
     provider: 'stripe',
     baseUrl: options.baseUrl ?? BASE_URL,
@@ -430,15 +424,15 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
     },
 
     async listLicenseKeys() {
-      throw unsupported('license keys');
+      throw unsupported('stripe', 'license keys');
     },
 
     async getLicenseKey() {
-      throw unsupported('license keys');
+      throw unsupported('stripe', 'license keys');
     },
 
     async updateLicenseKey() {
-      throw unsupported('license keys');
+      throw unsupported('stripe', 'license keys');
     },
   };
 }

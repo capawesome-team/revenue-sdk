@@ -1,7 +1,8 @@
 import { RevenueError } from '../../errors.ts';
 import { HttpClient, type ProviderErrorInfo } from '../../http.ts';
-import { clampLimit, decodeCursor, encodeCursor } from '../../pagination.ts';
+import { clampLimit, decodeCursor, encodeCursor, pageNumberCursor } from '../../pagination.ts';
 import type { Product, RevenueCapabilities, RevenueProvider } from '../../types.ts';
+import { requireOptions, unsupported } from '../shared.ts';
 import {
   BASE_URL,
   toCheckout,
@@ -59,10 +60,6 @@ export interface LemonSqueezyProviderOptions {
   fetch?: typeof fetch;
 }
 
-interface PageCursorState {
-  page: number;
-}
-
 /**
  * Orders live in two independently paginated resources, so the cursor names the phase it is in:
  * `/v1/orders` is drained first, then `/v1/subscription-invoices`.
@@ -76,11 +73,16 @@ type LsOrderLookup =
   | { source: 'orders'; resource: LsResource<LsOrderAttributes> }
   | { source: 'invoices'; resource: LsResource<LsSubscriptionInvoiceAttributes> };
 
-function unsupported(feature: string): RevenueError {
-  return new RevenueError(`Lemon Squeezy does not support ${feature}`, {
-    code: 'unsupported',
-    provider: 'lemon-squeezy',
-  });
+const pages = pageNumberCursor('lemon-squeezy', {
+  startPage: 1,
+  defaultLimit: DEFAULT_PAGE_SIZE,
+  maxLimit: MAX_PAGE_SIZE,
+  pageKey: 'page[number]',
+  limitKey: 'page[size]',
+});
+
+function hasMorePages(page: number, response: LsListResponse<unknown>): boolean {
+  return page < (response.meta?.page?.lastPage ?? page);
 }
 
 function mapError(status: number, body: unknown): ProviderErrorInfo {
@@ -93,6 +95,7 @@ function mapError(status: number, body: unknown): ProviderErrorInfo {
 }
 
 export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvider {
+  requireOptions('lemon-squeezy', { apiKey: options.apiKey, storeId: options.storeId });
   const storeId = String(options.storeId);
   const http = new HttpClient({
     provider: 'lemon-squeezy',
@@ -118,24 +121,6 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
       storeCurrency = (data.data.attributes.currency ?? 'USD').toLowerCase();
     }
     return storeCurrency;
-  }
-
-  function pageQuery(cursor: string | undefined, limit: number | undefined) {
-    const page = cursor ? decodeCursor<PageCursorState>('lemon-squeezy', cursor).page : 1;
-    return {
-      page,
-      query: {
-        'page[number]': page,
-        'page[size]': clampLimit(limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
-      },
-    };
-  }
-
-  function nextCursor(page: number, response: LsListResponse<unknown>): string | undefined {
-    const lastPage = response.meta?.page?.lastPage ?? page;
-    return page < lastPage
-      ? encodeCursor<PageCursorState>('lemon-squeezy', { page: page + 1 })
-      : undefined;
   }
 
   async function toProductWithPrice(
@@ -165,6 +150,7 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
   function assertPatchApplied(subscription: LsResource<LsSubscriptionAttributes>): void {
     if (subscription.attributes.payment_processor === 'paypal') {
       throw unsupported(
+        'lemon-squeezy',
         'updating a subscription paid through PayPal; the request succeeded but nothing changed — ' +
           'send the customer to the customer portal to manage the subscription instead',
       );
@@ -231,7 +217,7 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     capabilities: CAPABILITIES,
 
     async listProducts(params) {
-      const { page, query } = pageQuery(params.cursor, params.limit);
+      const { page, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<LsListResponse<LsVariantAttributes>>('/v1/variants', {
         // Draft and pending variants cannot be bought, so only published ones are listed.
         // `/v1/variants` takes no store filter, so a multi-store API key lists every store's
@@ -243,7 +229,7 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
       for (const variant of data.data) {
         items.push(await toProductWithPrice(variant, params.signal));
       }
-      return { items, cursor: nextCursor(page, data) };
+      return { items, cursor: pages.next(page, hasMorePages(page, data)) };
     },
 
     async getProduct(params) {
@@ -257,10 +243,13 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     async createCheckout(params) {
       const item = params.items[0];
       if (params.items.length !== 1 || item === undefined) {
-        throw unsupported('checkouts with more than one item');
+        throw unsupported('lemon-squeezy', 'checkouts with more than one item');
       }
       if (params.customerId !== undefined) {
-        throw unsupported('attaching an existing customer to a checkout; pass customerEmail');
+        throw unsupported(
+          'lemon-squeezy',
+          'attaching an existing customer to a checkout; pass customerEmail',
+        );
       }
       const checkoutData: Record<string, unknown> = {};
       if (params.customerEmail !== undefined) {
@@ -317,12 +306,15 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     },
 
     async listCustomers(params) {
-      const { page, query } = pageQuery(params.cursor, params.limit);
+      const { page, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<LsListResponse<LsCustomerAttributes>>('/v1/customers', {
         query: { ...query, 'filter[store_id]': storeId, 'filter[email]': params.email },
         signal: params.signal,
       });
-      return { items: data.data.map(toCustomer), cursor: nextCursor(page, data) };
+      return {
+        items: data.data.map(toCustomer),
+        cursor: pages.next(page, hasMorePages(page, data)),
+      };
     },
 
     async getSubscription(params) {
@@ -331,9 +323,9 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
 
     async listSubscriptions(params) {
       if (params.customerId !== undefined) {
-        throw unsupported('filtering subscriptions by customer');
+        throw unsupported('lemon-squeezy', 'filtering subscriptions by customer');
       }
-      const { page, query } = pageQuery(params.cursor, params.limit);
+      const { page, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<LsListResponse<LsSubscriptionAttributes>>(
         '/v1/subscriptions',
         {
@@ -343,13 +335,13 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
       );
       return {
         items: data.data.map((item) => toSubscription(item)),
-        cursor: nextCursor(page, data),
+        cursor: pages.next(page, hasMorePages(page, data)),
       };
     },
 
     async cancelSubscription(params) {
       if (params.reason !== undefined || params.comment !== undefined) {
-        throw unsupported('cancellation reasons');
+        throw unsupported('lemon-squeezy', 'cancellation reasons');
       }
       const { data } = await http.json<LsSingleResponse<LsSubscriptionAttributes>>(
         `/v1/subscriptions/${params.id}`,
@@ -364,7 +356,7 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
 
     async changeSubscriptionPlan(params) {
       if (params.quantity !== undefined && params.quantity !== 1) {
-        throw unsupported('quantities on plan changes');
+        throw unsupported('lemon-squeezy', 'quantities on plan changes');
       }
       // The PATCH requires both the variant and its parent product ID.
       const { data: variant } = await http.json<LsSingleResponse<LsVariantAttributes>>(
@@ -417,12 +409,12 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     },
 
     async revokeSubscription() {
-      throw unsupported('revoking a subscription immediately');
+      throw unsupported('lemon-squeezy', 'revoking a subscription immediately');
     },
 
     async createCustomerPortalSession(params) {
       if (params.returnUrl !== undefined) {
-        throw unsupported('a return URL on customer portal sessions');
+        throw unsupported('lemon-squeezy', 'a return URL on customer portal sessions');
       }
       // The portal URL is pre-signed and valid for 24 hours — always fetched on demand.
       const { data } = await http.json<
@@ -439,7 +431,7 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     },
 
     async reportUsage() {
-      throw unsupported('usage reporting');
+      throw unsupported('lemon-squeezy', 'usage reporting');
     },
 
     /**
@@ -455,7 +447,7 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
      */
     async listOrders(params) {
       if (params.customerId !== undefined) {
-        throw unsupported('filtering orders by customer');
+        throw unsupported('lemon-squeezy', 'filtering orders by customer');
       }
       const state: OrderCursorState = params.cursor
         ? decodeCursor<OrderCursorState>('lemon-squeezy', params.cursor)
@@ -470,13 +462,12 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
           query,
           signal: params.signal,
         });
-        const lastPage = data.meta?.page?.lastPage ?? state.page;
         return {
           items: data.data.map((order) => toOrderFromOrder(order)),
           // The invoice phase always follows, even on the last page of orders.
           cursor: encodeCursor<OrderCursorState>(
             'lemon-squeezy',
-            state.page < lastPage
+            hasMorePages(state.page, data)
               ? { source: 'orders', page: state.page + 1 }
               : { source: 'invoices', page: 1 },
           ),
@@ -486,19 +477,17 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
         '/v1/subscription-invoices',
         { query, signal: params.signal },
       );
-      const lastPage = data.meta?.page?.lastPage ?? state.page;
       return {
         // Filtering can leave a page short or even empty; it is never backfilled.
         items: data.data
           .filter((invoice) => invoice.attributes.billing_reason !== 'initial')
           .map((invoice) => toOrderFromInvoice(invoice)),
-        cursor:
-          state.page < lastPage
-            ? encodeCursor<OrderCursorState>('lemon-squeezy', {
-                source: 'invoices',
-                page: state.page + 1,
-              })
-            : undefined,
+        cursor: hasMorePages(state.page, data)
+          ? encodeCursor<OrderCursorState>('lemon-squeezy', {
+              source: 'invoices',
+              page: state.page + 1,
+            })
+          : undefined,
       };
     },
 
@@ -528,12 +517,15 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     },
 
     async listLicenseKeys(params) {
-      const { page, query } = pageQuery(params.cursor, params.limit);
+      const { page, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<LsListResponse<LsLicenseKeyAttributes>>('/v1/license-keys', {
         query: { ...query, 'filter[store_id]': storeId },
         signal: params.signal,
       });
-      return { items: data.data.map(toLicenseKey), cursor: nextCursor(page, data) };
+      return {
+        items: data.data.map(toLicenseKey),
+        cursor: pages.next(page, hasMorePages(page, data)),
+      };
     },
 
     async getLicenseKey(params) {

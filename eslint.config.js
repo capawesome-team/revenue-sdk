@@ -3,7 +3,18 @@ import tseslint from 'typescript-eslint';
 import prettier from 'eslint-config-prettier';
 
 export default tseslint.config(
-  { ignores: ['dist', 'coverage', 'docs', 'pages', '.blume', '.blume-dist', '.astro'] },
+  {
+    ignores: [
+      'dist',
+      'coverage',
+      'docs',
+      'pages',
+      '.blume',
+      '.blume-dist',
+      '.blume-verify',
+      '.astro',
+    ],
+  },
   js.configs.recommended,
   tseslint.configs.recommended,
   prettier,

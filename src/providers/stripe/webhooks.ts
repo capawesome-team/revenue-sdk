@@ -10,8 +10,8 @@ import {
   type VerifyWebhookParams,
   type WebhookInput,
 } from '../../webhooks/verify.ts';
+import { fromUnixSeconds } from '../shared.ts';
 import {
-  fromUnixSeconds,
   toCheckout,
   toOrderFromInvoice,
   toSubscription,

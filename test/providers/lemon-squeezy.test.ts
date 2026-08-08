@@ -104,6 +104,11 @@ async function expectRevenueError(promise: Promise<unknown>, code: string): Prom
 }
 
 describe('lemonSqueezy', () => {
+  it('rejects a factory call without an API key or store', () => {
+    expect(() => lemonSqueezy({ apiKey: '', storeId: '' })).toThrow(RevenueError);
+    expect(() => lemonSqueezy({ apiKey: '', storeId: '' })).toThrow(/apiKey, storeId/);
+  });
+
   it('exposes name and capabilities', () => {
     const { provider } = setup(() => ({ json: {} }));
     expect(provider.name).toBe('lemon-squeezy');

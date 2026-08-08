@@ -1,8 +1,8 @@
 import { RevenueError } from '../../errors.ts';
 import { HttpClient } from '../../http.ts';
-import { clampLimit, decodeCursor, encodeCursor } from '../../pagination.ts';
+import { pageNumberCursor } from '../../pagination.ts';
 import type { ProrationBehavior, RevenueCapabilities, RevenueProvider } from '../../types.ts';
-import { toUsagePayload } from '../shared.ts';
+import { requireOptions, toUsagePayload, unsupported } from '../shared.ts';
 import {
   mapError,
   toBaseUrl,
@@ -58,11 +58,6 @@ export interface DodoPaymentsProviderOptions {
   fetch?: typeof fetch;
 }
 
-interface PageCursorState {
-  /** Zero-based page number. */
-  page: number;
-}
-
 function toProrationBillingMode(behavior: ProrationBehavior | undefined): string {
   switch (behavior) {
     case undefined:
@@ -71,14 +66,26 @@ function toProrationBillingMode(behavior: ProrationBehavior | undefined): string
     case 'none':
       return 'do_not_bill';
     default:
-      throw new RevenueError(`Dodo Payments does not support the ${behavior} proration behavior`, {
-        code: 'unsupported',
-        provider: 'dodo-payments',
-      });
+      throw unsupported('dodo-payments', `the ${behavior} proration behavior`);
   }
 }
 
+// Dodo numbers its pages from zero.
+const pages = pageNumberCursor('dodo-payments', {
+  startPage: 0,
+  defaultLimit: DEFAULT_PAGE_SIZE,
+  maxLimit: MAX_PAGE_SIZE,
+  pageKey: 'page_number',
+  limitKey: 'page_size',
+});
+
+// Dodo lists carry no has_more/total marker — a full page implies there may be more.
+function nextCursor(page: number, limit: number, received: number): string | undefined {
+  return pages.next(page, received === limit);
+}
+
 export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvider {
+  requireOptions('dodo-payments', { apiKey: options.apiKey });
   const http = new HttpClient({
     provider: 'dodo-payments',
     baseUrl: toBaseUrl(options),
@@ -87,19 +94,6 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
     mapError,
     secrets: () => [options.apiKey],
   });
-
-  function pageQuery(cursor: string | undefined, limit: number | undefined) {
-    const page = cursor ? decodeCursor<PageCursorState>('dodo-payments', cursor).page : 0;
-    const pageSize = clampLimit(limit, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
-    return { page, pageSize, query: { page_number: page, page_size: pageSize } };
-  }
-
-  // Dodo lists carry no has_more/total marker — a full page implies there may be more.
-  function nextCursor(page: number, pageSize: number, received: number): string | undefined {
-    return received === pageSize
-      ? encodeCursor<PageCursorState>('dodo-payments', { page: page + 1 })
-      : undefined;
-  }
 
   async function patchSubscription(
     id: string,
@@ -119,14 +113,14 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
     capabilities: CAPABILITIES,
 
     async listProducts(params) {
-      const { page, pageSize, query } = pageQuery(params.cursor, params.limit);
+      const { page, limit, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<DodoListResponse<DodoProduct>>('/products', {
         query: { ...query, archived: false },
         signal: params.signal,
       });
       return {
         items: data.items.map(toProduct),
-        cursor: nextCursor(page, pageSize, data.items.length),
+        cursor: nextCursor(page, limit, data.items.length),
       };
     },
 
@@ -174,14 +168,14 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
     },
 
     async listCustomers(params) {
-      const { page, pageSize, query } = pageQuery(params.cursor, params.limit);
+      const { page, limit, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<DodoListResponse<DodoCustomer>>('/customers', {
         query: { ...query, email: params.email },
         signal: params.signal,
       });
       return {
         items: data.items.map(toCustomer),
-        cursor: nextCursor(page, pageSize, data.items.length),
+        cursor: nextCursor(page, limit, data.items.length),
       };
     },
 
@@ -193,14 +187,14 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
     },
 
     async listSubscriptions(params) {
-      const { page, pageSize, query } = pageQuery(params.cursor, params.limit);
+      const { page, limit, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<DodoListResponse<DodoSubscription>>('/subscriptions', {
         query: { ...query, customer_id: params.customerId },
         signal: params.signal,
       });
       return {
         items: data.items.map(toSubscription),
-        cursor: nextCursor(page, pageSize, data.items.length),
+        cursor: nextCursor(page, limit, data.items.length),
       };
     },
 
@@ -239,24 +233,15 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
     },
 
     async endSubscriptionTrial() {
-      throw new RevenueError('Dodo Payments does not support ending a trial early', {
-        code: 'unsupported',
-        provider: 'dodo-payments',
-      });
+      throw unsupported('dodo-payments', 'ending a trial early');
     },
 
     async pauseSubscription() {
-      throw new RevenueError('Dodo Payments does not support pausing a subscription', {
-        code: 'unsupported',
-        provider: 'dodo-payments',
-      });
+      throw unsupported('dodo-payments', 'pausing a subscription');
     },
 
     async resumeSubscription() {
-      throw new RevenueError('Dodo Payments does not support resuming a subscription', {
-        code: 'unsupported',
-        provider: 'dodo-payments',
-      });
+      throw unsupported('dodo-payments', 'resuming a subscription');
     },
 
     async revokeSubscription(params) {
@@ -303,7 +288,7 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
     },
 
     async listOrders(params) {
-      const { page, pageSize, query } = pageQuery(params.cursor, params.limit);
+      const { page, limit, query } = pages.read(params.cursor, params.limit);
       // `/payments` takes no sort parameter and documents no ordering guarantee — the order is
       // provider-defined and unverified.
       const { data } = await http.json<DodoListResponse<DodoPayment>>('/payments', {
@@ -312,7 +297,7 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
       });
       return {
         items: data.items.map(toOrderFromPayment),
-        cursor: nextCursor(page, pageSize, data.items.length),
+        cursor: nextCursor(page, limit, data.items.length),
       };
     },
 
@@ -342,14 +327,14 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
     // validate, and deactivate routes are `/licenses`. All three below are marked deprecated in
     // Dodo's SDK in favour of an entitlements-based replacement, but remain functional.
     async listLicenseKeys(params) {
-      const { page, pageSize, query } = pageQuery(params.cursor, params.limit);
+      const { page, limit, query } = pages.read(params.cursor, params.limit);
       const { data } = await http.json<DodoListResponse<DodoLicenseKey>>('/license_keys', {
         query,
         signal: params.signal,
       });
       return {
         items: data.items.map(toLicenseKey),
-        cursor: nextCursor(page, pageSize, data.items.length),
+        cursor: nextCursor(page, limit, data.items.length),
       };
     },
 

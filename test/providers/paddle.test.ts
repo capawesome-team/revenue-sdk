@@ -58,6 +58,11 @@ async function expectRevenueError(promise: Promise<unknown>, code: string): Prom
 }
 
 describe('paddle', () => {
+  it('rejects a factory call without an API key', () => {
+    expect(() => paddle({ apiKey: '' })).toThrow(RevenueError);
+    expect(() => paddle({ apiKey: '' })).toThrow(/apiKey/);
+  });
+
   it('exposes capabilities reflecting the Paddle.js checkout model', () => {
     const { provider } = setup(() => ({ json: { data: [] } }));
     expect(provider.capabilities.hostedCheckout).toBe(false);

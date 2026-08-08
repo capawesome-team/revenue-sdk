@@ -7,6 +7,7 @@ import type {
   RevenueCapabilities,
   RevenueProvider,
 } from '../../types.ts';
+import { requireOptions, unsupported } from '../shared.ts';
 import {
   toCheckout,
   toCustomer,
@@ -67,13 +68,6 @@ interface CursorState {
   url: string;
 }
 
-function unsupported(feature: string): RevenueError {
-  return new RevenueError(`Paddle does not support ${feature}`, {
-    code: 'unsupported',
-    provider: 'paddle',
-  });
-}
-
 const AUTH_ERROR_CODES = new Set([
   'authentication_malformed',
   'authentication_missing',
@@ -122,6 +116,7 @@ function toPauseEffectiveFrom(behavior: PauseBehavior | undefined): string | und
 }
 
 export function paddle(options: PaddleProviderOptions): RevenueProvider {
+  requireOptions('paddle', { apiKey: options.apiKey });
   const baseUrl =
     options.baseUrl ?? (options.server === 'sandbox' ? SANDBOX_BASE_URL : PRODUCTION_BASE_URL);
   const http = new HttpClient({
@@ -221,7 +216,7 @@ export function paddle(options: PaddleProviderOptions): RevenueProvider {
 
     async createCheckout(params) {
       if (params.successUrl !== undefined) {
-        throw unsupported('a checkout success URL; configure it in Paddle.js instead');
+        throw unsupported('paddle', 'a checkout success URL; configure it in Paddle.js instead');
       }
       let customerId = params.customerId;
       if (customerId === undefined && params.customerEmail !== undefined) {
@@ -289,7 +284,7 @@ export function paddle(options: PaddleProviderOptions): RevenueProvider {
 
     async cancelSubscription(params) {
       if (params.reason !== undefined || params.comment !== undefined) {
-        throw unsupported('cancellation reasons');
+        throw unsupported('paddle', 'cancellation reasons');
       }
       return postSubscription(
         `/subscriptions/${params.id}/cancel`,
@@ -362,7 +357,7 @@ export function paddle(options: PaddleProviderOptions): RevenueProvider {
 
     async createCustomerPortalSession(params) {
       if (params.returnUrl !== undefined) {
-        throw unsupported('a return URL on customer portal sessions');
+        throw unsupported('paddle', 'a return URL on customer portal sessions');
       }
       const { data } = await http.json<
         PaddleResponse<{ urls?: { general?: { overview?: string } } }>
@@ -382,7 +377,7 @@ export function paddle(options: PaddleProviderOptions): RevenueProvider {
     },
 
     async reportUsage() {
-      throw unsupported('usage reporting');
+      throw unsupported('paddle', 'usage reporting');
     },
 
     async listOrders(params) {
@@ -431,15 +426,15 @@ export function paddle(options: PaddleProviderOptions): RevenueProvider {
     },
 
     async listLicenseKeys() {
-      throw unsupported('license keys');
+      throw unsupported('paddle', 'license keys');
     },
 
     async getLicenseKey() {
-      throw unsupported('license keys');
+      throw unsupported('paddle', 'license keys');
     },
 
     async updateLicenseKey() {
-      throw unsupported('license keys');
+      throw unsupported('paddle', 'license keys');
     },
   };
 }

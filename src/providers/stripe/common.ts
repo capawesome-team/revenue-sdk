@@ -10,7 +10,7 @@ import type {
   Subscription,
   SubscriptionStatus,
 } from '../../types.ts';
-import { toMetadata } from '../shared.ts';
+import { fromUnixSeconds, toMetadata } from '../shared.ts';
 
 export interface StripeList<T> {
   data: T[];
@@ -103,16 +103,6 @@ export interface StripeInvoice {
       metadata?: Record<string, unknown> | null;
     } | null;
   } | null;
-}
-
-export function fromUnixSeconds(value: number | null | undefined): Date | undefined {
-  // `typeof NaN === 'number'`, so guard on finiteness: an out-of-range or non-finite timestamp must
-  // read as absent rather than reaching a model as an Invalid Date. Mirrors `toDate` in shared.ts.
-  if (!Number.isFinite(value)) {
-    return undefined;
-  }
-  const date = new Date((value as number) * 1000);
-  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 export function idOf(value: string | { id: string } | null | undefined): string | undefined {

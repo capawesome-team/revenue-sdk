@@ -40,6 +40,11 @@ async function expectRevenueError(promise: Promise<unknown>, code: string): Prom
 }
 
 describe('dodoPayments', () => {
+  it('rejects a factory call without an API key', () => {
+    expect(() => dodoPayments({ apiKey: '' })).toThrow(RevenueError);
+    expect(() => dodoPayments({ apiKey: '' })).toThrow(/apiKey/);
+  });
+
   it('uses the test host when configured', async () => {
     const { provider, stub } = setup(() => ({ json: { items: [] } }), { server: 'test' });
     await provider.listProducts({});

@@ -104,6 +104,11 @@ Every factory also accepts an optional `baseUrl` (used verbatim, overriding `ser
 `baseUrl` may carry a path prefix — `https://gateway.internal/polar` keeps `/polar` in front of every
 request path — so a proxy or gateway mount point works without rewriting.
 
+A factory validates its required options up front and throws a `RevenueError` with code `validation`
+naming the missing ones. An unset environment variable therefore fails where you construct the provider
+rather than as a confusing `401` on the first call. Only the option **names** appear in the message; a
+value you did pass is never echoed.
+
 ## Standalone subpath exports
 
 Not everything needs a client. Each provider subpath also exports plain functions that take their own
