@@ -6,6 +6,8 @@ const USER_AGENT = 'revenue-sdk';
 export interface ProviderErrorInfo {
   code?: RevenueErrorCode;
   message?: string;
+  /** Overrides the retryability derived from the code and status — see `RevenueError.retryable`. */
+  retryable?: boolean;
 }
 
 export interface HttpClientOptions {
@@ -196,6 +198,7 @@ export class HttpClient {
       provider: this.provider,
       status: response.status,
       retryAfter: parseRetryAfter(response.headers.get('retry-after')),
+      retryable: info.retryable,
       responseBody: body,
       secrets: this.secrets(),
     });

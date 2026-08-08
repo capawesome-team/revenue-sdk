@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createClient } from '../../src/client.ts';
 import { RevenueError } from '../../src/errors.ts';
 import type { Page, RevenueCapabilities, RevenueProvider, Subscription } from '../../src/types.ts';
@@ -108,6 +108,32 @@ describe('createClient', () => {
         client.checkouts.create({ items: [{ product: 'p1', quantity: 1.5 }] }),
         'validation',
       );
+    });
+
+    it('rejects a limit that is not a positive integer', async () => {
+      const listProducts = vi.fn();
+      const client = createClient({ provider: fakeProvider({ listProducts }) });
+      await expectRevenueError(client.products.list({ limit: 0 }), 'validation');
+      await expectRevenueError(client.products.list({ limit: 1.5 }), 'validation');
+      // Without the check this reaches the provider — and the wire — as `limit=NaN`.
+      await expectRevenueError(client.products.list({ limit: Number.NaN }), 'validation');
+      await expectRevenueError(
+        (async () => {
+          for await (const product of client.products.listAll({ limit: -1 })) {
+            void product;
+          }
+        })(),
+        'validation',
+      );
+      expect(listProducts).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid limit on every list resource', async () => {
+      const client = createClient({ provider: fakeProvider() });
+      await expectRevenueError(client.customers.list({ limit: 0 }), 'validation');
+      await expectRevenueError(client.subscriptions.list({ limit: 0 }), 'validation');
+      await expectRevenueError(client.licenseKeys.list({ limit: 0 }), 'validation');
+      await expectRevenueError(client.orders.list({ limit: 0 }), 'validation');
     });
 
     it('rejects a checkout expiry when unsupported', async () => {
@@ -377,6 +403,12 @@ describe('createClient', () => {
   });
 
   describe('retry', () => {
+    // Only the tests that exercise the default delay switch to fake timers; this keeps a failed
+    // assertion inside one of them from leaking faked timers into the rest of the suite.
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     it('retries once on a small rate-limit Retry-After', async () => {
       const getSubscription = vi
         .fn()
@@ -428,6 +460,88 @@ describe('createClient', () => {
       expect(reportUsage).toHaveBeenCalledTimes(1);
     });
 
+    it('retries once after the default delay when the provider sent no Retry-After', async () => {
+      // Stripe never sends `Retry-After`, so waiting for one would disable the retry there.
+      vi.useFakeTimers();
+      const getSubscription = vi
+        .fn()
+        .mockRejectedValueOnce(new RevenueError('rate limited', { code: 'rate_limited' }))
+        .mockResolvedValueOnce(subscription('s1'));
+      const client = createClient({ provider: fakeProvider({ getSubscription }) });
+      const pending = client.subscriptions.get({ id: 's1' });
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(pending).resolves.toMatchObject({ id: 's1' });
+      expect(getSubscription).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry a rate limit the provider marked as not retryable', async () => {
+      // Stripe answers `Stripe-Should-Retry: false` when replaying cannot succeed.
+      const getSubscription = vi.fn().mockRejectedValue(
+        new RevenueError('rate limited', {
+          code: 'rate_limited',
+          retryAfter: 0,
+          retryable: false,
+        }),
+      );
+      const client = createClient({ provider: fakeProvider({ getSubscription }) });
+      await expectRevenueError(client.subscriptions.get({ id: 's1' }), 'rate_limited');
+      expect(getSubscription).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries a read once on a transport failure', async () => {
+      vi.useFakeTimers();
+      const getSubscription = vi
+        .fn()
+        .mockRejectedValueOnce(new RevenueError('boom', { code: 'network_error' }))
+        .mockResolvedValueOnce(subscription('s1'));
+      const client = createClient({ provider: fakeProvider({ getSubscription }) });
+      const pending = client.subscriptions.get({ id: 's1' });
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(pending).resolves.toMatchObject({ id: 's1' });
+      expect(getSubscription).toHaveBeenCalledTimes(2);
+    });
+
+    it('never retries a write on a transport failure', async () => {
+      // The request may have reached the provider, so replaying it could act twice.
+      const cancelSubscription = vi
+        .fn()
+        .mockRejectedValue(new RevenueError('boom', { code: 'network_error' }));
+      const client = createClient({ provider: fakeProvider({ cancelSubscription }) });
+      await expectRevenueError(client.subscriptions.cancel({ id: 's1' }), 'network_error');
+      expect(cancelSubscription).toHaveBeenCalledTimes(1);
+    });
+
+    it('still retries a write on a rate limit', async () => {
+      // A 429 is rejected before the provider does anything, so the write never landed.
+      const cancelSubscription = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new RevenueError('rate limited', { code: 'rate_limited', retryAfter: 0 }),
+        )
+        .mockResolvedValueOnce(subscription('s1'));
+      const client = createClient({ provider: fakeProvider({ cancelSubscription }) });
+      await client.subscriptions.cancel({ id: 's1' });
+      expect(cancelSubscription).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops waiting for the retry when the caller aborts', async () => {
+      const controller = new AbortController();
+      const getSubscription = vi
+        .fn()
+        .mockRejectedValue(
+          new RevenueError('rate limited', { code: 'rate_limited', retryAfter: 5 }),
+        );
+      const client = createClient({ provider: fakeProvider({ getSubscription }) });
+      const pending = client.subscriptions.get({ id: 's1', signal: controller.signal });
+      // A macrotask: every pending microtask has run, so the retry is asleep by now.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      controller.abort();
+      const error = await pending.catch((reason: unknown) => reason);
+      // The abort reason, not the rate limit — the same thing an aborted `fetch` throws.
+      expect((error as Error).name).toBe('AbortError');
+      expect(getSubscription).toHaveBeenCalledTimes(1);
+    });
+
     it('does not retry other errors', async () => {
       const getSubscription = vi
         .fn()
@@ -468,6 +582,33 @@ describe('createClient', () => {
       }
       expect(ids).toEqual(['s1', 's2', 's3']);
       expect(listSubscriptions).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects on the first page rather than throwing synchronously', async () => {
+      const client = createClient({ provider: fakeProvider({}, { licenseKeys: false }) });
+      // Creating the generator must not throw: the caller only ever sees a rejected `next()`.
+      const iterator = client.licenseKeys.listAll();
+      await expect(iterator.next()).rejects.toBeInstanceOf(RevenueError);
+    });
+
+    it('retries each page exactly once', async () => {
+      const listSubscriptions = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new RevenueError('rate limited', { code: 'rate_limited', retryAfter: 0 }),
+        )
+        .mockResolvedValueOnce({ items: [subscription('s1')], cursor: 'next' })
+        .mockRejectedValueOnce(
+          new RevenueError('rate limited', { code: 'rate_limited', retryAfter: 0 }),
+        )
+        .mockResolvedValueOnce({ items: [subscription('s2')] });
+      const client = createClient({ provider: fakeProvider({ listSubscriptions }) });
+      const ids: string[] = [];
+      for await (const item of client.subscriptions.listAll()) {
+        ids.push(item.id);
+      }
+      expect(ids).toEqual(['s1', 's2']);
+      expect(listSubscriptions).toHaveBeenCalledTimes(4);
     });
   });
 

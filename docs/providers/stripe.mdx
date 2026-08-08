@@ -209,9 +209,10 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   and `GET /v1/entitlements/active_entitlements` is secret-key-only (`CustomerSessions` has no
   `entitlements` component), so a shipped app cannot check its own license. See
   [License keys](/docs/concepts/license-keys).
-- **No `Retry-After` on 429.** Stripe signals retryability with `Stripe-Should-Retry`, so
-  `RevenueError.retryAfter` is usually `undefined` and the client's bounded retry does not engage. Use
-  your own back-off.
+- **No `Retry-After` on 429.** Stripe signals retryability with `Stripe-Should-Retry` instead, which the
+  adapter maps onto `RevenueError.retryable`. `retryAfter` is therefore usually `undefined`, so the
+  client's bounded retry falls back to a one-second wait — and skips the retry entirely when the header
+  says `false`. Anything longer is your own back-off.
 - **Timestamps are unix seconds** on the wire and are converted to `Date` everywhere in the normalized
   models.
 

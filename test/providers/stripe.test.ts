@@ -758,6 +758,37 @@ describe('stripe', () => {
     }
   });
 
+  it('derives retryability from Stripe-Should-Retry', async () => {
+    // Stripe never sends `Retry-After` — the header is the only signal it gives, and it overrides
+    // both directions of the default (a 429 is retryable, a 409 is not).
+    const rateLimited = setup(() => ({
+      status: 429,
+      headers: { 'Stripe-Should-Retry': 'false' },
+      json: { error: { message: 'Too many requests' } },
+    }));
+    try {
+      await rateLimited.provider.getSubscription({ id: 'sub_1' });
+      expect.unreachable('expected RevenueError');
+    } catch (error) {
+      expect((error as RevenueError).code).toBe('rate_limited');
+      expect((error as RevenueError).retryAfter).toBeUndefined();
+      expect((error as RevenueError).retryable).toBe(false);
+    }
+
+    const lockTimeout = setup(() => ({
+      status: 409,
+      headers: { 'Stripe-Should-Retry': 'true' },
+      json: { error: { message: 'This object cannot be accessed right now' } },
+    }));
+    try {
+      await lockTimeout.provider.getSubscription({ id: 'sub_1' });
+      expect.unreachable('expected RevenueError');
+    } catch (error) {
+      expect((error as RevenueError).code).toBe('conflict');
+      expect((error as RevenueError).retryable).toBe(true);
+    }
+  });
+
   it('rejects empty checkout items', async () => {
     const { provider } = setup(() => ({ json: {} }));
     await expectRevenueError(provider.createCheckout({ items: [] }), 'validation');

@@ -76,12 +76,17 @@ function unsupported(feature: string): RevenueError {
   });
 }
 
-function mapError(status: number, body: unknown): ProviderErrorInfo {
+function mapError(status: number, body: unknown, response: Response): ProviderErrorInfo {
+  // Stripe never sends `Retry-After`, so `Stripe-Should-Retry` is the only signal it gives about
+  // whether replaying the request can succeed — including on a 429.
+  const shouldRetry = response.headers.get('stripe-should-retry');
+  const info: ProviderErrorInfo =
+    shouldRetry === null ? {} : { retryable: shouldRetry.trim() === 'true' };
   if (body === null || typeof body !== 'object') {
-    return {};
+    return info;
   }
   const { error } = body as { error?: { message?: unknown } };
-  return typeof error?.message === 'string' ? { message: error.message } : {};
+  return typeof error?.message === 'string' ? { ...info, message: error.message } : info;
 }
 
 function toProrationBehavior(behavior: ProrationBehavior | undefined): string | undefined {

@@ -1,5 +1,6 @@
 import { RevenueError } from './errors.ts';
 import type {
+  BaseParams,
   CancelSubscriptionParams,
   ChangeSubscriptionPlanParams,
   Checkout,
@@ -38,11 +39,14 @@ import type {
 } from './types.ts';
 
 const DEFAULT_MAX_RETRY_AFTER_SECONDS = 10;
+// Stripe never sends `Retry-After`, and no provider sends one on a network error or a 5xx.
+const DEFAULT_RETRY_DELAY_SECONDS = 1;
 
 export interface RetryOptions {
   /**
-   * Rate-limited requests are retried once when the provider's Retry-After is at most this
-   * many seconds. Set to 0 to disable the retry.
+   * Caps the wait before the single retry: a retry is skipped when the provider's Retry-After —
+   * or the one-second default when it sent none — exceeds this many seconds. Set to 0 to disable
+   * the retry.
    */
   maxRetryAfterSeconds?: number;
 }
@@ -102,8 +106,33 @@ export interface RevenueClient {
   };
 }
 
-function sleep(seconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+/**
+ * Rejects with the signal's reason — the shape an aborted `fetch` throws — as soon as the caller
+ * aborts, so an abandoned call never waits out the retry delay.
+ */
+function sleep(seconds: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason);
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, seconds * 1000);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * A rate limit is safe to replay on any operation — the provider rejected the request before it did
+ * anything. A transport failure is not: the write may well have landed, so only reads are replayed.
+ */
+function isReplayable(error: RevenueError, read: boolean): boolean {
+  return error.retryable && (read || error.code === 'rate_limited');
 }
 
 export function createClient(options: CreateClientOptions): RevenueClient {
@@ -137,6 +166,13 @@ export function createClient(options: CreateClientOptions): RevenueClient {
     }
   }
 
+  // No upper bound: every provider clamps a limit to its own maximum page size.
+  function checkLimit(limit: number | undefined): void {
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+      fail('validation', 'The limit parameter must be a positive integer');
+    }
+  }
+
   // Stripe's own 30-minute-to-24-hour window is deliberately NOT enforced here: it is a single
   // provider's rule, it is evaluated against Stripe's clock (so skew would reject valid dates near
   // the boundary), and clamping would silently rewrite the caller's intent. Stripe rejects an
@@ -151,12 +187,6 @@ export function createClient(options: CreateClientOptions): RevenueClient {
     }
     if (expiresAt.getTime() <= Date.now()) {
       fail('validation', 'The expiresAt parameter must be in the future');
-    }
-  }
-
-  function checkOrderCustomerFilter(customerId: string | undefined): void {
-    if (customerId !== undefined && !provider.capabilities.listOrdersByCustomer) {
-      fail('unsupported', `${provider.name} cannot filter orders by customer`);
     }
   }
 
@@ -185,34 +215,83 @@ export function createClient(options: CreateClientOptions): RevenueClient {
     }
   }
 
-  async function withRetry<T>(run: () => Promise<T>): Promise<T> {
+  async function withRetry<T>(
+    run: () => Promise<T>,
+    read: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<T> {
     try {
       return await run();
     } catch (error) {
-      if (
-        error instanceof RevenueError &&
-        error.code === 'rate_limited' &&
-        error.retryAfter !== undefined &&
-        maxRetryAfterSeconds > 0 &&
-        error.retryAfter <= maxRetryAfterSeconds
-      ) {
-        await sleep(error.retryAfter);
-        return run();
+      if (!(error instanceof RevenueError) || !isReplayable(error, read)) {
+        throw error;
       }
-      throw error;
+      const delay = error.retryAfter ?? DEFAULT_RETRY_DELAY_SECONDS;
+      if (maxRetryAfterSeconds <= 0 || delay > maxRetryAfterSeconds) {
+        throw error;
+      }
+      await sleep(delay, signal);
+      return run();
     }
   }
 
+  function runRead<T>(params: BaseParams, run: () => Promise<T>): Promise<T> {
+    return withRetry(run, true, params.signal);
+  }
+
+  function runWrite<T>(params: BaseParams, run: () => Promise<T>): Promise<T> {
+    return withRetry(run, false, params.signal);
+  }
+
+  /**
+   * `fetchPage` is one of the checked list functions below, so every page is validated, capability
+   * gated and retried exactly like a single `list` call — and a rejected check surfaces on the
+   * first `next()` rather than as a synchronous throw.
+   */
   async function* listAllOf<T, P extends { cursor?: string }>(
     params: Omit<P, 'cursor'>,
     fetchPage: (params: P) => Promise<Page<T>>,
   ): AsyncGenerator<T, void> {
     let cursor: string | undefined;
     do {
-      const page = await withRetry(() => fetchPage({ ...params, cursor } as P));
+      const page = await fetchPage({ ...params, cursor } as P);
       yield* page.items;
       cursor = page.cursor;
     } while (cursor !== undefined);
+  }
+
+  async function listProducts(params: ListProductsParams = {}): Promise<Page<Product>> {
+    checkLimit(params.limit);
+    return runRead(params, () => provider.listProducts(params));
+  }
+
+  async function listCustomers(params: ListCustomersParams = {}): Promise<Page<Customer>> {
+    checkLimit(params.limit);
+    return runRead(params, () => provider.listCustomers(params));
+  }
+
+  async function listSubscriptions(
+    params: ListSubscriptionsParams = {},
+  ): Promise<Page<Subscription>> {
+    checkLimit(params.limit);
+    if (params.customerId !== undefined && !provider.capabilities.listSubscriptionsByCustomer) {
+      fail('unsupported', `${provider.name} cannot filter subscriptions by customer`);
+    }
+    return runRead(params, () => provider.listSubscriptions(params));
+  }
+
+  async function listLicenseKeys(params: ListLicenseKeysParams = {}): Promise<Page<LicenseKey>> {
+    checkLimit(params.limit);
+    requireLicenseKeys();
+    return runRead(params, () => provider.listLicenseKeys(params));
+  }
+
+  async function listOrders(params: ListOrdersParams = {}): Promise<Page<Order>> {
+    checkLimit(params.limit);
+    if (params.customerId !== undefined && !provider.capabilities.listOrdersByCustomer) {
+      fail('unsupported', `${provider.name} cannot filter orders by customer`);
+    }
+    return runRead(params, () => provider.listOrders(params));
   }
 
   return {
@@ -220,11 +299,11 @@ export function createClient(options: CreateClientOptions): RevenueClient {
     capabilities: provider.capabilities,
 
     products: {
-      list: (params = {}) => withRetry(() => provider.listProducts(params)),
-      listAll: (params = {}) => listAllOf(params, (p) => provider.listProducts(p)),
+      list: listProducts,
+      listAll: (params = {}) => listAllOf(params, listProducts),
       get: async (params) => {
         requireNonEmpty(params.id, 'id');
-        return withRetry(() => provider.getProduct(params));
+        return runRead(params, () => provider.getProduct(params));
       },
     },
 
@@ -238,40 +317,30 @@ export function createClient(options: CreateClientOptions): RevenueClient {
           fail('unsupported', `${provider.name} does not support a checkout expiry`);
         }
         checkExpiresAt(params.expiresAt);
-        return withRetry(() => provider.createCheckout(params));
+        return runWrite(params, () => provider.createCheckout(params));
       },
       get: async (params) => {
         requireNonEmpty(params.id, 'id');
-        return withRetry(() => provider.getCheckout(params));
+        return runRead(params, () => provider.getCheckout(params));
       },
     },
 
     customers: {
       get: async (params) => {
         requireNonEmpty(params.id, 'id');
-        return withRetry(() => provider.getCustomer(params));
+        return runRead(params, () => provider.getCustomer(params));
       },
-      list: (params = {}) => withRetry(() => provider.listCustomers(params)),
-      listAll: (params = {}) => listAllOf(params, (p) => provider.listCustomers(p)),
+      list: listCustomers,
+      listAll: (params = {}) => listAllOf(params, listCustomers),
     },
 
     subscriptions: {
       get: async (params) => {
         requireNonEmpty(params.id, 'id');
-        return withRetry(() => provider.getSubscription(params));
+        return runRead(params, () => provider.getSubscription(params));
       },
-      list: async (params = {}) => {
-        if (params.customerId !== undefined && !provider.capabilities.listSubscriptionsByCustomer) {
-          fail('unsupported', `${provider.name} cannot filter subscriptions by customer`);
-        }
-        return withRetry(() => provider.listSubscriptions(params));
-      },
-      listAll: (params = {}) => {
-        if (params.customerId !== undefined && !provider.capabilities.listSubscriptionsByCustomer) {
-          fail('unsupported', `${provider.name} cannot filter subscriptions by customer`);
-        }
-        return listAllOf(params, (p) => provider.listSubscriptions(p));
-      },
+      list: listSubscriptions,
+      listAll: (params = {}) => listAllOf(params, listSubscriptions),
       cancel: async (params) => {
         requireNonEmpty(params.id, 'id');
         if (
@@ -280,14 +349,14 @@ export function createClient(options: CreateClientOptions): RevenueClient {
         ) {
           fail('unsupported', `${provider.name} does not support cancellation reasons`);
         }
-        return withRetry(() => provider.cancelSubscription(params));
+        return runWrite(params, () => provider.cancelSubscription(params));
       },
       uncancel: async (params) => {
         requireNonEmpty(params.id, 'id');
         if (!provider.capabilities.uncancel) {
           fail('unsupported', `${provider.name} cannot revert a scheduled cancellation`);
         }
-        return withRetry(() => provider.uncancelSubscription(params));
+        return runWrite(params, () => provider.uncancelSubscription(params));
       },
       changePlan: async (params) => {
         requireNonEmpty(params.id, 'id');
@@ -302,14 +371,14 @@ export function createClient(options: CreateClientOptions): RevenueClient {
             `${provider.name} does not support the ${params.prorationBehavior} proration behavior`,
           );
         }
-        return withRetry(() => provider.changeSubscriptionPlan(params));
+        return runWrite(params, () => provider.changeSubscriptionPlan(params));
       },
       endTrial: async (params) => {
         requireNonEmpty(params.id, 'id');
         if (!provider.capabilities.endTrial) {
           fail('unsupported', `${provider.name} cannot end a trial early`);
         }
-        return withRetry(() => provider.endSubscriptionTrial(params));
+        return runWrite(params, () => provider.endSubscriptionTrial(params));
       },
       pause: async (params) => {
         requireNonEmpty(params.id, 'id');
@@ -325,21 +394,21 @@ export function createClient(options: CreateClientOptions): RevenueClient {
             `${provider.name} does not support the ${params.behavior} pause behavior`,
           );
         }
-        return withRetry(() => provider.pauseSubscription(params));
+        return runWrite(params, () => provider.pauseSubscription(params));
       },
       resume: async (params) => {
         requireNonEmpty(params.id, 'id');
         if (!provider.capabilities.pause) {
           fail('unsupported', `${provider.name} cannot resume a subscription`);
         }
-        return withRetry(() => provider.resumeSubscription(params));
+        return runWrite(params, () => provider.resumeSubscription(params));
       },
       revoke: async (params) => {
         requireNonEmpty(params.id, 'id');
         if (!provider.capabilities.revoke) {
           fail('unsupported', `${provider.name} cannot revoke a subscription immediately`);
         }
-        return withRetry(() => provider.revokeSubscription(params));
+        return runWrite(params, () => provider.revokeSubscription(params));
       },
     },
 
@@ -349,7 +418,7 @@ export function createClient(options: CreateClientOptions): RevenueClient {
         if (params.returnUrl !== undefined && !provider.capabilities.portalReturnUrl) {
           fail('unsupported', `${provider.name} does not support a portal return URL`);
         }
-        return withRetry(() => provider.createCustomerPortalSession(params));
+        return runWrite(params, () => provider.createCustomerPortalSession(params));
       },
     },
 
@@ -361,50 +430,38 @@ export function createClient(options: CreateClientOptions): RevenueClient {
         if (!provider.capabilities.usageReporting) {
           fail('unsupported', `${provider.name} does not support usage reporting`);
         }
-        // Deliberately not wrapped in `withRetry`: a replayed usage event is only deduplicated
+        // Deliberately unwrapped — not even `runWrite`: a replayed usage event is only deduplicated
         // when `idempotencyKey` is set, so an automatic retry would over-bill the customer.
         return provider.reportUsage(params);
       },
     },
 
     licenseKeys: {
-      list: async (params = {}) => {
-        requireLicenseKeys();
-        return withRetry(() => provider.listLicenseKeys(params));
-      },
-      listAll: (params = {}) => {
-        requireLicenseKeys();
-        return listAllOf(params, (p) => provider.listLicenseKeys(p));
-      },
+      list: listLicenseKeys,
+      listAll: (params = {}) => listAllOf(params, listLicenseKeys),
       get: async (params) => {
         requireNonEmpty(params.id, 'id');
         requireLicenseKeys();
-        return withRetry(() => provider.getLicenseKey(params));
+        return runRead(params, () => provider.getLicenseKey(params));
       },
       update: async (params) => {
         requireNonEmpty(params.id, 'id');
         checkActivationLimit(params.activationLimit);
         requireLicenseKeys();
-        return withRetry(() => provider.updateLicenseKey(params));
+        return runWrite(params, () => provider.updateLicenseKey(params));
       },
     },
 
     orders: {
-      list: async (params = {}) => {
-        checkOrderCustomerFilter(params.customerId);
-        return withRetry(() => provider.listOrders(params));
-      },
-      listAll: (params = {}) => {
-        checkOrderCustomerFilter(params.customerId);
-        return listAllOf(params, (p) => provider.listOrders(p));
-      },
+      list: listOrders,
+      listAll: (params = {}) => listAllOf(params, listOrders),
       get: async (params) => {
         requireNonEmpty(params.id, 'id');
-        return withRetry(() => provider.getOrder(params));
+        return runRead(params, () => provider.getOrder(params));
       },
       getInvoiceUrl: async (params) => {
         requireNonEmpty(params.id, 'id');
-        return withRetry(() => provider.getOrderInvoiceUrl(params));
+        return runRead(params, () => provider.getOrderInvoiceUrl(params));
       },
     },
   };

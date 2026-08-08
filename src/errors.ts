@@ -18,6 +18,7 @@ export interface RevenueErrorOptions {
   status?: number;
   /** Seconds to wait before retrying, taken from the provider's rate-limit response. */
   retryAfter?: number;
+  /** Overrides the default (`rate_limited`, `network_error`, or any `5xx`). */
   retryable?: boolean;
   cause?: unknown;
   /** The provider's parsed error response body. Never redacted — see `RevenueError.responseBody`. */
@@ -43,6 +44,11 @@ export class RevenueError extends Error {
   readonly provider?: ProviderName;
   readonly status?: number;
   readonly retryAfter?: number;
+  /**
+   * Whether replaying the request may succeed. `true` for `rate_limited`, `network_error` and any
+   * `5xx`, unless the provider says otherwise (Stripe's `Stripe-Should-Retry`). The client reads it
+   * to decide whether to retry a read once.
+   */
   readonly retryable: boolean;
   /**
    * The provider's parsed error response body, kept verbatim and never redacted — it routinely

@@ -208,9 +208,11 @@ An abort rejects with the original `AbortError`, so it is distinguishable from a
 
 ## What still needs care
 
-- **Rate-limit retries sleep.** The client's single bounded retry waits up to
-  `maxRetryAfterSeconds` (default 10 seconds) before retrying. On a latency-sensitive route, lower it or
-  set `retry: { maxRetryAfterSeconds: 0 }`.
+- **Retries sleep.** The client's single bounded retry waits up to `maxRetryAfterSeconds` (default 10
+  seconds) before retrying — on a rate limit for any call, and on a transport failure or `5xx` for reads
+  (including every page of a `listAll`). On a latency-sensitive route, lower it or set
+  `retry: { maxRetryAfterSeconds: 0 }`. The wait honors the request `signal`, so an aborted or
+  timed-out request never sits out the delay.
 - **Catalog reads are chatty.** Stripe fetches prices per product and Lemon Squeezy fetches a price
   model per variant, so `products.listAll` can be many subrequests. Workers cap subrequests per
   request — cache the catalog in KV rather than listing it on every page view.

@@ -26,8 +26,11 @@ describe('RevenueError', () => {
     expect(new RevenueError('x', { code: 'provider_error', status: 400 }).retryable).toBe(false);
   });
 
-  it('honors an explicit retryable override', () => {
+  it('honors an explicit retryable override in both directions', () => {
     expect(new RevenueError('x', { code: 'rate_limited', retryable: false }).retryable).toBe(false);
+    expect(
+      new RevenueError('x', { code: 'conflict', status: 409, retryable: true }).retryable,
+    ).toBe(true);
   });
 
   it('redacts secrets from the message', () => {

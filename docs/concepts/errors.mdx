@@ -1,6 +1,6 @@
 ---
 title: Errors
-description: The RevenueError class, its normalized code union, retry semantics, the bounded rate-limit retry, and secret redaction.
+description: The RevenueError class, its normalized code union, retry semantics, the client's bounded retry, and secret redaction.
 sidebar:
   label: Errors
 ---
@@ -33,7 +33,7 @@ try {
     code: { type: 'RevenueErrorCode', description: 'Normalized failure code — the field to branch on.' },
     provider: { type: 'ProviderName', required: false, description: 'Which provider produced the error.' },
     status: { type: 'number', required: false, description: 'HTTP status, when the failure came from a response.' },
-    retryable: { type: 'boolean', description: 'Whether retrying the operation may succeed.' },
+    retryable: { type: 'boolean', description: "Whether retrying may succeed. True for rate_limited, network_error and any 5xx, unless the provider overrides it — Stripe's Stripe-Should-Retry does." },
     retryAfter: { type: 'number', required: false, description: 'Seconds to wait, parsed from the provider Retry-After header (numeric or HTTP-date).' },
     cause: { type: 'unknown', required: false, description: 'The underlying JavaScript error — a fetch TypeError, or a SyntaxError from an unparseable body. Never the provider payload.' },
     responseBody: { type: 'unknown', required: false, description: "The provider's parsed error response body. Non-enumerable, and never redacted." },
@@ -65,7 +65,7 @@ hard-codes `cause` in its inspector. If you read `error.cause` to inspect a prov
 
 `RevenueErrorCode` is a **closed union of ten values**:
 
-| `code`            | Meaning                                                                     | `retryable`     |
+| `code`            | Meaning                                                                     | `retryable` (default) |
 | ----------------- | ---------------------------------------------------------------------------- | --------------- |
 | `unauthorized`    | Missing, invalid, or expired credentials.                                    | no              |
 | `forbidden`       | Authenticated, but not allowed to do this.                                   | no              |
@@ -118,9 +118,14 @@ checkout with `quantity > 1`, a Lemon Squeezy checkout with more than one item, 
 
 ## `retryable` and `retryAfter`
 
-`retryable` is a normalized hint. It is `true` for `rate_limited` and `network_error`, and for any error
-whose HTTP `status` is `5xx`. When the provider sent a `Retry-After` header — numeric seconds or an
-HTTP date — `retryAfter` carries the number of seconds to wait.
+`retryable` defaults to `true` for `rate_limited` and `network_error`, and for any error whose HTTP
+`status` is `5xx` — and a provider may override it in either direction when it says so explicitly.
+Stripe does: its `Stripe-Should-Retry` header sets `retryable` verbatim, so a 429 the header vetoes is
+`retryable: false` and a lock conflict it endorses is `retryable: true`. The client reads the field, so
+the veto also cancels its own retry.
+
+When the provider sent a `Retry-After` header — numeric seconds or an HTTP date — `retryAfter` carries
+the number of seconds to wait.
 
 ```ts
 if (error.retryable) {
@@ -135,19 +140,31 @@ Provider notes:
   array of validation entries; the adapter summarizes them as `loc.path: msg` (up to three, then
   `(+N more)`) so `error.message` names the failing fields. Each entry's echoed `input` is left out of
   the message — read `error.responseBody` for the untouched array.
-- **Stripe** does not send `Retry-After`; it signals retryability via `Stripe-Should-Retry`. Expect
-  `retryAfter` to be `undefined` on Stripe rate limits and use your own back-off.
+- **Stripe** does not send `Retry-After`; it signals retryability via `Stripe-Should-Retry`, which the
+  adapter maps onto `retryable`. Expect `retryAfter` to be `undefined` on Stripe rate limits — the
+  client falls back to a one-second delay, and your own back-off should too.
 - **Paddle** reports authentication failures as HTTP **403**. The adapter inspects the error code and
   re-maps `authentication_malformed`, `authentication_missing`, and `invalid_token` to `unauthorized`,
   so a bad API key doesn't masquerade as a permissions problem.
 
 ## The client's single bounded retry
 
-The client retries **once**, and only when all of these hold:
+The client retries **at most once per call**, on one of two triggers:
 
-1. the error is a `RevenueError` with code `rate_limited`,
-2. the provider supplied a `retryAfter`,
-3. `retryAfter <= maxRetryAfterSeconds` (default `10`).
+| Trigger                                             | Reads (`get*`, `list*`, `listAll`) | Writes (`create*`, `cancel`, `pause`, `changePlan`, …) |
+| --------------------------------------------------- | ---------------------------------- | ------------------------------------------------------ |
+| `rate_limited`, unless `retryable` is `false`       | retried                            | retried                                                |
+| Any other `retryable` error (`network_error`, `5xx`) | retried                            | **never** retried                                      |
+| Anything else                                        | not retried                        | not retried                                            |
+
+A rate limit is safe to replay on anything: the provider rejected the request before it did any work. A
+transport failure is not — the request may have landed and only the response was lost — so a write that
+dies mid-flight is surfaced to you rather than repeated. None of the SDK's write calls carry an
+idempotency key, so replaying one could create a second checkout.
+
+The wait before the retry is `retryAfter` when the provider sent a `Retry-After` header, and **one
+second** when it didn't (Stripe never does, and no provider sends one on a network error or a `5xx`).
+Either way the wait is capped:
 
 ```ts
 const client = createClient({
@@ -156,18 +173,22 @@ const client = createClient({
 });
 ```
 
-The retry is deliberately conservative: it smooths over a one-second burst limit without turning a
-serverless request into a multi-minute hang, and it never retries anything that could double-charge a
-customer. Everything beyond it — exponential back-off, queues, dead-lettering — is yours to build on top
-of `retryable` and `retryAfter`.
+A `retryAfter` above `maxRetryAfterSeconds` skips the retry entirely rather than waiting the cap out, so
+the error surfaces immediately with `retryAfter` intact and you decide what to do with it. The retry is
+deliberately conservative: it smooths over a one-second burst limit without turning a serverless request
+into a multi-minute hang. Everything beyond it — exponential back-off, queues, dead-lettering — is yours
+to build on top of `retryable` and `retryAfter`.
 
 The retry also applies inside `listAll`, so a rate limit hit halfway through an iteration doesn't abort
 the whole walk.
 
+The wait honors the `signal` you passed: aborting a call rejects it immediately with the abort reason
+instead of sleeping out the delay first.
+
 :::note
-`usage.report` is the one call the retry never covers. A replayed usage event is deduplicated only when
-you passed an `idempotencyKey`, so retrying automatically could over-bill the customer — see
-[Usage-based billing](/docs/concepts/usage-based-billing).
+`usage.report` is the one call no retry ever covers, not even for a rate limit. A replayed usage event is
+deduplicated only when you passed an `idempotencyKey`, so retrying automatically could over-bill the
+customer — see [Usage-based billing](/docs/concepts/usage-based-billing).
 :::
 
 ## Secret redaction

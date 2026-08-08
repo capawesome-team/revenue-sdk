@@ -236,8 +236,8 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   Event ingestion accepts it as an alternative customer key, but `usage.report` always sends the Polar
   customer ID — external keying needs Polar's native API.
 - **No idempotency keys**, apart from event ingestion. Polar's REST API has none, so retrying a
-  `checkouts.create` may create a second checkout. The client's rate-limit retry never applies to writes
-  that could duplicate a charge.
+  `checkouts.create` may create a second checkout. That is why the client only replays a write when Polar
+  rejected it with a rate limit — before it did any work — and never after a transport failure.
 - **Usage ingestion is batch-only and deduplicated permanently.** `usage.report` posts a one-event batch
   to `/v1/events/ingest`, and `idempotencyKey` becomes the event's `external_id` — Polar enforces it with
   a permanent unique index, so replaying the same key is safe. A backdated `timestamp` is accepted, but

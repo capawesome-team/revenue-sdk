@@ -1,6 +1,6 @@
 ---
 title: Error codes
-description: The full RevenueErrorCode union with its HTTP-status mapping, typical causes, retry semantics, and the client's single bounded rate-limit retry.
+description: The full RevenueErrorCode union with its HTTP-status mapping, typical causes, retry semantics, and the client's single bounded retry.
 sidebar:
   label: Error codes
 ---
@@ -19,7 +19,7 @@ and its retry semantics. For the conceptual overview see [Errors](/docs/concepts
       description: 'Which provider produced the error.',
     },
     status: { type: 'number', required: false, description: 'The HTTP status, when the failure came from a response.' },
-    retryable: { type: 'boolean', description: 'Whether retrying the operation may succeed.' },
+    retryable: { type: 'boolean', description: "Whether retrying may succeed. True for rate_limited, network_error and any 5xx, unless the provider overrides it — Stripe's Stripe-Should-Retry does." },
     retryAfter: {
       type: 'number',
       required: false,
@@ -62,7 +62,7 @@ hard-codes `cause` in its inspector. If you read `error.cause` to inspect a prov
 
 `RevenueErrorCode` is a closed union of **ten** values:
 
-| `code`             | Typical cause                                                     | HTTP status      | `retryable`      |
+| `code`             | Typical cause                                                     | HTTP status      | `retryable` (default) |
 | ------------------ | ------------------------------------------------------------------ | ---------------- | ---------------- |
 | `validation`       | Bad parameters, from the provider or a client-side check           | `400`, `422`     | no               |
 | `unauthorized`     | Missing, invalid, or revoked credentials                           | `401`            | no               |
@@ -122,26 +122,37 @@ express — see [the capability matrix](/docs/reference/capability-matrix#beyond
 ## `retryable` and `retryAfter`
 
 `retryable` defaults to `true` for `rate_limited` and `network_error`, and for **any** error whose HTTP
-`status` is `5xx`. `retryAfter` is parsed from the provider's `Retry-After` header, accepting either
-numeric seconds or an HTTP date (converted to seconds from now, never negative).
+`status` is `5xx`. A provider adapter may override the default in either direction when the provider
+says so explicitly — only Stripe does, from `Stripe-Should-Retry`. `retryAfter` is parsed from the
+provider's `Retry-After` header, accepting either numeric seconds or an HTTP date (converted to seconds
+from now, never negative).
 
 Provider behavior on rate limits:
 
 | Provider          | `Retry-After` on 429 | Notes                                                        |
 | ----------------- | -------------------- | ------------------------------------------------------------- |
-| **Polar**         | yes                  | The client's bounded retry engages.                           |
+| **Polar**         | yes                  | The retry waits exactly as long as Polar asks.                |
 | **Lemon Squeezy** | usually              |                                                               |
-| **Stripe**        | **no**               | Signals retryability via `Stripe-Should-Retry`; use your own back-off. |
+| **Stripe**        | **no**               | `Stripe-Should-Retry` sets `retryable` instead; the retry falls back to one second, and a `false` cancels it. |
 | **Paddle**        | usually              |                                                               |
 | **Dodo Payments** | usually              |                                                               |
 
 ## The client's bounded retry
 
-One retry, and only when all three hold:
+**At most one retry per call**, on one of two triggers:
 
-1. the code is `rate_limited`,
-2. `retryAfter` is defined,
-3. `retryAfter <= maxRetryAfterSeconds` (default `10`).
+| Error                                                | Reads (`get*`, `list*`, `listAll`) | Writes (`create*`, `cancel`, `changePlan`, `pause`, `resume`, `uncancel`, `endTrial`, `revoke`, `update*`, `customerPortal.createSession`) |
+| ---------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `rate_limited` with `retryable: true`                | retried                            | retried                                                                                                                                    |
+| Any other `retryable` error (`network_error`, `5xx`) | retried                            | never retried                                                                                                                              |
+| Anything else                                        | not retried                        | not retried                                                                                                                                |
+
+A 429 is rejected before the provider does any work, so replaying it is safe anywhere. A transport
+failure is not: the request may have landed and only the response was lost, and no SDK write carries an
+idempotency key.
+
+The delay is `retryAfter` when the provider sent one and **one second** otherwise. A delay above
+`maxRetryAfterSeconds` skips the retry rather than waiting the cap out.
 
 ```ts
 const client = createClient({
@@ -150,9 +161,10 @@ const client = createClient({
 });
 ```
 
-It applies to every call, including each page fetched inside `listAll` — except `usage.report`, which is
-never retried because a replay is deduplicated only when you passed an `idempotencyKey`. See
-[Usage-based billing](/docs/concepts/usage-based-billing).
+The retry covers each page fetched inside `listAll`, and its wait is interrupted by the `signal` you
+passed — an aborted call rejects with the abort reason instead of sleeping first. `usage.report` is the
+one call it never covers, not even for a rate limit, because a replay is deduplicated only when you
+passed an `idempotencyKey`. See [Usage-based billing](/docs/concepts/usage-based-billing).
 
 ## Secret redaction
 
