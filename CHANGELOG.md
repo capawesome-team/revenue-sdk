@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.2.0](https://github.com/capawesome-team/revenue-sdk/compare/v0.1.0...v0.2.0) (2026-08-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **types:** WebhookEvent payload fields require narrowing on event.type; un-narrowed access no longer compiles.
+* the provider response body moved from `RevenueError.cause` to a non-enumerable `RevenueError.responseBody`; `cause` now carries only the underlying JS error. Non-enumerability hides the body from `console.error`, `util.inspect`, `JSON.stringify` and Sentry, while `error.responseBody` remains a deliberate read. It is not redacted: the content is customer PII, which a secrets list cannot enumerate.
+
+### Features
+
+* add customers.create and customers.update ([9ae21ae](https://github.com/capawesome-team/revenue-sdk/commit/9ae21aea5597207a0088bf3f5d25467da6dad4e8))
+* add license keys ([#5](https://github.com/capawesome-team/revenue-sdk/issues/5)) ([5b8bb65](https://github.com/capawesome-team/revenue-sdk/commit/5b8bb6520906926add2696f7eabd6468841f32aa))
+* add pay-what-you-want checkouts and a customerMetadata capability ([6e57384](https://github.com/capawesome-team/revenue-sdk/commit/6e5738479628f32f199c1e570275cbb117e24161))
+* add subscription pause and resume ([#2](https://github.com/capawesome-team/revenue-sdk/issues/2)) ([775d549](https://github.com/capawesome-team/revenue-sdk/commit/775d549ef2c10a2471d1bb4683c23cb49ee5b3a9))
+* add the orders resource ([#6](https://github.com/capawesome-team/revenue-sdk/issues/6)) ([580cdeb](https://github.com/capawesome-team/revenue-sdk/commit/580cdeb184bc5f9c0c45426bfb200e6db0ce6dcc))
+* add usage-based billing ([#4](https://github.com/capawesome-team/revenue-sdk/issues/4)) ([b77bf17](https://github.com/capawesome-team/revenue-sdk/commit/b77bf179e9ac5de4d154900b42c2dd605507e34b))
+* add webhook event granularity, dedupe keys and checkout expiry ([d675cfa](https://github.com/capawesome-team/revenue-sdk/commit/d675cfae9467a86de7ae60129bb16a8fee2ce56f))
+* support custom provider adapters ([4c37444](https://github.com/capawesome-team/revenue-sdk/commit/4c374445c5896702541cae48639ccfc00f6c0b07))
+* **testing:** add signWebhook for webhook handler tests ([c4603c8](https://github.com/capawesome-team/revenue-sdk/commit/c4603c835babd0793d508087bf3a773d3453fe13))
+
+
+### Bug Fixes
+
+* **client:** retry rate limits without Retry-After and honor aborts ([a17348f](https://github.com/capawesome-team/revenue-sdk/commit/a17348f2e835f826375d1df9d0a6c39b5a3350eb))
+* **dodo-payments:** redact the license key from error messages ([e2992da](https://github.com/capawesome-team/revenue-sdk/commit/e2992dad01e8a38d037af768cc31dfdaa6633328))
+* **http:** preserve baseUrl path prefixes ([cbe1316](https://github.com/capawesome-team/revenue-sdk/commit/cbe13164539c52791db2ba00a8fd50c39c7f4adc))
+* **lemon-squeezy:** dedupe first-payment webhooks, filter drafts, guard endTrial ([41d6743](https://github.com/capawesome-team/revenue-sdk/commit/41d67432d2db299ad5e0f1f2520adf690088c121))
+* **polar:** map license activation-limit 403 to validation, redact the key ([9d8b8f7](https://github.com/capawesome-team/revenue-sdk/commit/9d8b8f7eaa22507db02d9ac66bd870d179f261c8))
+* **stripe:** refuse plan changes when the subscription has no items ([b0b1873](https://github.com/capawesome-team/revenue-sdk/commit/b0b1873457d0b9aed11c64151d7526e4dcd1b0f4))
+
+
+### Code Refactoring
+
+* **types:** model WebhookEvent as a discriminated union ([0af4d12](https://github.com/capawesome-team/revenue-sdk/commit/0af4d125dd4a767de948fd9fab5de18ffd5b87ae))
+
 ## 0.1.0 (2026-08-06)
 
 
