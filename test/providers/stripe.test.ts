@@ -338,6 +338,56 @@ describe('stripe', () => {
     expect(checkout.subscriptionId).toBe('sub_1');
   });
 
+  describe('customers', () => {
+    const CUSTOMER = {
+      id: 'cus_1',
+      email: 'user@example.com',
+      name: 'Ada Lovelace',
+      created: 1754006400,
+      metadata: { org_id: 'org_1' },
+    };
+
+    it('creates a customer', async () => {
+      const { provider, stub } = setup(routes({ '/v1/customers': CUSTOMER }));
+      const customer = await provider.createCustomer({
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+        metadata: { org_id: 'org_1' },
+      });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('POST');
+      expect(request.url).toBe('https://api.stripe.com/v1/customers');
+      expect(request.headers['content-type']).toBe('application/x-www-form-urlencoded');
+      const form = new URLSearchParams(request.body);
+      expect(form.get('email')).toBe('user@example.com');
+      expect(form.get('name')).toBe('Ada Lovelace');
+      expect(form.get('metadata[org_id]')).toBe('org_1');
+      expect(customer).toMatchObject({
+        id: 'cus_1',
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+        metadata: { org_id: 'org_1' },
+      });
+      expect(customer.createdAt).toEqual(new Date(1754006400 * 1000));
+    });
+
+    it('updates a customer with POST and omits the fields it was not given', async () => {
+      const { provider, stub } = setup(
+        routes({ '/v1/customers/cus_1': { ...CUSTOMER, name: 'Ada L.' } }),
+      );
+      const customer = await provider.updateCustomer({ id: 'cus_1', name: 'Ada L.' });
+      const request = stub.requests[0]!;
+      // Stripe updates with POST, not PATCH.
+      expect(request.method).toBe('POST');
+      expect(request.url).toBe('https://api.stripe.com/v1/customers/cus_1');
+      const form = new URLSearchParams(request.body);
+      expect(form.get('name')).toBe('Ada L.');
+      expect(form.has('email')).toBe(false);
+      expect(form.has('metadata')).toBe(false);
+      expect(customer.name).toBe('Ada L.');
+    });
+  });
+
   describe('subscriptions', () => {
     it('maps item-level billing periods and price fields', async () => {
       const { provider } = setup(routes({ '/v1/subscriptions/sub_1': SUBSCRIPTION }));

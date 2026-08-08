@@ -231,6 +231,13 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   [License keys](/docs/concepts/license-keys).
 - **`management_urls` is absent from webhook payloads**, so portal links must come from
   `customerPortal.createSession` (`POST /customers/{id}/portal-sessions`). `returnUrl` is unsupported.
+- **A taken customer email is a `409`.** `customers.create` with an address that already exists fails
+  with Paddle's `customer_already_exists`, surfaced as `RevenueError { code: 'conflict' }`; the existing
+  customer's ID is in the message. Paddle's own checkout flow silently reuses that customer instead —
+  the direct API call does not.
+- **`custom_data` is replaced, never merged.** `customers.update({ metadata })` sends the object as
+  given, exactly like the `items` list field. The SDK deliberately does not read-then-merge: that would
+  make clearing a key impossible and would resurrect entries the caller left out.
 
 <CardGroup cols={2}>
   <Card title="Dodo Payments" icon="bird" href="/docs/providers/dodo-payments">

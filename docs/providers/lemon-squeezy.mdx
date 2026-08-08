@@ -230,6 +230,10 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   collection ignores the factory's `storeId`. On an account with several stores, filter the results on
   `raw.attributes.product_id` (or call `products.get` with the variant IDs you already know).
 - **JSON:API content type on every request**, including GETs (`application/vnd.api+json`).
+- **A customer has no metadata field at all**, so `customerMetadata` is `false` and the client rejects
+  `metadata` on `customers.create`/`customers.update` with `unsupported` — Lemon Squeezy's customer
+  object has no custom-data equivalent. Creating one requires **both** a name and an email, and the
+  store is sent as a JSON:API relationship, so new customers always land in the factory's `storeId`.
 - **Empty objects serialize as `[]`.** Lemon Squeezy returns `[]` where an empty object is expected
   (`custom`, `billing_address`); the mappers tolerate it.
 - **One item per checkout, and no `customerId`.** More than one item throws `unsupported`; attaching an

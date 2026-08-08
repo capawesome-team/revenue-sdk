@@ -205,6 +205,9 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   subscription to return its updated state — one extra request.
 - **Portal session parameters go in the query string** on a POST
   (`POST /customers/{id}/customer-portal/session?return_url=…`).
+- **A customer needs both a name and an email.** `POST /customers` requires them, which is one of the
+  two reasons `customers.create` takes `name` as a required parameter. `metadata` is supported and is
+  replaced wholesale on update.
 - **Usage events require an `event_id`.** `usage.report` posts a one-event batch to `/events/ingest`,
   and Dodo requires an `event_id` to deduplicate on. When `idempotencyKey` is omitted the SDK generates
   a UUID — unique per attempt, so **that call is not replay-safe**. A `timestamp` may be at most **one

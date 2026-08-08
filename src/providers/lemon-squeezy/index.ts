@@ -317,6 +317,41 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
       };
     },
 
+    async createCustomer(params) {
+      const { data } = await http.json<LsSingleResponse<LsCustomerAttributes>>('/v1/customers', {
+        method: 'POST',
+        body: {
+          data: {
+            type: 'customers',
+            // Lemon Squeezy requires both a name and an email; the store is a relationship
+            // rather than an attribute.
+            attributes: { name: params.name, email: params.email },
+            relationships: { store: { data: { type: 'stores', id: storeId } } },
+          },
+        },
+        signal: params.signal,
+      });
+      return toCustomer(data.data);
+    },
+
+    async updateCustomer(params) {
+      const { data } = await http.json<LsSingleResponse<LsCustomerAttributes>>(
+        `/v1/customers/${params.id}`,
+        {
+          method: 'PATCH',
+          body: {
+            data: {
+              type: 'customers',
+              id: params.id,
+              attributes: { name: params.name, email: params.email },
+            },
+          },
+          signal: params.signal,
+        },
+      );
+      return toCustomer(data.data);
+    },
+
     async getSubscription(params) {
       return toSubscription(await fetchSubscription(params.id, params.signal));
     },

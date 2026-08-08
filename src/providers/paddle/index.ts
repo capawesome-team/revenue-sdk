@@ -263,6 +263,29 @@ export function paddle(options: PaddleProviderOptions): RevenueProvider {
       return { items: page.data.map(toCustomer), cursor: page.cursor };
     },
 
+    async createCustomer(params) {
+      // Paddle answers 409 `customer_already_exists` when the email is taken, which surfaces as
+      // `conflict` — the existing customer's ID is in the error detail.
+      const { data } = await http.json<PaddleResponse<PaddleCustomer>>('/customers', {
+        method: 'POST',
+        body: { email: params.email, name: params.name, custom_data: params.metadata },
+        signal: params.signal,
+      });
+      return toCustomer(data.data);
+    },
+
+    async updateCustomer(params) {
+      // `custom_data` is replaced as a whole, like Paddle's list fields. It is sent as given
+      // rather than merged into the stored object: a GET-merge would make clearing a key
+      // impossible and would silently resurrect entries the caller left out.
+      const { data } = await http.json<PaddleResponse<PaddleCustomer>>(`/customers/${params.id}`, {
+        method: 'PATCH',
+        body: { email: params.email, name: params.name, custom_data: params.metadata },
+        signal: params.signal,
+      });
+      return toCustomer(data.data);
+    },
+
     async getSubscription(params) {
       const { data } = await http.json<PaddleResponse<PaddleSubscription>>(
         `/subscriptions/${params.id}`,

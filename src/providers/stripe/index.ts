@@ -244,6 +244,34 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
       return { items: data.data.map(toCustomer), cursor: nextCursor(data) };
     },
 
+    async createCustomer(params) {
+      const { data } = await http.json<StripeCustomer>('/v1/customers', {
+        method: 'POST',
+        form: encodeForm({
+          email: params.email,
+          name: params.name,
+          metadata: params.metadata,
+        }),
+        signal: params.signal,
+      });
+      return toCustomer(data);
+    },
+
+    async updateCustomer(params) {
+      // Stripe updates with POST rather than PATCH, and merges `metadata` key by key instead of
+      // replacing it: an omitted key keeps its stored value.
+      const { data } = await http.json<StripeCustomer>(`/v1/customers/${params.id}`, {
+        method: 'POST',
+        form: encodeForm({
+          email: params.email,
+          name: params.name,
+          metadata: params.metadata,
+        }),
+        signal: params.signal,
+      });
+      return toCustomer(data);
+    },
+
     async getSubscription(params) {
       return toSubscription(await fetchSubscription(params.id, params.signal));
     },

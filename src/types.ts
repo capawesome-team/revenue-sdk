@@ -320,6 +320,25 @@ export interface ListCustomersParams extends BaseParams {
   email?: string;
 }
 
+export interface CreateCustomerParams extends BaseParams {
+  email: string;
+  /** Required: Lemon Squeezy and Dodo Payments reject a customer without a name. */
+  name: string;
+  /** Requires the `customerMetadata` capability — the Lemon Squeezy customer has no metadata field. */
+  metadata?: Metadata;
+}
+
+export interface UpdateCustomerParams extends BaseParams {
+  id: string;
+  email?: string;
+  name?: string;
+  /**
+   * Replaces the stored metadata, except on Stripe, which merges it key by key. Requires the
+   * `customerMetadata` capability.
+   */
+  metadata?: Metadata;
+}
+
 export interface GetSubscriptionParams extends BaseParams {
   id: string;
 }
@@ -430,6 +449,8 @@ export interface RevenueProvider {
   getCheckout(params: GetCheckoutParams): Promise<Checkout>;
   getCustomer(params: GetCustomerParams): Promise<Customer>;
   listCustomers(params: ListCustomersParams): Promise<Page<Customer>>;
+  createCustomer(params: CreateCustomerParams): Promise<Customer>;
+  updateCustomer(params: UpdateCustomerParams): Promise<Customer>;
   getSubscription(params: GetSubscriptionParams): Promise<Subscription>;
   listSubscriptions(params: ListSubscriptionsParams): Promise<Page<Subscription>>;
   cancelSubscription(params: CancelSubscriptionParams): Promise<Subscription>;

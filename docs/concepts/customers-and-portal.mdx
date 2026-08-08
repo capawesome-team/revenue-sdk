@@ -1,6 +1,6 @@
 ---
 title: Customers & portal
-description: Look up customers, understand the per-provider email-filter caveats, and mint short-lived customer portal sessions that expire quickly.
+description: Create, update and look up customers, understand the per-provider email-filter and metadata caveats, and mint short-lived customer portal sessions.
 sidebar:
   label: Customers & portal
 ---
@@ -69,6 +69,83 @@ if (items.length > 1) {
   logger.warn(`Multiple customers share ${email}`, { ids: items.map((c) => c.id) });
 }
 ```
+
+## Creating and updating customers
+
+`customers.create` provisions a customer before any checkout — useful when you want a provider ID on
+your user record from the moment they sign up. `customers.update` edits one in place. All five
+providers support both, so neither operation is capability-gated.
+
+```ts
+const customer = await client.customers.create({
+  email: 'ada@example.com',
+  name: 'Ada Lovelace',
+  metadata: { userId: '42' }, // requires the `customerMetadata` capability
+});
+
+await client.customers.update({ id: customer.id, name: 'Ada L.' });
+```
+
+<TypeTable
+  type={{
+    email: { type: 'string', description: 'The customer email.' },
+    name: { type: 'string', description: 'Display name. Required — see below.' },
+    metadata: { type: 'Record<string, string | number | boolean>', required: false, description: 'Provider metadata. Requires the customerMetadata capability.' },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
+  }}
+/>
+
+`name` is **required** even though only two providers demand it: Lemon Squeezy and Dodo Payments both
+reject a customer without one, so a params type that made it optional would compile everywhere and fail
+on two providers at runtime.
+
+<TypeTable
+  type={{
+    id: { type: 'string', description: 'The provider customer to update.' },
+    email: { type: 'string', required: false, description: 'New email.' },
+    name: { type: 'string', required: false, description: 'New display name.' },
+    metadata: { type: 'Record<string, string | number | boolean>', required: false, description: 'New metadata. Requires the customerMetadata capability.' },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
+  }}
+/>
+
+Everything except `id` is optional and an omitted field keeps its stored value. A field passed as an
+empty string is rejected with `validation` before the request goes out — no provider reads `''` as
+"clear this field".
+
+Both calls are **writes**: the client replays them once when the provider answered with a rate limit,
+and never after a transport failure. No provider offers idempotency keys on customers, so a replayed
+`create` would risk a duplicate.
+
+### Metadata is the one field that is not portable
+
+Metadata is the only customer field gated by a capability. Four providers store it, Lemon Squeezy has
+nowhere to put it, so `metadata` is rejected with `unsupported` there before the request goes out —
+branch on `client.capabilities.customerMetadata` to keep your own code provider-agnostic.
+
+| Provider          | Wire field    | On update                                                             |
+| ----------------- | ------------- | --------------------------------------------------------------------- |
+| **Polar**         | `metadata`    | Replaces. Capped at 50 pairs, 40-character keys, 500-character values. |
+| **Lemon Squeezy** | —             | No metadata field at all — `customerMetadata` is `false` here.        |
+| **Stripe**        | `metadata`    | **Merges key by key** — keys you leave out keep their stored value.   |
+| **Paddle**        | `custom_data` | Replaces the whole object. The SDK never reads-then-merges.           |
+| **Dodo Payments** | `metadata`    | Replaces.                                                             |
+
+:::note
+Stripe is the odd one out: it merges `metadata` rather than replacing it. If you need "these keys and
+nothing else" on Stripe, read the customer first and send the keys you want removed explicitly.
+:::
+
+### Duplicate emails
+
+Providers disagree about whether an email may repeat:
+
+- **Paddle** rejects a taken address with `RevenueError { code: 'conflict' }`; the existing customer's
+  ID is in the message.
+- **Polar** requires the email to be unique within the organization and answers `validation`.
+- **Stripe** allows duplicates outright — several customers can share one address.
+
+Look the address up with `customers.list({ email })` first if you need create-or-get semantics.
 
 ## Customer portal sessions
 

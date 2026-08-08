@@ -179,6 +179,25 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
       };
     },
 
+    async createCustomer(params) {
+      // Dodo Payments requires both a name and an email.
+      const { data } = await http.json<DodoCustomer>('/customers', {
+        method: 'POST',
+        body: { email: params.email, name: params.name, metadata: params.metadata },
+        signal: params.signal,
+      });
+      return toCustomer(data);
+    },
+
+    async updateCustomer(params) {
+      const { data } = await http.json<DodoCustomer>(`/customers/${params.id}`, {
+        method: 'PATCH',
+        body: { email: params.email, name: params.name, metadata: params.metadata },
+        signal: params.signal,
+      });
+      return toCustomer(data);
+    },
+
     async getSubscription(params) {
       const { data } = await http.json<DodoSubscription>(`/subscriptions/${params.id}`, {
         signal: params.signal,

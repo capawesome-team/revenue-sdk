@@ -340,6 +340,55 @@ describe('lemonSqueezy', () => {
     });
   });
 
+  describe('customers', () => {
+    const CUSTOMER = {
+      type: 'customers',
+      id: '1',
+      attributes: {
+        store_id: 76833,
+        name: 'Ada Lovelace',
+        email: 'user@example.com',
+        status: 'subscribed',
+        created_at: '2026-08-01T00:00:00.000000Z',
+      },
+    };
+
+    it('creates a customer with the store relationship', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: CUSTOMER } }));
+      const customer = await provider.createCustomer({
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+      });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('POST');
+      expect(request.url).toBe('https://api.lemonsqueezy.com/v1/customers');
+      expect(request.headers['content-type']).toBe('application/vnd.api+json');
+      expect(JSON.parse(request.body!)).toEqual({
+        data: {
+          type: 'customers',
+          attributes: { name: 'Ada Lovelace', email: 'user@example.com' },
+          relationships: { store: { data: { type: 'stores', id: '76833' } } },
+        },
+      });
+      expect(customer).toMatchObject({
+        id: '1',
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+      });
+    });
+
+    it('updates a customer with its id in the envelope', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: CUSTOMER } }));
+      await provider.updateCustomer({ id: '1', email: 'ada@example.com' });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('PATCH');
+      expect(request.url).toBe('https://api.lemonsqueezy.com/v1/customers/1');
+      expect(JSON.parse(request.body!)).toEqual({
+        data: { type: 'customers', id: '1', attributes: { email: 'ada@example.com' } },
+      });
+    });
+  });
+
   describe('subscriptions', () => {
     it('maps an active subscription with numeric IDs coerced to strings', async () => {
       const { provider } = setup(() => ({ json: { data: SUBSCRIPTION } }));

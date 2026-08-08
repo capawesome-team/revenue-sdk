@@ -233,6 +233,74 @@ describe('paddle', () => {
     });
   });
 
+  describe('customers', () => {
+    const CUSTOMER = {
+      id: 'ctm_1',
+      email: 'user@example.com',
+      name: 'Ada Lovelace',
+      status: 'active',
+      custom_data: { org_id: 'org_1' },
+      created_at: '2026-08-01T00:00:00Z',
+    };
+
+    it('creates a customer with custom_data', async () => {
+      const { provider, stub } = setup(() => ({ json: { data: CUSTOMER } }));
+      const customer = await provider.createCustomer({
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+        metadata: { org_id: 'org_1' },
+      });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('POST');
+      expect(request.url).toBe('https://api.paddle.com/customers');
+      expect(JSON.parse(request.body!)).toEqual({
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+        custom_data: { org_id: 'org_1' },
+      });
+      expect(customer).toMatchObject({
+        id: 'ctm_1',
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+        metadata: { org_id: 'org_1' },
+      });
+    });
+
+    it('reports a taken email as a conflict', async () => {
+      const { provider } = setup(() => ({
+        status: 409,
+        json: {
+          error: {
+            type: 'request_error',
+            code: 'customer_already_exists',
+            detail: 'customer email conflicts with customer of id ctm_2',
+          },
+        },
+      }));
+      await expectRevenueError(
+        provider.createCustomer({ email: 'user@example.com', name: 'Ada Lovelace' }),
+        'conflict',
+      );
+    });
+
+    it('replaces custom_data on update rather than merging it', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { data: { ...CUSTOMER, custom_data: { org_id: 'org_2' } } },
+      }));
+      const customer = await provider.updateCustomer({
+        id: 'ctm_1',
+        metadata: { org_id: 'org_2' },
+      });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('PATCH');
+      expect(request.url).toBe('https://api.paddle.com/customers/ctm_1');
+      // No read-before-write: the caller's object is exactly what Paddle stores.
+      expect(stub.requests).toHaveLength(1);
+      expect(JSON.parse(request.body!)).toEqual({ custom_data: { org_id: 'org_2' } });
+      expect(customer.metadata).toEqual({ org_id: 'org_2' });
+    });
+  });
+
   describe('subscriptions', () => {
     it('maps an active subscription', async () => {
       const { provider } = setup(() => ({ json: { data: SUBSCRIPTION } }));

@@ -193,6 +193,26 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
       };
     },
 
+    async createCustomer(params) {
+      // The organization is taken from the access token, so `organization_id` is not sent.
+      // Polar caps metadata at 50 pairs, keys at 40 characters and string values at 500.
+      const { data } = await http.json<PolarCustomer>('/v1/customers/', {
+        method: 'POST',
+        body: { email: params.email, name: params.name, metadata: params.metadata },
+        signal: params.signal,
+      });
+      return toCustomer(data);
+    },
+
+    async updateCustomer(params) {
+      const { data } = await http.json<PolarCustomer>(`/v1/customers/${params.id}`, {
+        method: 'PATCH',
+        body: { email: params.email, name: params.name, metadata: params.metadata },
+        signal: params.signal,
+      });
+      return toCustomer(data);
+    },
+
     async getSubscription(params) {
       const { data } = await http.json<PolarSubscription>(`/v1/subscriptions/${params.id}`, {
         signal: params.signal,

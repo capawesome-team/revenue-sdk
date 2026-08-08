@@ -50,6 +50,28 @@ describe('createInMemoryProvider', () => {
     });
   });
 
+  it('creates and updates customers in state', async () => {
+    const provider = createInMemoryProvider();
+    const created = await provider.createCustomer({
+      email: 'ada@example.com',
+      name: 'Ada Lovelace',
+      metadata: { org: '1' },
+    });
+    expect(provider.state.customers).toHaveLength(1);
+    await expect(provider.getCustomer({ id: created.id })).resolves.toMatchObject({
+      email: 'ada@example.com',
+      name: 'Ada Lovelace',
+      metadata: { org: '1' },
+    });
+
+    const updated = await provider.updateCustomer({ id: created.id, name: 'Ada L.' });
+    expect(updated.name).toBe('Ada L.');
+    // Omitted fields keep their stored value.
+    expect(updated.email).toBe('ada@example.com');
+    expect(provider.state.customers[0]!.name).toBe('Ada L.');
+    await expect(provider.updateCustomer({ id: 'missing' })).rejects.toBeInstanceOf(RevenueError);
+  });
+
   it('mutates subscriptions through the lifecycle operations', async () => {
     const provider = createInMemoryProvider({
       subscriptions: [{ id: 'sub-1', currentPeriodEnd: new Date('2026-09-01T00:00:00Z') }],

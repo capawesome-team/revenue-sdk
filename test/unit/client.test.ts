@@ -39,6 +39,8 @@ function fakeProvider(
     getCheckout: notImplemented,
     getCustomer: notImplemented,
     listCustomers: notImplemented,
+    createCustomer: notImplemented,
+    updateCustomer: notImplemented,
     getSubscription: notImplemented,
     listSubscriptions: notImplemented,
     cancelSubscription: notImplemented,
@@ -108,6 +110,29 @@ describe('createClient', () => {
         client.checkouts.create({ items: [{ product: 'p1', quantity: 1.5 }] }),
         'validation',
       );
+    });
+
+    it('rejects a blank email or name on customer writes', async () => {
+      const createCustomer = vi.fn();
+      const updateCustomer = vi.fn();
+      const client = createClient({ provider: fakeProvider({ createCustomer, updateCustomer }) });
+      await expectRevenueError(client.customers.create({ email: '  ', name: 'Ada' }), 'validation');
+      await expectRevenueError(
+        client.customers.create({ email: 'ada@example.com', name: '' }),
+        'validation',
+      );
+      await expectRevenueError(client.customers.update({ id: ' ' }), 'validation');
+      // An empty value would overwrite the stored one rather than leave it alone.
+      await expectRevenueError(client.customers.update({ id: 'c1', name: '' }), 'validation');
+      expect(createCustomer).not.toHaveBeenCalled();
+      expect(updateCustomer).not.toHaveBeenCalled();
+    });
+
+    it('updates a customer with only an id', async () => {
+      const updateCustomer = vi.fn().mockResolvedValue({ id: 'c1', email: 'a@b.c', raw: {} });
+      const client = createClient({ provider: fakeProvider({ updateCustomer }) });
+      await client.customers.update({ id: 'c1' });
+      expect(updateCustomer).toHaveBeenCalledWith({ id: 'c1' });
     });
 
     it('rejects a limit that is not a positive integer', async () => {
@@ -509,6 +534,19 @@ describe('createClient', () => {
       const client = createClient({ provider: fakeProvider({ cancelSubscription }) });
       await expectRevenueError(client.subscriptions.cancel({ id: 's1' }), 'network_error');
       expect(cancelSubscription).toHaveBeenCalledTimes(1);
+    });
+
+    it('never retries a customer create on a transport failure', async () => {
+      // No provider offers idempotency keys on customers, so a replay could create a duplicate.
+      const createCustomer = vi
+        .fn()
+        .mockRejectedValue(new RevenueError('boom', { code: 'network_error' }));
+      const client = createClient({ provider: fakeProvider({ createCustomer }) });
+      await expectRevenueError(
+        client.customers.create({ email: 'ada@example.com', name: 'Ada' }),
+        'network_error',
+      );
+      expect(createCustomer).toHaveBeenCalledTimes(1);
     });
 
     it('still retries a write on a rate limit', async () => {

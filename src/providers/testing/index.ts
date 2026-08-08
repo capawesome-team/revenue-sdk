@@ -254,6 +254,14 @@ export function createInMemoryProvider(
     };
   }
 
+  function getCustomerById(id: string): Customer {
+    const customer = state.customers.find((entry) => entry.id === id);
+    if (!customer) {
+      throw notFound('customer', id);
+    }
+    return customer;
+  }
+
   function getSubscriptionById(id: string): Subscription {
     const subscription = state.subscriptions.find((entry) => entry.id === id);
     if (!subscription) {
@@ -320,11 +328,7 @@ export function createInMemoryProvider(
     },
 
     async getCustomer(params) {
-      const customer = state.customers.find((entry) => entry.id === params.id);
-      if (!customer) {
-        throw notFound('customer', params.id);
-      }
-      return customer;
+      return getCustomerById(params.id);
     },
 
     async listCustomers(params) {
@@ -332,6 +336,33 @@ export function createInMemoryProvider(
         ? state.customers.filter((entry) => entry.email === params.email)
         : state.customers;
       return paginate(items, params.cursor);
+    },
+
+    async createCustomer(params) {
+      const customer: Customer = {
+        id: nextId('customer'),
+        email: params.email,
+        name: params.name,
+        metadata: params.metadata,
+        createdAt: new Date(),
+        raw: params,
+      };
+      state.customers.push(customer);
+      return customer;
+    },
+
+    async updateCustomer(params) {
+      const customer = getCustomerById(params.id);
+      if (params.email !== undefined) {
+        customer.email = params.email;
+      }
+      if (params.name !== undefined) {
+        customer.name = params.name;
+      }
+      if (params.metadata !== undefined) {
+        customer.metadata = params.metadata;
+      }
+      return customer;
     },
 
     async getSubscription(params) {
@@ -405,10 +436,7 @@ export function createInMemoryProvider(
     },
 
     async createCustomerPortalSession(params) {
-      const customer = state.customers.find((entry) => entry.id === params.customerId);
-      if (!customer) {
-        throw notFound('customer', params.customerId);
-      }
+      const customer = getCustomerById(params.customerId);
       return { url: `https://portal.example.com/${params.customerId}`, raw: customer };
     },
 

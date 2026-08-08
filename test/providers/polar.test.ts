@@ -242,6 +242,52 @@ describe('polar', () => {
       await provider.listCustomers({ email: 'user@example.com' });
       expect(stub.requests[0]!.url).toContain('email=user%40example.com');
     });
+
+    it('creates a customer on the trailing-slash collection route', async () => {
+      const { provider, stub } = setup(() => ({
+        json: {
+          id: 'cus-uuid-1',
+          email: 'user@example.com',
+          name: 'Ada Lovelace',
+          metadata: { org_id: 'org_1' },
+          created_at: '2026-08-01T00:00:00Z',
+        },
+      }));
+      const customer = await provider.createCustomer({
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+        metadata: { org_id: 'org_1' },
+      });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('POST');
+      expect(request.url).toBe('https://api.polar.sh/v1/customers/');
+      expect(JSON.parse(request.body!)).toEqual({
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+        metadata: { org_id: 'org_1' },
+      });
+      expect(customer).toMatchObject({
+        id: 'cus-uuid-1',
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+        metadata: { org_id: 'org_1' },
+      });
+    });
+
+    it('updates a customer on the single-customer route, which has no trailing slash', async () => {
+      const { provider, stub } = setup(() => ({
+        json: { id: 'cus-uuid-1', email: 'ada@example.com', name: 'Ada Lovelace' },
+      }));
+      const customer = await provider.updateCustomer({
+        id: 'cus-uuid-1',
+        email: 'ada@example.com',
+      });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('PATCH');
+      expect(request.url).toBe('https://api.polar.sh/v1/customers/cus-uuid-1');
+      expect(JSON.parse(request.body!)).toEqual({ email: 'ada@example.com' });
+      expect(customer.email).toBe('ada@example.com');
+    });
   });
 
   describe('subscriptions', () => {

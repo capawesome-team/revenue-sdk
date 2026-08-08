@@ -196,6 +196,51 @@ describe('dodoPayments', () => {
     });
   });
 
+  describe('customers', () => {
+    const CUSTOMER = {
+      customer_id: 'cus_1',
+      business_id: 'bus_1',
+      email: 'user@example.com',
+      name: 'Ada Lovelace',
+      phone_number: null,
+      metadata: { org_id: 'org_1' },
+      created_at: '2026-08-01T00:00:00Z',
+    };
+
+    it('creates a customer', async () => {
+      const { provider, stub } = setup(() => ({ json: CUSTOMER }));
+      const customer = await provider.createCustomer({
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+        metadata: { org_id: 'org_1' },
+      });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('POST');
+      expect(request.url).toBe('https://live.dodopayments.com/customers');
+      expect(JSON.parse(request.body!)).toEqual({
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+        metadata: { org_id: 'org_1' },
+      });
+      expect(customer).toMatchObject({
+        id: 'cus_1',
+        email: 'user@example.com',
+        name: 'Ada Lovelace',
+        metadata: { org_id: 'org_1' },
+      });
+    });
+
+    it('updates a customer with PATCH', async () => {
+      const { provider, stub } = setup(() => ({ json: { ...CUSTOMER, name: 'Ada L.' } }));
+      const customer = await provider.updateCustomer({ id: 'cus_1', name: 'Ada L.' });
+      const request = stub.requests[0]!;
+      expect(request.method).toBe('PATCH');
+      expect(request.url).toBe('https://live.dodopayments.com/customers/cus_1');
+      expect(JSON.parse(request.body!)).toEqual({ name: 'Ada L.' });
+      expect(customer.name).toBe('Ada L.');
+    });
+  });
+
   describe('subscriptions', () => {
     it('maps an active subscription with capitalized intervals', async () => {
       const { provider } = setup(() => ({ json: SUBSCRIPTION }));

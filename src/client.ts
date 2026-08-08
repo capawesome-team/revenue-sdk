@@ -6,6 +6,7 @@ import type {
   Checkout,
   CheckoutItem,
   CreateCheckoutParams,
+  CreateCustomerParams,
   CreateCustomerPortalSessionParams,
   Customer,
   CustomerPortalSession,
@@ -35,6 +36,7 @@ import type {
   RevokeSubscriptionParams,
   Subscription,
   UncancelSubscriptionParams,
+  UpdateCustomerParams,
   UpdateLicenseKeyParams,
 } from './types.ts';
 
@@ -72,6 +74,8 @@ export interface RevenueClient {
     get(params: GetCustomerParams): Promise<Customer>;
     list(params?: ListCustomersParams): Promise<Page<Customer>>;
     listAll(params?: Omit<ListCustomersParams, 'cursor'>): AsyncGenerator<Customer, void>;
+    create(params: CreateCustomerParams): Promise<Customer>;
+    update(params: UpdateCustomerParams): Promise<Customer>;
   };
   subscriptions: {
     get(params: GetSubscriptionParams): Promise<Subscription>;
@@ -332,6 +336,25 @@ export function createClient(options: CreateClientOptions): RevenueClient {
       },
       list: listCustomers,
       listAll: (params = {}) => listAllOf(params, listCustomers),
+      create: async (params) => {
+        // Only emptiness is checked: an address the provider rejects is its own error to report,
+        // and a client-side format rule would reject addresses the provider accepts.
+        requireNonEmpty(params.email, 'email');
+        requireNonEmpty(params.name, 'name');
+        return runWrite(params, () => provider.createCustomer(params));
+      },
+      // An omitted field leaves the stored value alone; an empty one would overwrite it with a
+      // blank, which no provider treats as "clear this field".
+      update: async (params) => {
+        requireNonEmpty(params.id, 'id');
+        if (params.email !== undefined) {
+          requireNonEmpty(params.email, 'email');
+        }
+        if (params.name !== undefined) {
+          requireNonEmpty(params.name, 'name');
+        }
+        return runWrite(params, () => provider.updateCustomer(params));
+      },
     },
 
     subscriptions: {

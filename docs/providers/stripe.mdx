@@ -192,6 +192,10 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   describing the *same* change, so dedupe stops redeliveries, not fan-out.
 - **The email filter is case-sensitive and emails are not unique** — see
   [Customers & portal](/docs/concepts/customers-and-portal).
+- **`customers.update` merges metadata instead of replacing it.** Stripe updates a customer with
+  `POST /v1/customers/{id}` (not `PATCH`) and merges `metadata` key by key, so a key you leave out keeps
+  its stored value — the opposite of every other provider here. Stripe requires no field at all to
+  create a customer; the SDK still requires `email` and `name`, because two other providers do.
 - **A `2xx` on `usage.report` is not a confirmation.** Meter events are validated synchronously but
   processed asynchronously: an unknown customer, or an `eventName` with no matching meter, is dropped
   **silently**. The only signals are the `v1.billing.meter.error_report_triggered` and

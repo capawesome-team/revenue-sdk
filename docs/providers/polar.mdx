@@ -232,6 +232,10 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
 - **Trailing slashes are load-bearing.** Collection routes are `/v1/checkouts/`, `/v1/products/`,
   `/v1/customers/` — the SDK sends them exactly as Polar requires. Relevant if you pass a custom
   `baseUrl`.
+- **A customer email must be unique within the organization.** `customers.create` (and an email change
+  through `customers.update`) fails with `RevenueError { code: 'validation' }` when the address is
+  already taken. The organization comes from the access token, so the SDK never sends
+  `organization_id`.
 - **`external_customer_id`** links your own user IDs to Polar customers; it lives on the raw payload.
   Event ingestion accepts it as an alternative customer key, but `usage.report` always sends the Polar
   customer ID — external keying needs Polar's native API.
