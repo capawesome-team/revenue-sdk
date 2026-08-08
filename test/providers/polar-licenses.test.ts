@@ -143,7 +143,7 @@ describe('polar activateLicenseKey', () => {
     });
   });
 
-  it('throws forbidden when the activation limit is reached', async () => {
+  it('throws validation when the activation limit is reached', async () => {
     const { connection } = setup(() => ({
       status: 403,
       json: { error: 'NotPermitted', detail: 'License key activation limit already reached' },
@@ -153,10 +153,33 @@ describe('polar activateLicenseKey', () => {
       expect.unreachable('expected RevenueError');
     } catch (error) {
       expect(error).toBeInstanceOf(RevenueError);
-      expect((error as RevenueError).code).toBe('forbidden');
+      // Polar's 403 means the request was refused, not that the caller lacks permission.
+      expect((error as RevenueError).code).toBe('validation');
       expect((error as RevenueError).message).toBe(
         'NotPermitted: License key activation limit already reached',
       );
+      expect((error as RevenueError).message).not.toContain(KEY);
+    }
+  });
+
+  it('redacts the license key from a message that echoes it', async () => {
+    const { connection } = setup(() => ({
+      status: 403,
+      json: { error: 'NotPermitted', detail: `License key ${KEY} is already activated` },
+    }));
+    try {
+      await activateLicenseKey({ ...connection, key: KEY, label: 'MacBook Pro' });
+      expect.unreachable('expected RevenueError');
+    } catch (error) {
+      const revenueError = error as RevenueError;
+      expect(revenueError.message).toBe(
+        'NotPermitted: License key [redacted] is already activated',
+      );
+      expect(JSON.stringify(revenueError)).not.toContain(KEY);
+      // Still reachable for a caller who deliberately asks for it.
+      expect(revenueError.responseBody).toMatchObject({
+        detail: `License key ${KEY} is already activated`,
+      });
     }
   });
 });

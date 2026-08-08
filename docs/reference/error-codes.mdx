@@ -85,6 +85,13 @@ so a bad API key doesn't look like a permissions problem.
 :::
 
 :::note
+**Polar's license activate route returns HTTP 403 for a refused activation** — the activation limit is
+reached, or the key has no limit configured at all. Neither is a permissions problem, so
+`activateLicenseKey` re-maps the `403` to `validation`, matching the `400` Lemon Squeezy answers with.
+`validateLicenseKey` and `deactivateLicenseKey` keep the generic status mapping.
+:::
+
+:::note
 **Polar reports validation errors as a list.** Polar runs FastAPI, so a `422` answers with `detail` as an
 array of Pydantic entries rather than a string. The adapter summarizes each entry as `loc.path: msg`,
 joins them with `; `, and caps the message at three with a `(+N more)` suffix — so `error.message` names

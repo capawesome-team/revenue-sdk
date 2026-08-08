@@ -1,5 +1,5 @@
 import { RevenueError } from '../../errors.ts';
-import { HttpClient } from '../../http.ts';
+import { HttpClient, type ProviderErrorInfo } from '../../http.ts';
 import type { BaseParams, LicenseKeyActivation, LicenseKeyValidation } from '../../types.ts';
 import {
   mapError,
@@ -39,7 +39,20 @@ interface PolarValidatedLicenseKey extends PolarLicenseKey {
   activation?: PolarLicenseKeyActivation | null;
 }
 
-function createHttpClient(params: PolarLicenseKeyParams): HttpClient {
+/**
+ * Polar refuses an activation with 403 — the key's activation limit is already reached, or the key
+ * has no activation limit configured at all. Both describe the request, not the caller's
+ * permissions, so the activate route reports them as `validation` like every other provider.
+ */
+function mapActivateError(status: number, body: unknown): ProviderErrorInfo {
+  const info = mapError(status, body);
+  return status === 403 ? { ...info, code: 'validation' } : info;
+}
+
+function createHttpClient(
+  params: PolarLicenseKeyParams,
+  errorMapper: (status: number, body: unknown) => ProviderErrorInfo = mapError,
+): HttpClient {
   return new HttpClient({
     provider: 'polar',
     baseUrl: toBaseUrl(params),
@@ -47,7 +60,10 @@ function createHttpClient(params: PolarLicenseKeyParams): HttpClient {
     // The customer-portal routes take no credential and answer `401 invalid_token` when any
     // `Authorization` header is present, so none may be sent.
     authHeaders: () => ({}),
-    mapError,
+    mapError: errorMapper,
+    // The key is the credential on these routes and travels in the body, so it must never survive
+    // into an error message.
+    secrets: () => [params.key],
   });
 }
 
@@ -90,13 +106,13 @@ export async function validateLicenseKey(
 }
 
 /**
- * Activates a license key for one device or instance. Needs no API key. Throws `forbidden` when
+ * Activates a license key for one device or instance. Needs no API key. Throws `validation` when
  * the key has no activation limit configured or its limit is already reached.
  */
 export async function activateLicenseKey(
   params: PolarActivateLicenseKeyParams,
 ): Promise<LicenseKeyActivation> {
-  const http = createHttpClient(params);
+  const http = createHttpClient(params, mapActivateError);
   const { data } = await http.json<PolarLicenseKeyActivation>(
     '/v1/customer-portal/license-keys/activate',
     {

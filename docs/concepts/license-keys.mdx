@@ -168,8 +168,9 @@ The return types are the same on every subpath:
 Only `validateLicenseKey` reports a rejection as data. A key that is unknown, revoked, disabled,
 expired or — on Lemon Squeezy — owned by another store comes back as `valid: false`, and never
 throws. Activation and deactivation report their outcome through the return type alone, so a refusal
-throws a `RevenueError` instead: a reached activation limit as `validation`, a key that is not yours
-as `not_found`.
+throws a `RevenueError` instead: a reached activation limit as `validation` on every provider — Polar's
+`403` is re-mapped for this, Lemon Squeezy already answers `400` — and a key that is not yours as
+`not_found`.
 
 <TypeTable
   type={{

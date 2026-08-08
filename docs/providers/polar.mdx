@@ -254,7 +254,9 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   activation that doesn't match. The SDK maps it to `valid: false` instead of throwing; any other error
   status still throws.
 - **Activate returns 403 for two different reasons**: the activation limit is reached, *or* the key has
-  no activation limit configured at all. Both surface as `RevenueError { code: 'forbidden' }`.
+  no activation limit configured at all. Both describe the request rather than the caller's permissions,
+  so the SDK re-maps them to `RevenueError { code: 'validation' }` — the same code Lemon Squeezy's
+  reached-limit `400` produces. Validate and deactivate keep the generic status mapping.
 - **`LicenseKey.productId` is never set.** A Polar key hangs off a *benefit*, not a product — `raw`
   carries `benefit_id`, and a benefit ID is not something `products.get` accepts.
 - **`activationCount` only comes from `licenseKeys.get`.** The list and PATCH responses carry no
