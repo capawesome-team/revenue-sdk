@@ -290,6 +290,12 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
       // replacing the old one (silent double-billing).
       const current = await fetchSubscription(params.id, params.signal);
       const itemId = current.items?.data[0]?.id;
+      if (itemId === undefined) {
+        throw new RevenueError(
+          `Stripe subscription ${params.id} returned no items, so its plan cannot be changed safely`,
+          { code: 'provider_error', provider: 'stripe' },
+        );
+      }
       return postSubscription(
         params.id,
         {

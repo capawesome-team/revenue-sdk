@@ -265,7 +265,8 @@ Lemon Squeezy reject a `quantity` other than `1`.
 :::note
 On Stripe, a plan change must replace the existing subscription item rather than add a second one —
 sending only the new price silently double-bills the customer. `revenue-sdk` fetches the current item ID
-and sends it with the change, so this class of bug can't happen through the SDK.
+and sends it with the change, so this class of bug can't happen through the SDK. If the subscription
+comes back with no items, the change is not sent and `provider_error` is thrown instead.
 :::
 
 ### End a trial early

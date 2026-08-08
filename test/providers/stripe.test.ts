@@ -423,6 +423,20 @@ describe('stripe', () => {
       expect(form.get('proration_behavior')).toBe('always_invoice');
     });
 
+    it('refuses a plan change when the subscription has no items', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/subscriptions/sub_1': { ...SUBSCRIPTION, items: { data: [], has_more: false } },
+        }),
+      );
+      await expectRevenueError(
+        provider.changeSubscriptionPlan({ id: 'sub_1', product: 'price_2' }),
+        'provider_error',
+      );
+      expect(stub.requests).toHaveLength(1);
+      expect(stub.requests[0]!.method).toBe('GET');
+    });
+
     it('pauses by voiding collection without a resume date', async () => {
       const { provider, stub } = setup(
         routes({

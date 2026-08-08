@@ -163,7 +163,9 @@ See [Orders](/docs/concepts/orders) for the model and the cross-provider compari
   subscriptions, so a canceled subscription would simply vanish from your list.
 - **Plan changes send the current item ID.** Omitting `items[0][id]` *adds* the new price instead of
   replacing the old one — silent double-billing. The SDK fetches the subscription first and sends the
-  item ID, so this can't happen through `subscriptions.changePlan`.
+  item ID, so this can't happen through `subscriptions.changePlan`. If that subscription comes back
+  with no items, the SDK throws `RevenueError { code: 'provider_error' }` rather than send a change it
+  cannot make safely.
 - **`current_period_start` / `current_period_end` live on subscription items**, not on the
   subscription. The SDK reads them from the first item and exposes them as
   `currentPeriodStart`/`currentPeriodEnd`.
