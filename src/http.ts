@@ -99,7 +99,7 @@ export class HttpClient {
 
   buildUrl(path: string, query?: Record<string, QueryValue>): string {
     // Paths are used verbatim; Polar's trailing slashes on collection routes are load-bearing.
-    const url = /^https?:\/\//.test(path) ? new URL(path) : new URL(path, this.baseUrl);
+    const url = /^https?:\/\//.test(path) ? new URL(path) : new URL(this.resolve(path));
     if (query) {
       for (const [key, value] of Object.entries(query)) {
         if (value === undefined) {
@@ -115,6 +115,21 @@ export class HttpClient {
       }
     }
     return url.toString();
+  }
+
+  /**
+   * Concatenates rather than resolving: `new URL(path, baseUrl)` would silently discard any path
+   * prefix on `baseUrl`, and a `baseUrl` pointing at a gateway mount point (`https://gw/polar`) is
+   * documented as being used verbatim.
+   */
+  private resolve(path: string): string {
+    if (!path.startsWith('/')) {
+      throw new RevenueError(`Request path for ${this.provider} must start with a slash`, {
+        code: 'validation',
+        provider: this.provider,
+      });
+    }
+    return `${this.baseUrl.replace(/\/$/, '')}${path}`;
   }
 
   async raw(path: string, options: HttpRequestOptions = {}): Promise<Response> {

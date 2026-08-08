@@ -45,6 +45,34 @@ describe('HttpClient', () => {
     expect(stub.requests[0]!.url).toBe('https://api.example.com/v1/checkouts/');
   });
 
+  it('keeps a path prefix on the base URL', async () => {
+    // `new URL(path, baseUrl)` would resolve the path against the origin and drop `/polar`.
+    const { http, stub } = setup(() => ({ json: {} }), { baseUrl: 'https://gw.example.com/polar' });
+    await http.json('/v1/products/', { query: { page: 2 } });
+    expect(stub.requests[0]!.url).toBe('https://gw.example.com/polar/v1/products/?page=2');
+  });
+
+  it('trims a single trailing slash off the base URL', async () => {
+    const { http, stub } = setup(() => ({ json: {} }), {
+      baseUrl: 'https://gw.example.com/polar/',
+    });
+    await http.json('/v1/products/');
+    expect(stub.requests[0]!.url).toBe('https://gw.example.com/polar/v1/products/');
+  });
+
+  it('uses an absolute path verbatim, ignoring the base URL', async () => {
+    const { http, stub } = setup(() => ({ json: {} }), {
+      baseUrl: 'https://gw.example.com/paddle',
+    });
+    await http.json('https://api.paddle.com/customers?after=ctm_1', { query: { per_page: 5 } });
+    expect(stub.requests[0]!.url).toBe('https://api.paddle.com/customers?after=ctm_1&per_page=5');
+  });
+
+  it('rejects a relative path', async () => {
+    const { http } = setup(() => ({ json: {} }));
+    await expectRevenueError(http.json('v1/products/'), 'validation');
+  });
+
   it('builds query strings, skipping undefined and repeating arrays', async () => {
     const { http, stub } = setup(() => ({ json: {} }));
     await http.json('/v1/subscriptions/', {
