@@ -390,7 +390,18 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     },
 
     async uncancelSubscription(params) {
-      return patchSubscription(params.id, { cancelled: false }, params.signal);
+      // Any update PATCH re-validates the STORED `trial_ends_at` and answers 422 once that date
+      // is in the past — the same quirk `changeSubscriptionPlan` works around. Sending
+      // `trial_ends_at: null` skips the validation and leaves the stored value untouched
+      // (verified against the live API). It is only sent once the trial is over: on a running
+      // trial it would end the trial, which an uncancel must not do.
+      const subscription = await fetchSubscription(params.id, params.signal);
+      const attributes: Record<string, unknown> = { cancelled: false };
+      const trialEndsAt = subscription.attributes.trial_ends_at;
+      if (trialEndsAt && new Date(trialEndsAt).getTime() <= Date.now()) {
+        attributes.trial_ends_at = null;
+      }
+      return patchSubscription(params.id, attributes, params.signal);
     },
 
     async changeSubscriptionPlan(params) {

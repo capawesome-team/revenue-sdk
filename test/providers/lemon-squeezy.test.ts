@@ -501,14 +501,50 @@ describe('lemonSqueezy', () => {
       );
     });
 
-    it('uncancels via PATCH cancelled:false', async () => {
+    it('uncancels via PATCH cancelled:false after reading the subscription', async () => {
       const { provider, stub } = setup(() => ({ json: { data: SUBSCRIPTION } }));
       await provider.uncancelSubscription({ id: '42' });
-      const request = stub.requests[0]!;
-      expect(request.method).toBe('PATCH');
-      expect(JSON.parse(request.body!)).toEqual({
+      const preflight = stub.requests[0]!;
+      expect(preflight.method).toBe('GET');
+      expect(preflight.url).toBe('https://api.lemonsqueezy.com/v1/subscriptions/42');
+      const patch = stub.requests[1]!;
+      expect(patch.method).toBe('PATCH');
+      expect(JSON.parse(patch.body!)).toEqual({
         data: { type: 'subscriptions', id: '42', attributes: { cancelled: false } },
       });
+    });
+
+    it('clears a past trial_ends_at on uncancel, which the PATCH would otherwise re-validate', async () => {
+      const pastTrialSubscription = {
+        ...SUBSCRIPTION,
+        attributes: {
+          ...SUBSCRIPTION.attributes,
+          trial_ends_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+        },
+      };
+      const { provider, stub } = setup(() => ({ json: { data: pastTrialSubscription } }));
+      await provider.uncancelSubscription({ id: '42' });
+      const attributes = JSON.parse(stub.requests[1]!.body!).data.attributes;
+      // `null` must reach the API — without it Lemon Squeezy rejects the update
+      // with a 422 on the stored past `trial_ends_at`.
+      expect('trial_ends_at' in attributes).toBe(true);
+      expect(attributes.trial_ends_at).toBeNull();
+    });
+
+    it('leaves a running trial untouched on uncancel', async () => {
+      const trialingSubscription = {
+        ...SUBSCRIPTION,
+        attributes: {
+          ...SUBSCRIPTION.attributes,
+          status: 'cancelled',
+          trial_ends_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        },
+      };
+      const { provider, stub } = setup(() => ({ json: { data: trialingSubscription } }));
+      await provider.uncancelSubscription({ id: '42' });
+      const attributes = JSON.parse(stub.requests[1]!.body!).data.attributes;
+      // `trial_ends_at: null` would end the trial the customer is resuming.
+      expect('trial_ends_at' in attributes).toBe(false);
     });
 
     it('changes plans by resolving the variant product and mapping proration', async () => {
