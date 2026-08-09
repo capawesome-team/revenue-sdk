@@ -1,0 +1,210 @@
+---
+title: 'Stripe Managed Payments: Stripe as Merchant of Record, Explained'
+description: 'Stripe became a merchant of record in 2026. What Managed Payments changes, the one flag that enables it, the parameters it rejects, and how it compares.'
+type: blog
+date: 2026-08-09
+seo:
+  title: 'Stripe Managed Payments: The Merchant-of-Record Mode'
+---
+
+For years the answer to "is Stripe a merchant of record?" was no, and the follow-up was a list: Paddle,
+Lemon Squeezy, Polar, Dodo Payments. That answer is now out of date. Stripe Managed Payments became
+generally available on **22 April 2026** to businesses in 39 countries, and in that mode Stripe — not
+your company — is the merchant of record for the sale.
+
+If you have been choosing between "Stripe plus your own tax compliance" and "an MoR that owns the
+liability", there is a third option now, and it comes from the incumbent. This is what it actually is,
+how you switch it on, and — the part the documentation spreads across several pages — everything it
+stops accepting once you do.
+
+**The short version:**
+
+- Managed Payments makes **Stripe** the merchant of record: it takes on sales tax, VAT, and GST liability, fraud, disputes, and buyer support.
+- It is **not a new API**. Same `api.stripe.com/v1`, same secret key, same objects, no new webhook events.
+- The entire opt-in is one parameter: `managed_payments[enabled]=true` on a Checkout Session or Payment Link, on API version `2025-03-31.basil` or later.
+- It **rejects** roughly twenty parameters rather than ignoring them — tax, payment-method, shipping, Connect, and post-sale fields all become unavailable.
+- Access is gated by an eligibility review: **digital products only**, no Stripe Connect, no marketplaces, no embedded custom payment UI.
+- Subscriptions can only be created through Checkout or Payment Links, and **existing subscriptions cannot be moved into it**.
+
+## Is Stripe a merchant of record now?
+
+Yes, in Managed Payments mode — and only in that mode. Standard Stripe is unchanged: you remain the
+seller of record, you own the tax registrations, and you file the returns. When you enable Managed
+Payments on a checkout, Stripe becomes the legal seller for that transaction and takes on indirect tax
+compliance across more than 80 tax jurisdictions, along with fraud prevention, dispute handling, and
+transaction-level customer support.
+
+This is the same trade every merchant of record offers: you give up the direct customer relationship on
+the receipt and a slice of revenue, and you stop having to register for VAT in a dozen countries. What is
+new is that you no longer have to leave Stripe to make it.
+
+## What does Managed Payments actually change?
+
+Legally quite a lot, technically almost nothing — which is the surprising part. There is no separate
+API, no new base URL, no new credential, and no new set of objects to learn. You keep calling
+`POST /v1/checkout/sessions` with the same secret key, and Products, Prices, Customers, Subscriptions,
+and Invoices remain the ordinary objects you already use.
+
+What changes is the shape of what Stripe will accept on the way in, and who appears on the paperwork on
+the way out. Concretely:
+
+- **Checkout and Payment Links only.** Elements, embedded web components, and custom payment flows are unsupported.
+- **Stripe issues the invoices**, as merchant of record, rather than you asking Checkout to create one.
+- **Stripe Tax is the only compatible tax solution**, and third-party tax integrations are out.
+- **Stripe Connect, marketplaces, and platform-controlled accounts are unsupported** outright.
+
+## How do you turn Managed Payments on?
+
+You enable it once on the account, then per checkout with a single boolean. After Stripe approves your
+account, add `managed_payments[enabled]` to the session you already create:
+
+```bash
+curl https://api.stripe.com/v1/checkout/sessions \
+  -u "$STRIPE_SECRET_KEY:" \
+  -H "Stripe-Version: 2025-03-31.basil" \
+  -d "mode=subscription" \
+  -d "line_items[0][price]=price_123" \
+  -d "line_items[0][quantity]=1" \
+  -d "managed_payments[enabled]=true" \
+  --data-urlencode "success_url=https://example.com/thanks"
+```
+
+The API version floor matters: Stripe documents `2025-03-31.basil` or later, and older pinned versions
+will not recognize the parameter. The same flag works on Payment Links, where it is **immutable after
+creation** — you cannot enable or disable Managed Payments on an existing link, only create a new one.
+
+If you use [`revenue-sdk`](/docs/quickstart), it is a factory option and every downstream call is
+unchanged:
+
+```ts
+import { createClient } from 'revenue-sdk';
+import { stripe } from 'revenue-sdk/stripe';
+
+const client = createClient({
+  provider: stripe({
+    secretKey: process.env.STRIPE_SECRET_KEY!,
+    managedPayments: true,
+  }),
+});
+
+const checkout = await client.checkouts.create({
+  items: [{ product: 'price_123' }],
+  customerEmail: 'ada@example.com',
+  successUrl: 'https://example.com/thanks',
+});
+```
+
+## Which parameters does Managed Payments reject?
+
+These parameters must be removed from the session — Stripe rejects them rather than ignoring them, so a
+checkout that worked yesterday fails outright the moment you set the flag. The lists differ slightly
+between subscriptions and one-time payments:
+
+| Category | Subscriptions | One-time payments |
+| --- | --- | --- |
+| **Pricing** | `adaptive_pricing` | `adaptive_pricing` |
+| **Tax** | `automatic_tax`, `tax_id_collection`, `subscription_data.default_tax_rates` | `automatic_tax`, `tax_id_collection` |
+| **Payment methods** | `payment_method_configuration`, `payment_method_options`, `payment_method_types` | `payment_method_configuration`, `payment_method_options.{pm}.setup_future_usage`, `payment_method_types`, `excluded_payment_method_types`, `payment_intent_data.setup_future_usage` |
+| **Customer updates** | `customer_update[name]`, `customer_update[address]` | `customer_update[name]`, `customer_update[address]` |
+| **Shipping** | `shipping_address_collection`, `shipping_options` | `shipping_address_collection`, `shipping_options`, `payment_intent_data.shipping` |
+| **Connect** | `subscription_data.application_fee_percent`, `subscription_data.on_behalf_of`, `subscription_data.transfer_data` | `payment_intent_data.application_fee_amount`, `payment_intent_data.on_behalf_of`, `payment_intent_data.transfer_data`, `payment_intent_data.transfer_group` |
+| **Post-sale** | `invoice_creation`, `subscription_data.invoice_settings` | `invoice_creation`, `payment_intent_data.statement_descriptor`, `payment_intent_data.statement_descriptor_suffix`, `payment_intent_data.receipt_email` |
+
+Three of these are worth calling out because they change behavior you may be relying on:
+
+- **`adaptive_pricing` is not configurable.** You cannot turn it off, so the currency your buyer is charged in may differ from the currency on your `Price`. Any reporting that assumes those match needs revisiting.
+- **`invoice_creation` is gone on both modes.** If you were setting it to make one-off purchases show up as invoices, stop — Stripe now draws up the invoice itself as merchant of record. This one bit us directly: `revenue-sdk` sends `invoice_creation[enabled]` on one-time sessions so that purchases reach [`orders.list`](/docs/concepts/orders), and adding Managed Payments meant gating that off.
+- **`payment_intent_data.statement_descriptor` is gone.** The descriptor is Stripe's to set now, because Stripe is the seller.
+
+## Can you migrate existing subscriptions to Managed Payments?
+
+No. Only subscriptions created through a Managed Payments Checkout Session or Payment Link are covered,
+and there is no path to move an existing subscription into the programme. Subscriptions also cannot be
+created by calling `POST /v1/subscriptions` directly under Managed Payments — Checkout and Payment Links
+are the only entry points.
+
+Practically, that means adopting Managed Payments on an established product is a forward-looking change:
+new customers land in the MoR flow, existing ones keep billing the way they always did, and you run both
+models side by side for as long as those subscriptions live. Budget for the reporting split.
+
+## How does Managed Payments compare to Paddle, Lemon Squeezy, Polar, and Dodo?
+
+All five make someone else the merchant of record; they differ in what you can sell, where the checkout
+lives, and how much API you have to learn. The honest summary:
+
+| | **Stripe Managed Payments** | **Paddle** | **Lemon Squeezy** | **Polar** | **Dodo Payments** |
+| --- | --- | --- | --- | --- | --- |
+| Merchant of record | Stripe | Paddle | Lemon Squeezy | Polar | Dodo |
+| What you can sell | Digital products only | Digital products | Digital products | Digital products | Digital products |
+| Hosted checkout | Yes | No — Paddle.js on your domain | Yes | Yes | Yes |
+| Custom payment UI | Unsupported | Overlay/inline via Paddle.js | Limited | Limited | Limited |
+| Platforms / marketplaces | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| New API to learn | None — same Stripe API | Yes | Yes | Yes | Yes |
+| Migrate existing subscriptions | No | N/A | N/A | N/A | N/A |
+
+The strategic difference is the last two rows. If you are already on Stripe, Managed Payments is the only
+option on this list that does not ask you to integrate a second API, re-model your catalog, or re-learn a
+webhook signature scheme — the trade is that you give up Elements, Connect, and a long list of checkout
+knobs. If you are not already on Stripe, the established MoRs are mature, and the choice comes down to
+payout coverage, pricing, and which checkout experience you want.
+
+For what the underlying APIs look like side by side, see
+[how the five billing APIs differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences).
+
+## Should you use Managed Payments?
+
+Use it if you sell digital products, you are already on Stripe, and tax compliance is the reason you were
+eyeing an MoR in the first place. It removes the strongest argument for leaving Stripe, and it costs you
+one boolean rather than a migration.
+
+Do not use it if you need Connect, a marketplace model, Elements or a custom payment surface, physical
+goods, or B2B services — all are outside the eligibility rules, and no amount of integration work gets
+around them. And if you already run a mature Paddle or Lemon Squeezy integration that works, "Stripe does
+this now" is not on its own a reason to move; the subscriptions you have cannot come with you anyway.
+
+## Frequently asked questions
+
+### Is Stripe Managed Payments the same as Stripe Billing?
+
+No. Stripe Billing is the subscription engine and is unchanged — the same Subscription and Invoice
+objects, whichever mode you are in. Managed Payments is a legal and compliance layer on top that changes
+who the merchant of record is. Subscriptions under Managed Payments still run on Billing.
+
+### Does Managed Payments need a different API key or SDK?
+
+No. It uses your normal secret key and the standard Stripe API at `api.stripe.com/v1`. The only
+requirements are an account Stripe has approved for the programme, API version `2025-03-31.basil` or
+later, and the `managed_payments[enabled]` parameter on the session.
+
+### Are there new webhook events for Managed Payments?
+
+No new event types are documented. You keep handling the standard ones —
+`checkout.session.completed`, `invoice.paid`, `customer.subscription.updated` — and signature
+verification is unchanged. The `managed_payments.enabled` field appears on the Checkout Session,
+PaymentIntent, and Subscription objects, so you can tell which mode a record was created under.
+
+### Can I use Managed Payments for one-time payments?
+
+Yes. Stripe added one-time payment support in September 2025, so both `mode=payment` and
+`mode=subscription` sessions work. Note that `invoice_creation` is rejected in both modes — Stripe
+generates the invoice itself.
+
+### Who is eligible for Stripe Managed Payments?
+
+Access is granted after an eligibility review. Broadly: digital products only (SaaS, software, digital
+content, downloads), a business located in one of the supported countries, no Stripe Connect or
+marketplace model, and an eligible tax code on every product. Physical goods, B2B services, and anything
+requiring human delivery are excluded.
+
+### Does revenue-sdk support Stripe Managed Payments?
+
+Yes. Pass `managedPayments: true` to the `stripe()` factory and every client call keeps its shape; the
+SDK sends the flag and omits the parameters Managed Payments rejects. See the
+[Stripe provider page](/docs/providers/stripe) for the option and its limitations.
+
+## Keep reading
+
+- [Stripe vs Polar vs Lemon Squeezy vs Paddle vs Dodo: How Their Billing APIs Differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences) — the field guide to all five APIs.
+- [Stripe SDK Alternatives for Multi-Provider Billing](/blog/stripe-sdk-alternatives-multi-provider-billing) — when one SDK stops being enough.
+- [How to Normalize Subscription Status Across Billing Providers](/blog/normalize-subscription-status-across-providers) — one entitlement check for five providers.
+- [Capability matrix](/docs/reference/capability-matrix) — what each provider supports, as data.
