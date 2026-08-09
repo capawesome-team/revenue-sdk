@@ -174,11 +174,14 @@ if (entitled && subscription.cancelAtPeriodEnd) {
 }`;
 
 const switchDiff = ` import { createClient } from 'revenue-sdk';
--import { polar } from 'revenue-sdk/polar';
+-import { lemonSqueezy } from 'revenue-sdk/lemon-squeezy';
 +import { stripe } from 'revenue-sdk/stripe';
 
  const client = createClient({
--  provider: polar({ accessToken: process.env.POLAR_ACCESS_TOKEN! }),
+-  provider: lemonSqueezy({
+-    apiKey: process.env.LEMON_SQUEEZY_API_KEY!,
+-    storeId: process.env.LEMON_SQUEEZY_STORE_ID!,
+-  }),
 +  provider: stripe({ secretKey: process.env.STRIPE_SECRET_KEY! }),
  });
 
@@ -278,7 +281,7 @@ const faqs = [
   {
     question: 'Can I switch billing providers without a rewrite?',
     answer:
-      'Yes. The provider factory is the only provider-specific line in your code — swap polar() for stripe() and every call, type, and webhook handler stays the same. Real differences are surfaced through a typed capability object instead of silent behavior changes.',
+      'Yes. The provider factory is the only provider-specific line in your code — swap lemonSqueezy() for stripe() and every call, type, and webhook handler stays the same. Real differences are surfaced through a typed capability object instead of silent behavior changes.',
     href: '/docs/concepts/capabilities',
     linkLabel: 'See how capabilities work',
   },
