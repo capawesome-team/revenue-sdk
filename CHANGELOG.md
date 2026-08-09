@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/capawesome-team/revenue-sdk/compare/v0.2.0...v0.2.1) (2026-08-09)
+
+
+### Bug Fixes
+
+* **lemon-squeezy:** clear `trial_ends_at` on plan changes ([9f8b51f](https://github.com/capawesome-team/revenue-sdk/commit/9f8b51f667060e2a3daee119ea00efe0619224b3))
+
 ## [0.2.0](https://github.com/capawesome-team/revenue-sdk/compare/v0.1.0...v0.2.0) (2026-08-08)
 
 

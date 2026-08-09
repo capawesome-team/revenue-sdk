@@ -1,6 +1,6 @@
 {
   "name": "revenue-sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Unified TypeScript SDK for billing providers — Polar, Lemon Squeezy, Stripe, Paddle, Dodo Payments",
   "license": "MIT",
   "author": "Robin Genz <mail@robingenz.dev>",
