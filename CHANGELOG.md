@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/capawesome-team/revenue-sdk/compare/v0.2.1...v0.2.2) (2026-08-09)
+
+
+### Features
+
+* **stripe:** support Managed Payments ([2c29e08](https://github.com/capawesome-team/revenue-sdk/commit/2c29e0825da2f5b9b523907f18a89e958ca6a6e6))
+
+
+### Bug Fixes
+
+* **lemon-squeezy:** clear a past `trial_ends_at` on uncancel ([b7afa41](https://github.com/capawesome-team/revenue-sdk/commit/b7afa4149079d266939935db02e07b02d7feb001))
+
 ## [0.2.1](https://github.com/capawesome-team/revenue-sdk/compare/v0.2.0...v0.2.1) (2026-08-09)
 
 
