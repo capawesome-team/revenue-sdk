@@ -135,18 +135,41 @@ lives, and how much API you have to learn. The honest summary:
 | | **Stripe Managed Payments** | **Paddle** | **Lemon Squeezy** | **Polar** | **Dodo Payments** |
 | --- | --- | --- | --- | --- | --- |
 | Merchant of record | Stripe | Paddle | Lemon Squeezy | Polar | Dodo |
-| What you can sell | Digital products only | Digital products | Digital products | Digital products | Digital products |
-| Hosted checkout | Yes | No — Paddle.js on your domain | Yes | Yes | Yes |
-| Custom payment UI | Unsupported | Overlay/inline via Paddle.js | Limited | Limited | Limited |
-| Platforms / marketplaces | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| What you can sell | Digital products only | Digital products only | Digital products only | Digital products only | Digital products only |
+| Hosted checkout | Yes | Approval-gated; the default path is Paddle.js on your own approved domain | Yes | Yes | Yes |
+| Embedded checkout | Unsupported | Overlay and inline via Paddle.js | Overlay via `lemon.js` | Embedded via `@polar-sh/checkout` | Overlay and inline |
+| Platforms / marketplaces | Unsupported | Prohibited¹ | Prohibited | Prohibited | Prohibited |
 | New API to learn | None — same Stripe API | Yes | Yes | Yes | Yes |
-| Migrate existing subscriptions | No | N/A | N/A | N/A | N/A |
+| Bring existing subscriptions in | **No** | Assisted, sales-gated | Assisted, from Stripe | Not for active subscriptions | Assisted, support-gated |
 
-The strategic difference is the last two rows. If you are already on Stripe, Managed Payments is the only
-option on this list that does not ask you to integrate a second API, re-model your catalog, or re-learn a
-webhook signature scheme — the trade is that you give up Elements, Connect, and a long list of checkout
-knobs. If you are not already on Stripe, the established MoRs are mature, and the choice comes down to
-payout coverage, pricing, and which checkout experience you want.
+¹ Paddle runs a separate, gated [partner programme](https://developer.paddle.com/partners/) where each
+sub-merchant becomes its own KYC'd Paddle seller. It is not Stripe Connect — no split payouts or
+application fees are documented — and it is absent from the public API reference.
+
+Two rows carry the decision. **"New API to learn"** is why Managed Payments is compelling if you are
+already on Stripe: it is the only option here that does not ask you to integrate a second API, re-model
+your catalog, or re-learn a webhook signature scheme. The trade is that you give up Elements, Connect,
+and the checkout parameters listed above.
+
+**"Bring existing subscriptions in"** cuts the other way, and it surprised us. Paddle, Lemon Squeezy, and
+Dodo all run assisted migrations that move live subscriptions — the card data goes vault-to-vault from
+your old processor, so customers never re-enter payment details. Stripe's own MoR mode is the one option
+on this list that cannot take your existing subscribers. If you are adopting it on an established
+product, new customers go through Managed Payments and everyone already subscribed stays where they are,
+indefinitely.
+
+### One thing worth knowing about Lemon Squeezy
+
+Lemon Squeezy is owned by Stripe, and in
+[January 2026 its co-founder wrote](https://www.lemonsqueezy.com/blog/2026-update) that the team is
+building Stripe Managed Payments, with the stated goal of giving "Lemon Squeezy users an easy way to
+migrate to Stripe Managed Payments" — acknowledging "slower support responses and less frequent product
+updates" in the meantime.
+
+Read that as maintained rather than actively developed: signups are still open, there is no announced
+sunset, and the API changelog was still moving in mid-2026. But if you are weighing Lemon Squeezy against
+Managed Payments as independent options, they are not independent — one team builds both, and only one of
+them is where the investment is going.
 
 For what the underlying APIs look like side by side, see
 [how the five billing APIs differ](/blog/stripe-polar-lemon-squeezy-paddle-dodo-api-differences).
@@ -195,6 +218,13 @@ Access is granted after an eligibility review. Broadly: digital products only (S
 content, downloads), a business located in one of the supported countries, no Stripe Connect or
 marketplace model, and an eligible tax code on every product. Physical goods, B2B services, and anything
 requiring human delivery are excluded.
+
+### Is Lemon Squeezy being replaced by Stripe Managed Payments?
+
+Not officially, but the direction is public. Lemon Squeezy is owned by Stripe, and in January 2026 its
+co-founder wrote that the team is building Stripe Managed Payments and wants to give Lemon Squeezy users
+"an easy way to migrate" to it. There is no announced sunset date and signups remain open, but Managed
+Payments is where that team's effort is going.
 
 ### Does revenue-sdk support Stripe Managed Payments?
 
