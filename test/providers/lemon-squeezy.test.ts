@@ -535,7 +535,14 @@ describe('lemonSqueezy', () => {
         data: {
           type: 'subscriptions',
           id: '42',
-          attributes: { product_id: 1030025, variant_id: 1615642, invoice_immediately: true },
+          attributes: {
+            product_id: 1030025,
+            // `null` must reach the API: the PATCH re-validates a stored past `trial_ends_at`
+            // and would 422 on every post-trial subscription.
+            trial_ends_at: null,
+            variant_id: 1615642,
+            invoice_immediately: true,
+          },
         },
       });
     });

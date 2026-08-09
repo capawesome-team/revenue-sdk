@@ -404,6 +404,12 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
       );
       const attributes: Record<string, unknown> = {
         product_id: variant.data.attributes.product_id,
+        // A plan-change PATCH re-validates the subscription's STORED `trial_ends_at` and rejects
+        // it with a 422 once that date is in the past — which it is for every subscription whose
+        // trial has ended (verified against the live API). Clearing it keeps plan changes working
+        // after a trial; on a still-trialing subscription it also ends the trial, consistent with
+        // the plan change billing immediately.
+        trial_ends_at: null,
         variant_id: Number(params.product),
       };
       if (params.prorationBehavior === 'invoice_now') {

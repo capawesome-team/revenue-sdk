@@ -181,6 +181,11 @@ returns newest-first — sort by `createdAt` after draining `listAll` if you nee
   happened. Send those customers to the customer portal. `subscriptions.cancel` is deliberately **not**
   guarded — it is a different endpoint with no PayPal caveat, and blocking it would lock PayPal
   customers out of cancelling.
+- **`changePlan` clears `trial_ends_at`.** The plan-change PATCH re-validates the subscription's
+  *stored* `trial_ends_at` and answers `422` once that date is in the past — which it is for every
+  subscription whose trial has ended. The SDK sends `trial_ends_at: null` to keep plan changes working
+  after a trial; on a still-trialing subscription this also ends the trial, consistent with the plan
+  change billing immediately.
 - **`endTrial` refuses unless the subscription is trialing.** Lemon Squeezy has no end-trial operation;
   the one documented lever, `billing_anchor: null`, resets the billing anchor unconditionally and would
   silently move a non-trialing customer's billing day. So the SDK reads the subscription first and
