@@ -63,6 +63,12 @@ const CAPABILITIES: RevenueCapabilities = {
 export interface StripeProviderOptions {
   /** Secret or restricted API key (`sk_...` / `rk_...`). */
   secretKey: string;
+  /**
+   * Sells every checkout through Managed Payments, Stripe's merchant-of-record mode. Requires an
+   * account Stripe has approved for it — an eligibility review gates access, and the flag is
+   * rejected otherwise.
+   */
+  managedPayments?: boolean;
   /** Overrides the pinned Stripe API version — response shapes may no longer match. */
   apiVersion?: string;
   /** Used verbatim. */
@@ -209,10 +215,13 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
           expires_at: params.expiresAt,
           customer: params.customerId,
           customer_email: params.customerId === undefined ? params.customerEmail : undefined,
+          managed_payments: options.managedPayments ? { enabled: true } : undefined,
           // Stripe only draws up an Invoice for a one-off payment when the session asks for one,
           // and without it the purchase appears in neither `orders.list` nor `order.paid`.
-          // Subscription mode always invoices and rejects the parameter.
-          invoice_creation: mode === 'payment' ? { enabled: true } : undefined,
+          // Subscription mode always invoices and rejects the parameter, and so does Managed
+          // Payments, which invoices as merchant of record on both modes.
+          invoice_creation:
+            mode === 'payment' && !options.managedPayments ? { enabled: true } : undefined,
           // Session metadata does NOT propagate to the subscription — write both.
           metadata: params.metadata,
           subscription_data:

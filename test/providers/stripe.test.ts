@@ -6,9 +6,9 @@ import { createFetchStub, type StubHandler, type StubRequest } from '../helpers/
 
 const SECRET_KEY = 'sk_test_secret_key';
 
-function setup(handler: StubHandler) {
+function setup(handler: StubHandler, options?: { managedPayments?: boolean }) {
   const stub = createFetchStub(handler);
-  const provider = stripe({ secretKey: SECRET_KEY, fetch: stub.fetch });
+  const provider = stripe({ secretKey: SECRET_KEY, fetch: stub.fetch, ...options });
   return { provider, stub };
 }
 
@@ -274,6 +274,49 @@ describe('stripe', () => {
       expect(form.get('subscription_data[metadata][org_id]')).toBeNull();
       // Without an invoice a one-off purchase never reaches `orders.list` or `order.paid`.
       expect(form.get('invoice_creation[enabled]')).toBe('true');
+    });
+
+    it('omits managed_payments unless the factory opts in', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/prices/price_1': RECURRING_PRICE,
+          '/v1/checkout/sessions': { id: 'cs_test_5', url: 'https://x', status: 'open' },
+        }),
+      );
+      await provider.createCheckout({ items: [{ product: 'price_1' }] });
+      const form = new URLSearchParams(stub.requests[1]!.body);
+      expect(form.get('managed_payments[enabled]')).toBeNull();
+    });
+
+    it('sells through Managed Payments when the factory opts in', async () => {
+      const { provider, stub } = setup(
+        routes({
+          '/v1/prices/price_1': RECURRING_PRICE,
+          '/v1/checkout/sessions': { id: 'cs_test_6', url: 'https://x', status: 'open' },
+        }),
+        { managedPayments: true },
+      );
+      await provider.createCheckout({ items: [{ product: 'price_1' }] });
+      const form = new URLSearchParams(stub.requests[1]!.body);
+      expect(form.get('mode')).toBe('subscription');
+      expect(form.get('managed_payments[enabled]')).toBe('true');
+    });
+
+    it('drops invoice_creation on a Managed Payments one-time session', async () => {
+      // Managed Payments rejects the parameter rather than ignoring it — Stripe invoices as
+      // merchant of record instead.
+      const { provider, stub } = setup(
+        routes({
+          '/v1/prices/price_onetime': { ...RECURRING_PRICE, id: 'price_onetime', recurring: null },
+          '/v1/checkout/sessions': { id: 'cs_test_7', url: 'https://x', status: 'open' },
+        }),
+        { managedPayments: true },
+      );
+      await provider.createCheckout({ items: [{ product: 'price_onetime' }] });
+      const form = new URLSearchParams(stub.requests[1]!.body);
+      expect(form.get('mode')).toBe('payment');
+      expect(form.get('managed_payments[enabled]')).toBe('true');
+      expect(form.get('invoice_creation[enabled]')).toBeNull();
     });
 
     it('sends expires_at as unix seconds', async () => {

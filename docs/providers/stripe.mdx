@@ -5,7 +5,8 @@ sidebar:
   label: Stripe
 ---
 
-Stripe is a payment processor (you remain the merchant of record). Import the factory from
+Stripe is a payment processor — you remain the merchant of record, unless you opt into
+[Managed Payments](#factory-options) with `managedPayments`. Import the factory from
 `revenue-sdk/stripe`.
 
 ```ts
@@ -24,6 +25,11 @@ const client = createClient({
     secretKey: {
       type: 'string',
       description: 'Secret or restricted API key (sk_… / rk_…). Sent as a Bearer credential.',
+    },
+    managedPayments: {
+      type: 'boolean',
+      required: false,
+      description: 'Sells every checkout through Managed Payments, Stripe’s merchant-of-record mode. Requires an account Stripe approved for it.',
     },
     apiVersion: {
       type: 'string',
@@ -59,6 +65,11 @@ live data. There is no `server` option — swap the key via environment variable
 - **A checkout expiry must be 30 minutes to 24 hours out.** The SDK deliberately does not enforce
   Stripe's window client-side: it is measured against Stripe's clock, so a boundary value would be
   rejected by clock skew alone. Stripe's `400` maps to `RevenueError { code: 'validation' }`.
+- **`managedPayments` needs an approved account and narrows what Stripe accepts.** Access is gated by an
+  eligibility review (digital products only, no Connect platforms, supported business countries), every
+  product needs an eligible tax code, and existing subscriptions cannot be migrated — only ones bought
+  through a Managed Payments session. The SDK sends nothing Managed Payments rejects, so no client call
+  changes shape, but Stripe Tax, Elements, and third-party tax integrations are unavailable to you.
 
 Full values for every capability: [capability matrix](/docs/reference/capability-matrix).
 
@@ -111,7 +122,8 @@ Charge: `order.paid` maps from `invoice.paid`, so `event.order.id` is an `in_…
 purchases made through this SDK appear in `orders.list` and emit `order.paid`. Purchases through a
 session created **outside this SDK, or before this version**, never produce an invoice and cannot be
 retrofitted. Subscription mode always invoices — and rejects the parameter, so the SDK only sends it in
-payment mode.
+payment mode. Under `managedPayments` the SDK omits it on both modes, because Managed Payments rejects
+it too and invoices as merchant of record instead.
 :::
 
 - **`refundStatus` is never set.** A refund is a Charge-level object and leaves no trace on the invoice —
@@ -146,6 +158,9 @@ payment mode.
   [Customers & portal](/docs/concepts/customers-and-portal).
 - **`checkout.status === 'complete'` means paid.** A session that is `complete` but with
   `payment_status: unpaid` is reported as `open`.
+- **Managed Payments always applies Adaptive Pricing**, so the buyer can be charged in a different
+  currency than the one on the `Price` — read the session's `raw` for what was actually charged. The
+  legal seller on the receipt becomes Stripe's entity, not your business.
 - **A plan change on a subscription with no items throws `provider_error`.** Stripe needs the current
   item ID to *replace* a price instead of adding one; without it the change would double-bill, so the
   SDK refuses rather than send it.
