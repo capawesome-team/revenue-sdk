@@ -4,6 +4,7 @@ paths:
   - 'docs/**'
   - 'blog/**'
   - 'pages/**'
+  - 'README.md'
 ---
 
 # Docs drift checklist
@@ -34,3 +35,4 @@ When changing any of the following, update the single home in the same PR:
 - License-key status mapping, the standalone `providers/*/licenses.ts` signatures, or `licenseKeys` client gating → `docs/concepts/license-keys.mdx` + that provider page's `## License keys` section + the tables in `.claude/rules/license-keys.md`
 - `Order` fields, a `toOrderStatus`/`toRefundStatus` helper, a `listOrders` filter or sort, or `getOrderInvoiceUrl` → `docs/concepts/orders.mdx` (its Accordions are the single home for order-status/refund/invoice-URL tables) + that provider page's `## Orders` deltas + the tables in `.claude/rules/orders.md` (short filtered pages also `docs/concepts/pagination.mdx`)
 - Provider factory options → that provider's page + `docs/quickstart.mdx` code tabs + `pages/index.astro` code tabs
+- A `RevenueClient` namespace or method, a new provider subpath, or the `RevenueErrorCode` union → the matching `README.md` table ("API at a glance", "Providers", "Errors"). These are the only cross-provider tables outside `docs/`, kept deliberately coarse: the README links to `docs/reference/capability-matrix.mdx` and must never grow a twin of it, of the status mapping, or of the webhook-event table.

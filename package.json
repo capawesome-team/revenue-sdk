@@ -21,15 +21,22 @@
     "paddle",
     "dodo-payments",
     "merchant-of-record",
-    "sdk"
+    "sdk",
+    "typescript",
+    "revenue",
+    "saas",
+    "license-keys",
+    "usage-based-billing",
+    "cloudflare-workers",
+    "edge"
   ],
-  "homepage": "https://github.com/capawesome-team/revenue-sdk",
+  "homepage": "https://revenue-sdk.dev",
   "repository": {
     "type": "git",
     "url": "https://github.com/capawesome-team/revenue-sdk"
   },
   "bugs": {
-    "url": "https://github.com/capawesome-team/revenue-sdk"
+    "url": "https://github.com/capawesome-team/revenue-sdk/issues"
   },
   "exports": {
     ".": {
