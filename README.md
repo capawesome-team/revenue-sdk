@@ -2,9 +2,6 @@
 
 Unified TypeScript SDK for billing providers — [Polar](https://polar.sh), [Lemon Squeezy](https://lemonsqueezy.com), [Stripe](https://stripe.com), [Paddle](https://paddle.com), [Dodo Payments](https://dodopayments.com).
 
-> [!WARNING]
-> This project is in early development. APIs may change between releases without notice. Feedback and bug reports are very welcome — please [open an issue](https://github.com/capawesome-team/revenue-sdk/issues).
-
 ## Features
 
 - **One API, five providers** — products, checkouts, customers, subscriptions, customer portal, and webhooks behind a single interface.
