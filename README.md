@@ -128,7 +128,7 @@ License keys have a second surface: `validateLicenseKey`, `activateLicenseKey`, 
 | Dodo Payments | `revenue-sdk/dodo-payments` | Merchant of record. Live and test mode.                              |
 | Testing       | `revenue-sdk/testing`       | Seedable in-memory provider for your test suite. No API keys.        |
 
-Every factory accepts an optional `baseUrl` (self-hosted gateways and proxies) and an injectable `fetch`. Providers do not support the same feature set — `client.capabilities` tells you what the active one can do, and the full breakdown lives in the [capability matrix](https://revenue-sdk.dev/docs/reference/capability-matrix).
+Every factory accepts an optional `baseUrl` (self-hosted gateways and proxies), an injectable `fetch` and a `userAgent`. Providers do not support the same feature set — `client.capabilities` tells you what the active one can do, and the full breakdown lives in the [capability matrix](https://revenue-sdk.dev/docs/reference/capability-matrix).
 
 ## Testing
 

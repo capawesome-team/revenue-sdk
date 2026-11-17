@@ -6,6 +6,7 @@ import type {
   ProrationBehavior,
   RevenueCapabilities,
   RevenueProvider,
+  TransportOptions,
 } from '../../types.ts';
 import { requireOptions, toUsagePayload, unsupported } from '../shared.ts';
 import {
@@ -60,7 +61,7 @@ const CAPABILITIES: RevenueCapabilities = {
   usageReporting: true,
 };
 
-export interface StripeProviderOptions {
+export interface StripeProviderOptions extends TransportOptions {
   /** Secret or restricted API key (`sk_...` / `rk_...`). */
   secretKey: string;
   /**
@@ -73,7 +74,6 @@ export interface StripeProviderOptions {
   apiVersion?: string;
   /** Used verbatim. */
   baseUrl?: string;
-  fetch?: typeof fetch;
 }
 
 interface CursorState {
@@ -112,6 +112,7 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
     provider: 'stripe',
     baseUrl: options.baseUrl ?? BASE_URL,
     fetchImpl: options.fetch,
+    userAgent: options.userAgent,
     authHeaders: () => ({ Authorization: `Bearer ${options.secretKey}` }),
     defaultHeaders: { 'Stripe-Version': options.apiVersion ?? API_VERSION },
     mapError,

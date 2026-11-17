@@ -1,6 +1,11 @@
 import { RevenueError } from '../../errors.ts';
 import { HttpClient, type ProviderErrorInfo } from '../../http.ts';
-import type { BaseParams, LicenseKeyActivation, LicenseKeyValidation } from '../../types.ts';
+import type {
+  BaseParams,
+  LicenseKeyActivation,
+  LicenseKeyValidation,
+  TransportOptions,
+} from '../../types.ts';
 import {
   mapError,
   toBaseUrl,
@@ -10,7 +15,7 @@ import {
   type PolarLicenseKeyActivation,
 } from './common.ts';
 
-interface PolarLicenseKeyParams extends BaseParams {
+interface PolarLicenseKeyParams extends BaseParams, TransportOptions {
   /** The license key as the customer received it. */
   key: string;
   /** Your Polar organization ID — a public identifier, safe to ship inside an application. */
@@ -18,7 +23,6 @@ interface PolarLicenseKeyParams extends BaseParams {
   server?: 'production' | 'sandbox';
   /** Overrides `server`; used verbatim. */
   baseUrl?: string;
-  fetch?: typeof fetch;
 }
 
 export interface PolarValidateLicenseKeyParams extends PolarLicenseKeyParams {
@@ -57,6 +61,7 @@ function createHttpClient(
     provider: 'polar',
     baseUrl: toBaseUrl(params),
     fetchImpl: params.fetch,
+    userAgent: params.userAgent,
     // The customer-portal routes take no credential and answer `401 invalid_token` when any
     // `Authorization` header is present, so none may be sent.
     authHeaders: () => ({}),

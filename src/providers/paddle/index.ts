@@ -6,6 +6,7 @@ import type {
   ProrationBehavior,
   RevenueCapabilities,
   RevenueProvider,
+  TransportOptions,
 } from '../../types.ts';
 import { requireOptions, unsupported } from '../shared.ts';
 import {
@@ -61,12 +62,11 @@ const CAPABILITIES: RevenueCapabilities = {
   usageReporting: false,
 };
 
-export interface PaddleProviderOptions {
+export interface PaddleProviderOptions extends TransportOptions {
   apiKey: string;
   server?: 'production' | 'sandbox';
   /** Overrides `server`; used verbatim. */
   baseUrl?: string;
-  fetch?: typeof fetch;
 }
 
 interface CursorState {
@@ -128,6 +128,7 @@ export function paddle(options: PaddleProviderOptions): RevenueProvider {
     provider: 'paddle',
     baseUrl,
     fetchImpl: options.fetch,
+    userAgent: options.userAgent,
     authHeaders: () => ({ Authorization: `Bearer ${options.apiKey}` }),
     defaultHeaders: { 'Paddle-Version': '1' },
     mapError,

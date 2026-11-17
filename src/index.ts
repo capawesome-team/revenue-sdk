@@ -62,6 +62,7 @@ export type {
   SubscriptionMeter,
   SubscriptionStatus,
   SubscriptionUpdatedEvent,
+  TransportOptions,
   UncancelSubscriptionParams,
   UnknownEvent,
   UpdateCustomerParams,

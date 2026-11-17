@@ -1,6 +1,11 @@
 import { HttpClient } from '../../http.ts';
 import { pageNumberCursor } from '../../pagination.ts';
-import type { ProrationBehavior, RevenueCapabilities, RevenueProvider } from '../../types.ts';
+import type {
+  ProrationBehavior,
+  RevenueCapabilities,
+  RevenueProvider,
+  TransportOptions,
+} from '../../types.ts';
 import { requireOptions, toUsagePayload, unsupported } from '../shared.ts';
 import {
   mapError,
@@ -50,13 +55,12 @@ const CAPABILITIES: RevenueCapabilities = {
   usageReporting: true,
 };
 
-export interface PolarProviderOptions {
+export interface PolarProviderOptions extends TransportOptions {
   /** Organization access token (`polar_oat_...`). */
   accessToken: string;
   server?: 'production' | 'sandbox';
   /** Overrides `server`; used verbatim. */
   baseUrl?: string;
-  fetch?: typeof fetch;
 }
 
 interface PolarCustomerSession {
@@ -107,6 +111,7 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
     provider: 'polar',
     baseUrl: toBaseUrl(options),
     fetchImpl: options.fetch,
+    userAgent: options.userAgent,
     authHeaders: () => ({ Authorization: `Bearer ${options.accessToken}` }),
     mapError,
     secrets: () => [options.accessToken],

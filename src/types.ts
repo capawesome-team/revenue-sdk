@@ -5,6 +5,12 @@ export interface BaseParams {
   signal?: AbortSignal;
 }
 
+export interface TransportOptions {
+  fetch?: typeof fetch;
+  /** Sent as the `User-Agent` header of every request. Defaults to `revenue-sdk`. */
+  userAgent?: string;
+}
+
 export interface Page<T> {
   items: T[];
   /** Opaque cursor for the next page; absent on the last page. */

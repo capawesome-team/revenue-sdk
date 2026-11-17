@@ -1,7 +1,12 @@
 import { RevenueError } from '../../errors.ts';
 import { HttpClient } from '../../http.ts';
 import { pageNumberCursor } from '../../pagination.ts';
-import type { ProrationBehavior, RevenueCapabilities, RevenueProvider } from '../../types.ts';
+import type {
+  ProrationBehavior,
+  RevenueCapabilities,
+  RevenueProvider,
+  TransportOptions,
+} from '../../types.ts';
 import { requireOptions, toUsagePayload, unsupported } from '../shared.ts';
 import {
   mapError,
@@ -52,12 +57,11 @@ const CAPABILITIES: RevenueCapabilities = {
   usageReporting: true,
 };
 
-export interface DodoPaymentsProviderOptions {
+export interface DodoPaymentsProviderOptions extends TransportOptions {
   apiKey: string;
   server?: 'live' | 'test';
   /** Overrides `server`; used verbatim. */
   baseUrl?: string;
-  fetch?: typeof fetch;
 }
 
 function toProrationBillingMode(behavior: ProrationBehavior | undefined): string {
@@ -92,6 +96,7 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
     provider: 'dodo-payments',
     baseUrl: toBaseUrl(options),
     fetchImpl: options.fetch,
+    userAgent: options.userAgent,
     authHeaders: () => ({ Authorization: `Bearer ${options.apiKey}` }),
     mapError,
     secrets: () => [options.apiKey],

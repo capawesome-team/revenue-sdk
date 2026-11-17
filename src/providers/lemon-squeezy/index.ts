@@ -1,7 +1,12 @@
 import { RevenueError } from '../../errors.ts';
 import { HttpClient, type ProviderErrorInfo } from '../../http.ts';
 import { clampLimit, decodeCursor, encodeCursor, pageNumberCursor } from '../../pagination.ts';
-import type { Product, RevenueCapabilities, RevenueProvider } from '../../types.ts';
+import type {
+  Product,
+  RevenueCapabilities,
+  RevenueProvider,
+  TransportOptions,
+} from '../../types.ts';
 import { requireOptions, unsupported } from '../shared.ts';
 import {
   BASE_URL,
@@ -54,13 +59,12 @@ const CAPABILITIES: RevenueCapabilities = {
   usageReporting: false,
 };
 
-export interface LemonSqueezyProviderOptions {
+export interface LemonSqueezyProviderOptions extends TransportOptions {
   apiKey: string;
   /** The store checkouts are created in. */
   storeId: string | number;
   /** Used verbatim. */
   baseUrl?: string;
-  fetch?: typeof fetch;
 }
 
 /**
@@ -104,6 +108,7 @@ export function lemonSqueezy(options: LemonSqueezyProviderOptions): RevenueProvi
     provider: 'lemon-squeezy',
     baseUrl: options.baseUrl ?? BASE_URL,
     fetchImpl: options.fetch,
+    userAgent: options.userAgent,
     authHeaders: () => ({ Authorization: `Bearer ${options.apiKey}` }),
     defaultHeaders: {
       // JSON:API — required on every request, including GETs.

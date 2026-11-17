@@ -1,7 +1,7 @@
 import { RevenueError, type RevenueErrorCode } from './errors.ts';
 import type { ProviderName } from './types.ts';
 
-const USER_AGENT = 'revenue-sdk';
+const DEFAULT_USER_AGENT = 'revenue-sdk';
 
 export interface ProviderErrorInfo {
   code?: RevenueErrorCode;
@@ -14,6 +14,7 @@ export interface HttpClientOptions {
   provider: ProviderName;
   baseUrl: string;
   fetchImpl?: typeof fetch;
+  userAgent: string | undefined;
   authHeaders: () => Record<string, string> | Promise<Record<string, string>>;
   defaultHeaders?: Record<string, string>;
   mapError?: (status: number, body: unknown, response: Response) => ProviderErrorInfo;
@@ -82,6 +83,7 @@ export class HttpClient {
   private readonly provider: ProviderName;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly userAgent: string;
   private readonly authHeaders: HttpClientOptions['authHeaders'];
   private readonly defaultHeaders: Record<string, string>;
   private readonly mapError: HttpClientOptions['mapError'];
@@ -91,6 +93,7 @@ export class HttpClient {
     this.provider = options.provider;
     this.baseUrl = options.baseUrl;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
     this.authHeaders = options.authHeaders;
     this.defaultHeaders = options.defaultHeaders ?? {};
     this.mapError = options.mapError;
@@ -139,7 +142,7 @@ export class HttpClient {
       ...(await this.authHeaders()),
       ...options.headers,
     };
-    headers['User-Agent'] ??= USER_AGENT;
+    headers['User-Agent'] ??= this.userAgent;
     let body: BodyInit | undefined;
     if (options.form !== undefined) {
       body = options.form;
