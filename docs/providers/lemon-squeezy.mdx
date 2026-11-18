@@ -31,6 +31,7 @@ const client = createClient({
     },
     baseUrl: { type: 'string', required: false, description: 'Used verbatim; defaults to https://api.lemonsqueezy.com.' },
     fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+    userAgent: { type: 'string', default: 'revenue-sdk', description: 'Sent as the User-Agent header of every request.' },
   }}
 />
 
@@ -115,8 +116,8 @@ exports rather than client methods — safe to ship inside a desktop, mobile, or
 left `undefined`, and a response without `meta` fails closed.
 :::
 
-Lemon Squeezy-specific options — the rest (`key`, `activationId`, `label`, `fetch`, `signal`) are the
-same on every provider:
+Lemon Squeezy-specific options — the rest (`key`, `activationId`, `label`, `fetch`, `userAgent`,
+`signal`) are the same on every provider:
 
 <TypeTable
   type={{

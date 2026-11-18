@@ -1,6 +1,11 @@
 import { RevenueError } from '../../errors.ts';
 import { HttpClient } from '../../http.ts';
-import type { BaseParams, LicenseKeyActivation, LicenseKeyValidation } from '../../types.ts';
+import type {
+  BaseParams,
+  LicenseKeyActivation,
+  LicenseKeyValidation,
+  TransportOptions,
+} from '../../types.ts';
 import {
   mapError,
   toBaseUrl,
@@ -8,13 +13,12 @@ import {
   type DodoLicenseKeyInstance,
 } from './common.ts';
 
-interface DodoPaymentsLicenseKeyParams extends BaseParams {
+interface DodoPaymentsLicenseKeyParams extends BaseParams, TransportOptions {
   /** The license key as the customer received it. */
   key: string;
   server?: 'live' | 'test';
   /** Overrides `server`; used verbatim. */
   baseUrl?: string;
-  fetch?: typeof fetch;
 }
 
 export interface DodoPaymentsValidateLicenseKeyParams extends DodoPaymentsLicenseKeyParams {
@@ -40,6 +44,7 @@ function createHttpClient(params: DodoPaymentsLicenseKeyParams): HttpClient {
     provider: 'dodo-payments',
     baseUrl: toBaseUrl(params),
     fetchImpl: params.fetch,
+    userAgent: params.userAgent,
     // The `/licenses` routes are unauthenticated — no credential is sent, and none may be added
     // here. Dodo rate-limits them tightly: roughly 20 requests per second and 100 per minute.
     authHeaders: () => ({}),

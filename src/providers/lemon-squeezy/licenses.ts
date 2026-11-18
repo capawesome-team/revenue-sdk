@@ -1,6 +1,11 @@
 import { RevenueError } from '../../errors.ts';
 import { HttpClient, type ProviderErrorInfo } from '../../http.ts';
-import type { BaseParams, LicenseKeyActivation, LicenseKeyValidation } from '../../types.ts';
+import type {
+  BaseParams,
+  LicenseKeyActivation,
+  LicenseKeyValidation,
+  TransportOptions,
+} from '../../types.ts';
 import {
   BASE_URL,
   toLicenseKeyActivation,
@@ -19,13 +24,12 @@ export interface LemonSqueezyLicenseKeyExpectation {
   variantId?: string | number;
 }
 
-export interface LemonSqueezyLicenseKeyParams extends BaseParams {
+export interface LemonSqueezyLicenseKeyParams extends BaseParams, TransportOptions {
   key: string;
   /** Required: Lemon Squeezy answers for any merchant's key, so the caller must assert ownership. */
   expect: LemonSqueezyLicenseKeyExpectation;
   /** Used verbatim. */
   baseUrl?: string;
-  fetch?: typeof fetch;
 }
 
 export interface LemonSqueezyValidateLicenseKeyParams extends LemonSqueezyLicenseKeyParams {
@@ -67,6 +71,7 @@ function createHttpClient(params: LemonSqueezyLicenseKeyParams): HttpClient {
     provider: 'lemon-squeezy',
     baseUrl: params.baseUrl ?? BASE_URL,
     fetchImpl: params.fetch,
+    userAgent: params.userAgent,
     // The license API takes no credential, and a merchant API key must never reach a client app.
     // It is also not JSON:API — hence a client of its own, since `HttpClient` only fills in the
     // form content type when no default header already set one.

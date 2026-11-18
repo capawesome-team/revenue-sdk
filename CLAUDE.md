@@ -20,7 +20,7 @@ commit footer. Do avoid changes that break callers _silently_; make them fail lo
 
 - **Zero runtime dependencies. No `node:*` imports in `src/`.** Only Web-standard APIs: `fetch`, `crypto.subtle`, `btoa`/`atob`, `TextEncoder`, `URL`, `AbortSignal`, `Request`/`Response`/`Headers`. Must run on Cloudflare Workers WITHOUT `nodejs_compat`.
 - ESM only. No CJS build. Intra-package imports use explicit `.ts` extensions (`verbatimModuleSyntax` + `allowImportingTsExtensions`).
-- Every provider factory accepts `fetch?: typeof fetch` (test seam + edge runtimes). Call injected fetch **detached from any holder object** (workerd throws `Illegal invocation` otherwise).
+- Every provider factory and license key function takes `TransportOptions`: `fetch?: typeof fetch` (test seam + edge runtimes) and `userAgent?`. Call injected fetch **detached from any holder object** (workerd throws `Illegal invocation` otherwise).
 - Never log or embed secrets in error messages — `RevenueError` redacts via the `secrets` hook.
 - No module-scope mutable state (Workers isolate reuse).
 

@@ -38,6 +38,7 @@ const client = createClient({
     },
     baseUrl: { type: 'string', required: false, description: 'Used verbatim; defaults to https://api.stripe.com.' },
     fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+    userAgent: { type: 'string', default: 'revenue-sdk', description: 'Sent as the User-Agent header of every request.' },
   }}
 />
 

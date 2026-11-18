@@ -35,6 +35,7 @@ const client = createClient({
       description: 'Overrides server; used verbatim. Polar collection paths keep a trailing slash (/v1/checkouts/), so point it at a host, not a rewritten path.',
     },
     fetch: { type: 'typeof fetch', required: false, description: 'Custom fetch implementation.' },
+    userAgent: { type: 'string', default: 'revenue-sdk', description: 'Sent as the User-Agent header of every request.' },
   }}
 />
 
@@ -117,8 +118,8 @@ Validating, activating, and deactivating a key needs **no credential**, so those
 standalone exports rather than client methods — safe to ship inside a desktop, mobile, or CLI app. See
 [License keys](/docs/concepts/license-keys) for the shared signatures and return types.
 
-Polar-specific options — the rest (`key`, `activationId`, `label`, `fetch`, `signal`) are the same on
-every provider:
+Polar-specific options — the rest (`key`, `activationId`, `label`, `fetch`, `userAgent`, `signal`) are
+the same on every provider:
 
 <TypeTable
   type={{

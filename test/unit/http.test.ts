@@ -10,6 +10,7 @@ function setup(handler: StubHandler, overrides: Partial<HttpClientOptions> = {})
     baseUrl: 'https://api.example.com',
     fetchImpl: stub.fetch,
     authHeaders: () => ({ Authorization: 'Bearer token-123' }),
+    userAgent: undefined,
     ...overrides,
   });
   return { http, stub };
@@ -37,6 +38,12 @@ describe('HttpClient', () => {
     expect(request.headers['authorization']).toBe('Bearer token-123');
     expect(request.headers['accept']).toBe('application/json');
     expect(request.headers['user-agent']).toBe('revenue-sdk');
+  });
+
+  it('sends the userAgent option as the User-Agent', async () => {
+    const { http, stub } = setup(() => ({ json: {} }), { userAgent: 'my-app' });
+    await http.json('/v1/products/');
+    expect(stub.requests[0]!.headers['user-agent']).toBe('my-app');
   });
 
   it('preserves trailing slashes in paths', async () => {
@@ -148,6 +155,7 @@ describe('HttpClient', () => {
       baseUrl: 'https://api.example.com',
       fetchImpl: failingFetch,
       authHeaders: () => ({}),
+      userAgent: undefined,
     });
     const error = await expectRevenueError(http.json('/v1/products/'), 'network_error');
     expect(error.cause).toBeInstanceOf(TypeError);
