@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/capawesome-team/revenue-sdk/compare/v0.2.2...v0.2.3) (2026-11-18)
+
+
+### Features
+
+* add a userAgent option ([#14](https://github.com/capawesome-team/revenue-sdk/issues/14)) ([20efba0](https://github.com/capawesome-team/revenue-sdk/commit/20efba0461a7d70327ea9d466079bbac249a60ed))
+
 ## [0.2.2](https://github.com/capawesome-team/revenue-sdk/compare/v0.2.1...v0.2.2) (2026-08-09)
 
 
