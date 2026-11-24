@@ -76,7 +76,7 @@ describe('paddle', () => {
   it('rejects usage reporting', async () => {
     const { provider } = setup(() => ({ json: { data: [] } }));
     await expectRevenueError(
-      provider.reportUsage({ customerId: 'ctm_1', eventName: 'api' }),
+      provider.reportUsage({ events: [{ customerId: 'ctm_1', eventName: 'api' }] }),
       'unsupported',
     );
   });

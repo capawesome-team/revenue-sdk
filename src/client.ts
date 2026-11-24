@@ -39,6 +39,7 @@ import type {
   UncancelSubscriptionParams,
   UpdateCustomerParams,
   UpdateLicenseKeyParams,
+  UsageEvent,
 } from './types.ts';
 
 const DEFAULT_MAX_RETRY_AFTER_SECONDS = 10;
@@ -220,15 +221,20 @@ export function createClient(options: CreateClientOptions): RevenueClient {
     }
   }
 
-  // Any numeric entry can be the billed quantity — meters aggregate on a caller-configured key,
-  // not just `value` — and a non-finite number serializes to `null` or `"NaN"` on the wire.
-  function checkUsagePayload(params: ReportUsageParams): void {
-    if (params.value !== undefined && !Number.isFinite(params.value)) {
-      fail('validation', 'The value parameter must be a finite number');
-    }
-    for (const [key, entry] of Object.entries(params.metadata ?? {})) {
-      if (typeof entry === 'number' && !Number.isFinite(entry)) {
-        fail('validation', `The metadata.${key} parameter must be a finite number`);
+  function checkUsageEvents(events: UsageEvent[]): void {
+    for (const [index, event] of events.entries()) {
+      const name = `events[${index}]`;
+      requireNonEmpty(event.customerId, `${name}.customerId`);
+      requireNonEmpty(event.eventName, `${name}.eventName`);
+      // Any numeric entry can be the billed quantity, because meters aggregate on a key the caller
+      // configures, not only on `value`. A non-finite number reaches the wire as `null` or `"NaN"`.
+      if (event.value !== undefined && !Number.isFinite(event.value)) {
+        fail('validation', `The ${name}.value parameter must be a finite number`);
+      }
+      for (const [key, entry] of Object.entries(event.metadata ?? {})) {
+        if (typeof entry === 'number' && !Number.isFinite(entry)) {
+          fail('validation', `The ${name}.metadata.${key} parameter must be a finite number`);
+        }
       }
     }
   }
@@ -467,11 +473,15 @@ export function createClient(options: CreateClientOptions): RevenueClient {
 
     usage: {
       report: async (params) => {
-        requireNonEmpty(params.customerId, 'customerId');
-        requireNonEmpty(params.eventName, 'eventName');
-        checkUsagePayload(params);
+        checkUsageEvents(params.events);
         if (!provider.capabilities.usageReporting) {
           fail('unsupported', `${provider.name} does not support usage reporting`);
+        }
+        if (params.events.length > 1 && !provider.capabilities.usageBatchReporting) {
+          fail('unsupported', `${provider.name} does not support batch usage reporting`);
+        }
+        if (params.events.length === 0) {
+          return;
         }
         // Deliberately unwrapped — not even `runWrite`: a replayed usage event is only deduplicated
         // when `idempotencyKey` is set, so an automatic retry would over-bill the customer.

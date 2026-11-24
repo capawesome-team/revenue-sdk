@@ -1197,7 +1197,7 @@ describe('lemonSqueezy', () => {
   it('rejects usage reporting', async () => {
     const { provider } = setup(() => ({ json: {} }));
     await expectRevenueError(
-      provider.reportUsage({ customerId: 'c1', eventName: 'api' }),
+      provider.reportUsage({ events: [{ customerId: 'c1', eventName: 'api' }] }),
       'unsupported',
     );
   });

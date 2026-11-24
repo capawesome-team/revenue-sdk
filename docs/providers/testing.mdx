@@ -111,16 +111,16 @@ instances.
 
 ### Reported usage events
 
-`usage.report` appends to `state.usageEvents`, so you can assert on what your code would have billed:
+`usage.report` appends one entry per event to `state.usageEvents`, so you can assert on what your code
+would have billed:
 
 ```ts
 const provider = createInMemoryProvider();
 
 await createClient({ provider }).usage.report({
-  customerId: 'cus-1',
-  eventName: 'api_request',
-  value: 25,
-  metadata: { region: 'eu' },
+  events: [
+    { customerId: 'cus-1', eventName: 'api_request', value: 25, metadata: { region: 'eu' } },
+  ],
 });
 
 expect(provider.state.usageEvents[0]).toEqual({
@@ -146,8 +146,8 @@ expect(provider.state.usageEvents[0]).toEqual({
 />
 
 The type is exported as `InMemoryUsageEvent`. Override `capabilities: { usageReporting: false }` to
-exercise the Lemon Squeezy and Paddle fallback path — see
-[Usage-based billing](/docs/concepts/usage-based-billing).
+exercise the Lemon Squeezy and Paddle fallback path, or `capabilities: { usageBatchReporting: false }`
+for the Stripe path. See [Usage-based billing](/docs/concepts/usage-based-billing).
 
 ### Seeded orders
 
@@ -351,7 +351,7 @@ defaults to the parent product's ID:
 | `subscriptions.resume`        | Sets `status: 'active'`, clears `pauseAtPeriodEnd` and `resumesAt`.                |
 | `subscriptions.revoke`        | Sets `status: 'canceled'`, clears `cancelAtPeriodEnd`, and sets `endedAt`.         |
 | `customerPortal.createSession`| Returns a fake portal URL, or throws `not_found` for an unknown customer.          |
-| `usage.report`                | Appends an `InMemoryUsageEvent`; `value` is merged into `payload`.                 |
+| `usage.report`                | Appends one `InMemoryUsageEvent` per event, with `value` merged into `payload`.    |
 | `licenseKeys.update`          | Sets `status` to `disabled`/`active` from `disabled`, and writes `activationLimit` and `expiresAt` when given (`null` clears them). |
 
 <CardGroup cols={2}>

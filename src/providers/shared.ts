@@ -1,5 +1,5 @@
 import { RevenueError } from '../errors.ts';
-import type { Metadata, ProviderName, ReportUsageParams } from '../types.ts';
+import type { Metadata, ProviderName, UsageEvent } from '../types.ts';
 
 const PROVIDER_DISPLAY_NAMES: Record<ProviderName, string> = {
   'dodo-payments': 'Dodo Payments',
@@ -61,11 +61,11 @@ export function fromUnixSeconds(value: number | null | undefined): Date | undefi
 }
 
 /** Folds the `value` shorthand into the event properties; an explicit `value` wins over `metadata.value`. */
-export function toUsagePayload(params: ReportUsageParams): Metadata | undefined {
-  if (params.value === undefined) {
-    return params.metadata;
+export function toUsagePayload(event: UsageEvent): Metadata | undefined {
+  if (event.value === undefined) {
+    return event.metadata;
   }
-  return { ...params.metadata, value: params.value };
+  return { ...event.metadata, value: event.value };
 }
 
 export function toMetadata(value: unknown): Metadata | undefined {

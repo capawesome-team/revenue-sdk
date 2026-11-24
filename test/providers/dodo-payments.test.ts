@@ -361,33 +361,41 @@ describe('dodoPayments', () => {
       expect(provider.capabilities.usageReporting).toBe(true);
     });
 
-    it('ingests a one-event batch and generates an event id when none is given', async () => {
-      const { provider, stub } = setup(() => ({ json: { ingested_count: 1 } }));
-      const result = await provider.reportUsage({ customerId: 'cus_1', eventName: 'api_request' });
+    it('ingests every event in one request and generates an event id per event', async () => {
+      const { provider, stub } = setup(() => ({ json: { ingested_count: 2 } }));
+      const result = await provider.reportUsage({
+        events: [
+          { customerId: 'cus_1', eventName: 'api_request' },
+          { customerId: 'cus_2', eventName: 'api_request' },
+        ],
+      });
+      expect(stub.requests).toHaveLength(1);
       const request = stub.requests[0]!;
       expect(request.method).toBe('POST');
       expect(request.url).toBe('https://live.dodopayments.com/events/ingest');
       const { events } = JSON.parse(request.body!);
-      expect(events).toHaveLength(1);
-      expect(typeof events[0].event_id).toBe('string');
-      expect(events[0].event_id.length).toBeGreaterThan(0);
-      expect(events[0]).toEqual({
-        event_id: events[0].event_id,
-        customer_id: 'cus_1',
-        event_name: 'api_request',
-      });
+      expect(events).toEqual([
+        { event_id: expect.any(String), customer_id: 'cus_1', event_name: 'api_request' },
+        { event_id: expect.any(String), customer_id: 'cus_2', event_name: 'api_request' },
+      ]);
+      // A shared generated id would make Dodo drop the second event as a duplicate.
+      expect(events[0].event_id).not.toBe(events[1].event_id);
       expect(result).toBeUndefined();
     });
 
     it('uses the idempotency key as the event id and lets value win over metadata.value', async () => {
       const { provider, stub } = setup(() => ({ json: { ingested_count: 1 } }));
       await provider.reportUsage({
-        customerId: 'cus_1',
-        eventName: 'api_request',
-        value: 150,
-        metadata: { value: 1, region: 'eu', billable: true },
-        idempotencyKey: 'api_call_12345',
-        timestamp: new Date('2026-08-06T10:30:00Z'),
+        events: [
+          {
+            customerId: 'cus_1',
+            eventName: 'api_request',
+            value: 150,
+            metadata: { value: 1, region: 'eu', billable: true },
+            idempotencyKey: 'api_call_12345',
+            timestamp: new Date('2026-08-06T10:30:00Z'),
+          },
+        ],
       });
       expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
         events: [

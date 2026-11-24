@@ -21,6 +21,7 @@ const ALL_CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['invoice_now', 'none', 'prorate'],
   revoke: true,
   uncancel: true,
+  usageBatchReporting: true,
   usageReporting: true,
 };
 
@@ -217,15 +218,17 @@ describe('createClient', () => {
       const reportUsage = vi.fn();
       const client = createClient({ provider: fakeProvider({ reportUsage }) });
       await expectRevenueError(
-        client.usage.report({ customerId: ' ', eventName: 'api_call' }),
+        client.usage.report({ events: [{ customerId: ' ', eventName: 'api_call' }] }),
         'validation',
       );
       await expectRevenueError(
-        client.usage.report({ customerId: 'c1', eventName: '' }),
+        client.usage.report({ events: [{ customerId: 'c1', eventName: '' }] }),
         'validation',
       );
       await expectRevenueError(
-        client.usage.report({ customerId: 'c1', eventName: 'api_call', value: Number.NaN }),
+        client.usage.report({
+          events: [{ customerId: 'c1', eventName: 'api_call', value: Number.NaN }],
+        }),
         'validation',
       );
       expect(reportUsage).not.toHaveBeenCalled();
@@ -238,20 +241,36 @@ describe('createClient', () => {
       const client = createClient({ provider: fakeProvider({ reportUsage }) });
       await expectRevenueError(
         client.usage.report({
-          customerId: 'c1',
-          eventName: 'api_call',
-          metadata: { value: Number.NaN },
+          events: [{ customerId: 'c1', eventName: 'api_call', metadata: { value: Number.NaN } }],
         }),
         'validation',
       );
       await expectRevenueError(
         client.usage.report({
-          customerId: 'c1',
-          eventName: 'api_call',
-          metadata: { total_tokens: Number.POSITIVE_INFINITY },
+          events: [
+            {
+              customerId: 'c1',
+              eventName: 'api_call',
+              metadata: { total_tokens: Number.POSITIVE_INFINITY },
+            },
+          ],
         }),
         'validation',
       );
+      expect(reportUsage).not.toHaveBeenCalled();
+    });
+
+    it('rejects a bad usage event anywhere in the list and names its position', async () => {
+      const reportUsage = vi.fn();
+      const client = createClient({ provider: fakeProvider({ reportUsage }) });
+      const report = client.usage.report({
+        events: [
+          { customerId: 'c1', eventName: 'api_call', value: 1 },
+          { customerId: 'c2', eventName: 'api_call', value: Number.NaN },
+        ],
+      });
+      await expect(report).rejects.toThrow('events[1].value');
+      await expectRevenueError(report, 'validation');
       expect(reportUsage).not.toHaveBeenCalled();
     });
 
@@ -259,11 +278,22 @@ describe('createClient', () => {
       const reportUsage = vi.fn().mockResolvedValue(undefined);
       const client = createClient({ provider: fakeProvider({ reportUsage }) });
       await client.usage.report({
-        customerId: 'c1',
-        eventName: 'api_call',
-        metadata: { total_tokens: 0, region: 'eu', premium: true },
+        events: [
+          {
+            customerId: 'c1',
+            eventName: 'api_call',
+            metadata: { total_tokens: 0, region: 'eu', premium: true },
+          },
+        ],
       });
       expect(reportUsage).toHaveBeenCalledOnce();
+    });
+
+    it('sends no request for an empty usage event list', async () => {
+      const reportUsage = vi.fn();
+      const client = createClient({ provider: fakeProvider({ reportUsage }) });
+      await client.usage.report({ events: [] });
+      expect(reportUsage).not.toHaveBeenCalled();
     });
 
     it('rejects an invalid license-key activation limit', async () => {
@@ -410,10 +440,34 @@ describe('createClient', () => {
         provider: fakeProvider({ reportUsage }, { usageReporting: false }),
       });
       await expectRevenueError(
-        client.usage.report({ customerId: 'c1', eventName: 'api_call' }),
+        client.usage.report({ events: [{ customerId: 'c1', eventName: 'api_call' }] }),
         'unsupported',
       );
       expect(reportUsage).not.toHaveBeenCalled();
+    });
+
+    it('rejects more than one usage event without batch reporting but still reports one', async () => {
+      const reportUsage = vi.fn().mockResolvedValue(undefined);
+      const client = createClient({
+        provider: fakeProvider({ reportUsage }, { usageBatchReporting: false }),
+      });
+      const event = { customerId: 'c1', eventName: 'api_call' };
+      await expectRevenueError(client.usage.report({ events: [event, event] }), 'unsupported');
+      expect(reportUsage).not.toHaveBeenCalled();
+      await client.usage.report({ events: [event] });
+      expect(reportUsage).toHaveBeenCalledOnce();
+    });
+
+    it('passes every usage event to the provider in one call', async () => {
+      const reportUsage = vi.fn().mockResolvedValue(undefined);
+      const client = createClient({ provider: fakeProvider({ reportUsage }) });
+      const events = [
+        { customerId: 'c1', eventName: 'api_call' },
+        { customerId: 'c2', eventName: 'api_call' },
+      ];
+      await client.usage.report({ events });
+      expect(reportUsage).toHaveBeenCalledOnce();
+      expect(reportUsage).toHaveBeenCalledWith({ events });
     });
 
     it('rejects every license-key operation when unsupported', async () => {
@@ -547,7 +601,7 @@ describe('createClient', () => {
         );
       const client = createClient({ provider: fakeProvider({ reportUsage }) });
       await expectRevenueError(
-        client.usage.report({ customerId: 'c1', eventName: 'api_call' }),
+        client.usage.report({ events: [{ customerId: 'c1', eventName: 'api_call' }] }),
         'rate_limited',
       );
       expect(reportUsage).toHaveBeenCalledTimes(1);

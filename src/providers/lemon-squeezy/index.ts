@@ -54,6 +54,7 @@ const CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['invoice_now', 'prorate', 'none'],
   revoke: false,
   uncancel: true,
+  usageBatchReporting: false,
   // `POST /v1/usage-records` keys on a subscription-item ID rather than a customer (ambiguous once a
   // customer has several subscriptions) and has no idempotency at all, so a replay double-bills.
   usageReporting: false,

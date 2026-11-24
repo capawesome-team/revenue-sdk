@@ -31,6 +31,7 @@ and throws `unsupported` rather than silently dropping an option — see
 | `prorationBehaviors`          | `ProrationBehavior[]`    | `invoice_now`, `prorate`     | `invoice_now`, `prorate`, `none`     | `invoice_now`, `none`, `prorate`     | `invoice_now`, `none`, `prorate`     | `invoice_now`, `none`     |
 | `revoke`                      | `boolean`                | `true`                       | `false`                              | `true`                               | `true`                               | `true`                    |
 | `uncancel`                    | `boolean`                | `true`                       | `true`                               | `true`                               | `true`                               | `true`                    |
+| `usageBatchReporting`         | `boolean`                | `true`                       | `false`                              | `false`                              | `false`                              | `true`                    |
 | `usageReporting`              | `boolean`                | `true`                       | `false`                              | `true`                               | `false`                              | `true`                    |
 
 The in-memory provider from `revenue-sdk/testing` reports **every capability `true`**, all three
@@ -122,6 +123,11 @@ see [Testing provider](/docs/providers/testing).
     uncancel: {
       type: 'boolean',
       description: 'Whether subscriptions.uncancel can revert a scheduled cancellation.',
+    },
+    usageBatchReporting: {
+      type: 'boolean',
+      description:
+        'Whether usage.report accepts more than one event per call. A longer list without support throws unsupported, while a list of one still works (POST /v1/billing/meter_events, the Stripe endpoint the SDK uses, records one meter event per call).',
     },
     usageReporting: {
       type: 'boolean',

@@ -525,26 +525,39 @@ describe('polar', () => {
   });
 
   describe('reportUsage', () => {
-    it('ingests a single-event batch', async () => {
-      const { provider, stub } = setup(() => ({ json: { inserted: 1, duplicates: 0 } }));
-      await provider.reportUsage({ customerId: 'cus-uuid-1', eventName: 'ai_usage' });
+    it('ingests every event in one request', async () => {
+      const { provider, stub } = setup(() => ({ json: { inserted: 2, duplicates: 0 } }));
+      await provider.reportUsage({
+        events: [
+          { customerId: 'cus-uuid-1', eventName: 'ai_usage' },
+          { customerId: 'cus-uuid-2', eventName: 'ai_usage' },
+        ],
+      });
+      expect(stub.requests).toHaveLength(1);
       const request = stub.requests[0]!;
       expect(request.method).toBe('POST');
       expect(request.url).toBe('https://api.polar.sh/v1/events/ingest');
       expect(JSON.parse(request.body!)).toEqual({
-        events: [{ name: 'ai_usage', customer_id: 'cus-uuid-1' }],
+        events: [
+          { name: 'ai_usage', customer_id: 'cus-uuid-1' },
+          { name: 'ai_usage', customer_id: 'cus-uuid-2' },
+        ],
       });
     });
 
     it('merges value over metadata and maps the idempotency key and timestamp', async () => {
       const { provider, stub } = setup(() => ({ json: { inserted: 1, duplicates: 0 } }));
       await provider.reportUsage({
-        customerId: 'cus-uuid-1',
-        eventName: 'ai_usage',
-        value: 77,
-        metadata: { model: 'sonnet', value: 1 },
-        idempotencyKey: 'evt_abc',
-        timestamp: new Date('2026-08-06T10:00:00Z'),
+        events: [
+          {
+            customerId: 'cus-uuid-1',
+            eventName: 'ai_usage',
+            value: 77,
+            metadata: { model: 'sonnet', value: 1 },
+            idempotencyKey: 'evt_abc',
+            timestamp: new Date('2026-08-06T10:00:00Z'),
+          },
+        ],
       });
       expect(JSON.parse(stub.requests[0]!.body!)).toEqual({
         events: [

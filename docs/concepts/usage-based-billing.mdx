@@ -1,27 +1,44 @@
 ---
 title: Usage-based billing
-description: Report metered usage with usage.report — provider support, the deliberate no-retry rule, idempotency keys, backdating windows, and Subscription.meters.
+description: Report metered usage with usage.report. Provider support, lists of events, the deliberate no-retry rule, idempotency keys, backdating windows, and Subscription.meters.
 sidebar:
   label: Usage-based billing
 ---
 
 Metered pricing bills for what a customer consumed, so the provider needs a stream of usage events from
-your application. `client.usage.report` sends **one event** to the meter that matches its `eventName`.
+your application. `client.usage.report` sends a **list of events**. Each event goes to the meter that
+matches its `eventName`.
 
 ```ts
 await client.usage.report({
-  customerId: 'cus_123',
-  eventName: 'api_request',
-  value: 25,
-  metadata: { region: 'eu' },
-  idempotencyKey: 'evt_abc',
-  timestamp: new Date(),
+  events: [
+    {
+      customerId: 'cus_123',
+      eventName: 'api_request',
+      value: 25,
+      metadata: { region: 'eu' },
+      idempotencyKey: 'evt_abc',
+      timestamp: new Date(),
+    },
+  ],
 });
 ```
 
 It resolves to `void`: providers acknowledge ingestion, they do not hand back a usage record.
 
 ## Parameters
+
+<TypeTable
+  type={{
+    events: {
+      type: 'UsageEvent[]',
+      description: 'The events to report. More than one event needs the usageBatchReporting capability. An empty list sends no request.',
+    },
+    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
+  }}
+/>
+
+Each `UsageEvent` takes these fields:
 
 <TypeTable
   type={{
@@ -53,16 +70,16 @@ It resolves to `void`: providers acknowledge ingestion, they do not hand back a 
       required: false,
       description: 'When the usage occurred. Defaults to receipt time; the accepted window differs sharply per provider.',
     },
-    signal: { type: 'AbortSignal', required: false, description: 'Abort the request.' },
   }}
 />
 
-The client rejects an empty `customerId`, an empty `eventName`, and any non-finite number — whether it
-arrives as `value` or as a numeric `metadata` entry — with `RevenueError { code: 'validation' }`
-**before** any request is made. Every numeric entry is checked, not just `value`, because a meter
-aggregates on a key you configure: a `NaN` under any name is a corrupted billed quantity, and it would
-otherwise reach the provider as `null` or `"NaN"`. A provider without the `usageReporting` capability
-throws `unsupported`, also pre-flight.
+The client checks every event in the list **before** any request is made. It rejects an empty
+`customerId`, an empty `eventName`, and any non-finite number with `RevenueError { code: 'validation' }`,
+whether the number arrives as `value` or as a numeric `metadata` entry. The error message names the
+position of the bad event, for example `events[3].value`. Every numeric entry is checked, not just
+`value`, because a meter aggregates on a key you configure: a `NaN` under any name is a corrupted billed
+quantity, and it would otherwise reach the provider as `null` or `"NaN"`. A provider without the
+`usageReporting` capability throws `unsupported`, also before any request.
 
 :::warning
 **A resolved `usage.report` is not a confirmation that the usage was billed.** Providers validate the
@@ -81,8 +98,10 @@ provider dashboard.
 aggregate on by default. These two calls send the same payload:
 
 ```ts
-await client.usage.report({ customerId, eventName: 'api_request', value: 25 });
-await client.usage.report({ customerId, eventName: 'api_request', metadata: { value: 25 } });
+await client.usage.report({ events: [{ customerId, eventName: 'api_request', value: 25 }] });
+await client.usage.report({
+  events: [{ customerId, eventName: 'api_request', metadata: { value: 25 } }],
+});
 ```
 
 An explicit `value` wins over a `metadata.value`. Everything else in `metadata` is passed through
@@ -90,7 +109,9 @@ untouched, which is what meter filters and non-default aggregation keys read.
 
 ## Provider support
 
-Usage reporting is gated by the `usageReporting` capability:
+Usage reporting is gated by the `usageReporting` capability, and a list of more than one event by the
+`usageBatchReporting` capability. The [capability matrix](/docs/reference/capability-matrix) has both
+values for every provider.
 
 | Provider          | `usageReporting` | Endpoint                        | Customer key                  | Idempotency parameter                          |
 | ----------------- | ---------------- | ------------------------------- | ----------------------------- | ---------------------------------------------- |
@@ -102,17 +123,52 @@ Usage reporting is gated by the `usageReporting` capability:
 
 ```ts
 if (client.capabilities.usageReporting) {
-  await client.usage.report({ customerId, eventName: 'api_request', value: 1 });
+  await client.usage.report({ events: [{ customerId, eventName: 'api_request', value: 1 }] });
 }
 ```
-
-All three supporting providers expose a **batch** ingest endpoint; `usage.report` sends a one-event
-batch. Batch reporting is not part of the unified API — see [Out of scope](#out-of-scope).
 
 Lemon Squeezy and Paddle have no safely idempotent ingestion upstream, so `usageReporting` is `false`
 there and `usage.report` throws `unsupported` — see [Lemon Squeezy](/docs/providers/lemon-squeezy) and
 [Paddle](/docs/providers/paddle). Polar caps `metadata` and can key events by your own customer ID; see
 [Polar](/docs/providers/polar).
+
+## Reporting many events
+
+Polar and Dodo Payments take the whole list in one request. A job that reports one event per customer
+makes one call, not one call per customer:
+
+```ts
+await client.usage.report({
+  events: customers.map((customer) => ({
+    customerId: customer.id,
+    eventName: 'api_request',
+    value: customer.requestCount,
+    idempotencyKey: `api_request:${customer.id}:${periodStart}`,
+  })),
+});
+```
+
+Polar checks the whole list before it stores anything. If one event names a customer Polar does not
+know, Polar refuses the request, none of the events is recorded, and the call rejects with
+`RevenueError { code: 'validation' }`.
+
+`POST /v1/billing/meter_events`, the Stripe endpoint the SDK uses, records one meter event per call, so
+`usageBatchReporting` is `false` for Stripe. A list with more than one event throws `unsupported`
+before any request, and a list of one still works. Portable code
+checks the capability and falls back to one call per event:
+
+```ts
+if (client.capabilities.usageBatchReporting) {
+  await client.usage.report({ events });
+} else {
+  for (const event of events) {
+    await client.usage.report({ events: [event] });
+  }
+}
+```
+
+An empty list sends no request. The SDK never splits a list, so keep each call within the provider's
+limit. Dodo Payments takes at most **1,000 events** per call.
 
 ## Usage writes are never retried
 
@@ -135,7 +191,9 @@ const idempotencyKey = crypto.randomUUID(); // generated once, reused by every a
 
 for (let attempt = 0; ; attempt++) {
   try {
-    await client.usage.report({ customerId, eventName: 'api_request', value: 1, idempotencyKey });
+    await client.usage.report({
+      events: [{ customerId, eventName: 'api_request', value: 1, idempotencyKey }],
+    });
     break;
   } catch (error) {
     if (attempt === 2 || !(error instanceof RevenueError) || !error.retryable) {
@@ -149,9 +207,13 @@ for (let attempt = 0; ; attempt++) {
 A key derived from the thing you are billing for — a request ID, a job ID, a log line ID — is better
 than a random one: it also deduplicates across process restarts and queue redeliveries.
 
+When you retry a list, **every event needs its own stable key**, unique per event. A failed call may
+have been recorded anyway, and the keys are what stop the replay from billing those events twice. A key
+shared by several events makes the provider keep one of them and drop the rest as duplicates.
+
 :::note
-On **Dodo Payments** the `event_id` is required by the API, so the SDK generates a UUID when
-`idempotencyKey` is omitted. A generated ID is unique per attempt, which means **that call is not
+On **Dodo Payments** the `event_id` is required by the API, so the SDK generates a UUID for each event
+without an `idempotencyKey`. A generated ID is unique per attempt, which means **that event is not
 replay-safe**. Pass your own key whenever a retry is possible.
 :::
 
@@ -202,8 +264,9 @@ portable API, and guard with `subscription.meters ?? []`.
 ## Testing
 
 The in-memory provider records every reported event on `state.usageEvents`, so you can assert on what
-your code would have billed, and `capabilities: { usageReporting: false }` exercises the Lemon Squeezy
-and Paddle fallback path. See [Testing provider](/docs/providers/testing).
+your code would have billed. `capabilities: { usageReporting: false }` exercises the Lemon Squeezy and
+Paddle fallback path, and `capabilities: { usageBatchReporting: false }` the Stripe one. See
+[Testing provider](/docs/providers/testing).
 
 ## Out of scope
 
@@ -211,13 +274,14 @@ and Paddle fallback path. See [Testing provider](/docs/providers/testing).
 - Reading usage back beyond Polar's inline `Subscription.meters`; there is no `usage.getCurrent`.
 - Normalized amounts for metered and tiered prices — `Price.amount` stays `null` outside `fixed`, see
   [Products & prices](/docs/concepts/products-and-prices).
-- Batch reporting, tier tables, and seat management.
+- Splitting a long list into calls that fit a provider's limit.
+- Tier tables and seat management.
 
 <CardGroup cols={2}>
   <Card title="Next: License keys" icon="key-round" href="/docs/concepts/license-keys">
     Validate keys with no credential, and manage them from the client.
   </Card>
   <Card title="Capability matrix" icon="table" href="/docs/reference/capability-matrix">
-    usageReporting next to every other capability.
+    usageReporting and usageBatchReporting next to every other capability.
   </Card>
 </CardGroup>

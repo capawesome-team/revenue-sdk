@@ -52,6 +52,7 @@ const CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['invoice_now', 'prorate'],
   revoke: true,
   uncancel: true,
+  usageBatchReporting: true,
   usageReporting: true,
 };
 
@@ -311,26 +312,23 @@ export function polar(options: PolarProviderOptions): RevenueProvider {
     },
 
     async reportUsage(params) {
-      // Ingestion is batch-only — there is no single-event endpoint — so we send a one-event batch.
       // `/v1/events/ingest` is an action, not a collection: no trailing slash (unlike `/v1/events/`).
       await http.json('/v1/events/ingest', {
         method: 'POST',
         body: {
-          events: [
-            {
-              name: params.eventName,
-              // Polar also accepts `external_customer_id` for your own user IDs; the unified
-              // `customerId` is always the provider's ID, so external keying needs the native API.
-              customer_id: params.customerId,
-              // Polar attributes events to billing periods by receipt time and never issues
-              // retroactive invoices, so a backdated timestamp only affects reporting.
-              timestamp: params.timestamp?.toISOString(),
-              // Deduplication is a permanent unique index on (organization, external_id).
-              external_id: params.idempotencyKey,
-              // Polar caps metadata at 50 pairs, keys at 40 characters and string values at 500.
-              metadata: toUsagePayload(params),
-            },
-          ],
+          events: params.events.map((event) => ({
+            name: event.eventName,
+            // Polar also accepts `external_customer_id` for your own user IDs; the unified
+            // `customerId` is always the provider's ID, so external keying needs the native API.
+            customer_id: event.customerId,
+            // Polar attributes events to billing periods by receipt time and never issues
+            // retroactive invoices, so a backdated timestamp only affects reporting.
+            timestamp: event.timestamp?.toISOString(),
+            // Deduplication is a permanent unique index on (organization, external_id).
+            external_id: event.idempotencyKey,
+            // Polar caps metadata at 50 pairs, keys at 40 characters and string values at 500.
+            metadata: toUsagePayload(event),
+          })),
         },
         signal: params.signal,
       });
