@@ -6,8 +6,8 @@ import { expectEvent } from '../helpers/webhook-events.ts';
 
 const SECRET = 'whsec_ovyN6cPrTv56AApvzCaJno08SSmGJmgb';
 
-async function sign(secret: string, id: string, timestamp: number, body: string) {
-  return `v1,${bytesToBase64(await hmacSha256(secret, `${id}.${timestamp}.${body}`))}`;
+async function sign(key: string | Uint8Array, id: string, timestamp: number, body: string) {
+  return `v1,${bytesToBase64(await hmacSha256(key, `${id}.${timestamp}.${body}`))}`;
 }
 
 function headersFor(id: string, timestamp: number, signature: string) {
@@ -28,15 +28,47 @@ describe('polar verifyWebhook', () => {
     ).resolves.toBe(true);
   });
 
-  it('rejects a signature computed with a stripped/base64-decoded secret', async () => {
+  it('accepts a signature keyed by the base64-decoded part after whsec_', async () => {
+    const key = Uint8Array.from({ length: 32 }, (_, index) => index);
+    const secret = `whsec_${bytesToBase64(key)}`;
     const body = '{}';
     const timestamp = Math.floor(Date.now() / 1000);
-    // The Standard Webhooks spec strips `whsec_` and base64-decodes the rest; Polar does not.
-    const strippedSecret = SECRET.slice('whsec_'.length);
-    const signature = await sign(strippedSecret, 'msg_1', timestamp, body);
+    const signature = await sign(key, 'msg_1', timestamp, body);
     await expect(
-      verifyWebhook({ headers: headersFor('msg_1', timestamp, signature), body, secret: SECRET }),
+      verifyWebhook({ headers: headersFor('msg_1', timestamp, signature), body, secret }),
+    ).resolves.toBe(true);
+  });
+
+  it('ignores the decoded key when the secret has no whsec_ prefix', async () => {
+    const key = Uint8Array.from({ length: 32 }, (_, index) => index);
+    const secret = bytesToBase64(key);
+    const body = '{}';
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = await sign(key, 'msg_1', timestamp, body);
+    await expect(
+      verifyWebhook({ headers: headersFor('msg_1', timestamp, signature), body, secret }),
     ).resolves.toBe(false);
+  });
+
+  it('rejects without throwing when the part after whsec_ is empty', async () => {
+    const timestamp = Math.floor(Date.now() / 1000);
+    await expect(
+      verifyWebhook({
+        headers: headersFor('msg_1', timestamp, 'v1,bm90LXRoZS1zaWduYXR1cmU='),
+        body: '{}',
+        secret: 'whsec_',
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it('verifies a whsec_ secret that is not base64 the legacy way without throwing', async () => {
+    const secret = 'whsec_%%%not-base64%%%';
+    const body = '{}';
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = await sign(secret, 'msg_1', timestamp, body);
+    await expect(
+      verifyWebhook({ headers: headersFor('msg_1', timestamp, signature), body, secret }),
+    ).resolves.toBe(true);
   });
 
   it('accepts when any v1 signature matches and ignores other schemes', async () => {

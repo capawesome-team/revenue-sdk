@@ -124,9 +124,6 @@ describe('signWebhook', () => {
     await expect(
       verifyDodoPayments({ headers: polar, body: BODY, secret: STANDARD_WEBHOOKS_SECRET }),
     ).resolves.toBe(false);
-    await expect(
-      verifyPolar({ headers: dodo, body: BODY, secret: STANDARD_WEBHOOKS_SECRET }),
-    ).resolves.toBe(false);
   });
 
   it('rejects a Dodo Payments secret that is not base64', async () => {

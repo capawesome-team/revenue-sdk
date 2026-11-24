@@ -208,7 +208,7 @@ does not protect against.
 
 | Provider          | Header(s)                                             | Signed payload           | Key derivation                                        | Digest                                    | Tolerance |
 | ----------------- | ----------------------------------------------------- | ------------------------ | ------------------------------------------------------ | ----------------------------------------- | --------- |
-| **Polar**         | `webhook-id`, `webhook-timestamp`, `webhook-signature` | `{id}.{ts}.{body}`      | secret **verbatim, including `whsec_`**                 | base64, any `v1,` part                    | 300 s     |
+| **Polar**         | `webhook-id`, `webhook-timestamp`, `webhook-signature` | `{id}.{ts}.{body}`      | **either** the secret **verbatim, including `whsec_`**, **or** strip `whsec_`, then base64-decode. Polar picks one by the age of the secret, and both are accepted | base64, any `v1,` part                    | 300 s     |
 | **Dodo Payments** | same (Standard Webhooks)                              | `{id}.{ts}.{body}`       | **strip `whsec_`, then base64-decode** into key bytes   | base64, any `v1,` part                    | 300 s     |
 | **Stripe**        | `stripe-signature`                                    | `{t}.{body}`             | secret verbatim, including `whsec_`                     | lowercase hex, any `v1=` (`v0=` ignored)  | 300 s     |
 | **Paddle**        | `paddle-signature` (`ts=…;h1=…`)                      | `{ts}:{body}`            | secret verbatim                                         | lowercase hex, any `h1=`                  | 300 s     |

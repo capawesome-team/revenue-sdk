@@ -1,9 +1,7 @@
-import { base64ToBytes, bytesToBase64 } from '../../base64.ts';
+import { bytesToBase64 } from '../../base64.ts';
 import { RevenueError } from '../../errors.ts';
 import type { ProviderName } from '../../types.ts';
-import { hmacSha256, toHex } from '../../webhooks/verify.ts';
-
-const STANDARD_WEBHOOKS_SECRET_PREFIX = 'whsec_';
+import { hmacSha256, toHex, toStandardWebhooksKey } from '../../webhooks/verify.ts';
 
 export interface SignWebhookParams {
   /** The scheme to sign with. The in-memory `testing` provider sends no webhooks. */
@@ -18,19 +16,15 @@ export interface SignWebhookParams {
   id?: string;
 }
 
-function toStandardWebhooksKey(secret: string): Uint8Array {
-  const encoded = secret.startsWith(STANDARD_WEBHOOKS_SECRET_PREFIX)
-    ? secret.slice(STANDARD_WEBHOOKS_SECRET_PREFIX.length)
-    : secret;
-  try {
-    return base64ToBytes(encoded);
-  } catch (error) {
+function toDodoPaymentsKey(secret: string): Uint8Array {
+  const key = toStandardWebhooksKey(secret);
+  if (!key) {
     throw new RevenueError('The Dodo Payments webhook secret is not valid base64', {
       code: 'validation',
       provider: 'dodo-payments',
-      cause: error,
     });
   }
+  return key;
 }
 
 /**
@@ -44,9 +38,9 @@ export async function signWebhook(params: SignWebhookParams): Promise<Record<str
     case 'dodo-payments':
     case 'polar': {
       const id = params.id ?? `msg_${crypto.randomUUID()}`;
-      // Polar keys the HMAC with the secret VERBATIM; Dodo follows Standard Webhooks strictly
-      // and strips `whsec_` before base64-decoding the remainder into the key bytes.
-      const key = provider === 'polar' ? secret : toStandardWebhooksKey(secret);
+      // Polar is signed the legacy way, with the secret VERBATIM, which its `verifyWebhook`
+      // accepts next to the Standard Webhooks key. Dodo only takes the Standard Webhooks key.
+      const key = provider === 'polar' ? secret : toDodoPaymentsKey(secret);
       const signature = await hmacSha256(key, `${id}.${timestamp}.${body}`);
       return {
         'webhook-id': id,

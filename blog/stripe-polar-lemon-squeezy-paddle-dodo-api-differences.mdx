@@ -25,7 +25,7 @@ not the ones in the marketing pages.
 - **Pagination** — cursors (Stripe), page numbers (Polar, Lemon Squeezy), URL links (Paddle), and zero-based pages with no `has_more` (Dodo).
 - **Status** — Lemon Squeezy's `cancelled` still means entitled; Stripe's `canceled` is terminal.
 - **Checkout** — four providers return a hosted URL; Paddle has no API-hosted checkout at all.
-- **Webhooks** — three signature schemes, two encodings, and two providers that look identical but derive the HMAC key differently.
+- **Webhooks** — three signature schemes, two encodings, and two providers that look identical but do not always use the same HMAC key.
 
 ## How does authentication differ?
 
@@ -187,10 +187,12 @@ Five providers, three signature schemes, and two encodings:
 | **Paddle**        | `paddle-signature`                   | `{ts}:{body}`      | hex    |
 | **Lemon Squeezy** | `x-signature`                        | body only          | hex    |
 
-Polar and Dodo look identical — both implement Standard Webhooks — and yet the HMAC key is derived
-differently: Polar uses the signing secret verbatim including its `whsec_` prefix, while Dodo strips the
-prefix and base64-decodes the rest into key bytes. Swap them and every signature fails with no useful
-error. That trap, with working code for all five, is covered in
+Polar and Dodo look identical, since both implement Standard Webhooks, and yet the HMAC key is not
+always the same. Dodo strips the `whsec_` prefix and base64-decodes the rest into key bytes. Polar does
+the same for secrets generated or reset on or after 2026-09-08, but uses an older secret verbatim,
+including its prefix. The request does not say which key Polar used, so a Polar verifier must accept
+both. Check only one and some signatures fail with no useful error. That trap, with working code for
+all five, is covered in
 [How to Verify Webhook Signatures from Stripe, Polar, Lemon Squeezy, Paddle, and Dodo Payments](/blog/verify-billing-webhook-signatures).
 
 Event vocabularies diverge just as much — Polar emits `subscription.canceled` when a cancellation is
@@ -244,9 +246,11 @@ record and own the tax compliance, unless you add Stripe Tax and file yourself.
 
 ### Why do Polar and Dodo Payments webhooks fail when I reuse the same verification code?
 
-Because the HMAC key is derived differently even though both implement Standard Webhooks. Polar uses the
-signing secret verbatim, including the `whsec_` prefix; Dodo Payments strips the prefix and base64-decodes
-the remainder into key bytes. The signed payload and headers are otherwise identical.
+Because Polar does not always derive the HMAC key the way Dodo does, even though both implement Standard
+Webhooks. Dodo Payments strips the `whsec_` prefix and base64-decodes the remainder into key bytes. Polar
+does the same only for secrets generated or reset on or after 2026-09-08. An older Polar secret is used
+verbatim, including the prefix, so Polar code must accept both keys. The signed payload and headers are
+otherwise identical.
 
 ### Can the same checkout code work across all five providers?
 

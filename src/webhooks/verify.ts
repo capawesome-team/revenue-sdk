@@ -1,3 +1,7 @@
+import { base64ToBytes } from '../base64.ts';
+
+export const STANDARD_WEBHOOKS_SECRET_PREFIX = 'whsec_';
+
 export type WebhookHeaders = Headers | Record<string, string>;
 
 export type WebhookInput = { request: Request } | { headers: WebhookHeaders; body: string };
@@ -45,6 +49,21 @@ export async function hmacSha256(key: string | Uint8Array, message: string): Pro
   );
   const signature = await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(message));
   return new Uint8Array(signature);
+}
+
+/**
+ * The HMAC key of a Standard Webhooks secret: the secret without its `whsec_` prefix,
+ * base64-decoded. Undefined when the rest is not valid base64.
+ */
+export function toStandardWebhooksKey(secret: string): Uint8Array | undefined {
+  const encodedKey = secret.startsWith(STANDARD_WEBHOOKS_SECRET_PREFIX)
+    ? secret.slice(STANDARD_WEBHOOKS_SECRET_PREFIX.length)
+    : secret;
+  try {
+    return base64ToBytes(encodedKey);
+  } catch {
+    return undefined;
+  }
 }
 
 export function toHex(bytes: Uint8Array): string {
