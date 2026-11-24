@@ -254,8 +254,9 @@ Paddle, and `x-signature` for Lemon Squeezy.
 
 :::note
 A Dodo Payments test secret must be `whsec_` followed by valid base64 — its key derivation
-base64-decodes the remainder, so anything else throws `RevenueError` with code `validation`. Polar uses
-its secret verbatim and accepts any string.
+base64-decodes the remainder, so anything else throws `RevenueError` with code `validation`. A Polar
+test secret can be any string, because `signWebhook` keys a Polar signature with the secret verbatim.
+That is one of the two keys Polar's `verifyWebhook` accepts.
 :::
 
 ## Pagination is exercised

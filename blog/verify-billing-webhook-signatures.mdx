@@ -20,7 +20,7 @@ rule that breaks verification on every provider at once, and a single endpoint t
 - Verify against the **raw request body**. Read it once with `await request.text()` and never re-serialize it.
 - Every provider signs with HMAC-SHA256, but the signed string differs: `{id}.{timestamp}.{body}`, `{timestamp}.{body}`, `{timestamp}:{body}`, or just the body.
 - Stripe, Paddle, and Lemon Squeezy encode the digest as **hex**; Polar and Dodo Payments encode it as **base64**.
-- Polar and Dodo look identical on the wire and still need different HMAC keys — Polar uses the secret verbatim, Dodo base64-decodes it.
+- Polar and Dodo look identical on the wire, but Polar signs with one of two HMAC keys. It uses older secrets verbatim and base64-decodes newer ones like Dodo does, so a Polar verifier must accept both.
 - Compare in constant time, enforce a timestamp tolerance, and dedupe on the event's ID — providers retry for days, and Lemon Squeezy publishes no ID at all.
 
 ## Why must webhook signatures be verified against the raw body?
@@ -49,7 +49,7 @@ All five use HMAC-SHA256, and that is where the similarity ends:
 
 | Provider          | Header(s)                                    | Signed payload           | HMAC key                                | Encoding |
 | ----------------- | -------------------------------------------- | ------------------------ | --------------------------------------- | -------- |
-| **Polar**         | `webhook-id`, `webhook-timestamp`, `webhook-signature` | `{id}.{ts}.{body}` | Secret **verbatim**, incl. `whsec_`     | base64   |
+| **Polar**         | `webhook-id`, `webhook-timestamp`, `webhook-signature` | `{id}.{ts}.{body}` | Secret **verbatim**, incl. `whsec_`, **or** strip `whsec_`, then **base64-decode** | base64   |
 | **Dodo Payments** | `webhook-id`, `webhook-timestamp`, `webhook-signature` | `{id}.{ts}.{body}` | Strip `whsec_`, then **base64-decode**  | base64   |
 | **Stripe**        | `stripe-signature` (`t=…,v1=…`)              | `{t}.{body}`             | Secret verbatim, incl. `whsec_`         | hex      |
 | **Paddle**        | `paddle-signature` (`ts=…;h1=…`)             | `{ts}:{body}`            | Secret verbatim                         | hex      |
@@ -60,7 +60,7 @@ Four details in that table are easy to miss and each one causes a total verifica
 1. **Stripe's separator is `.`, Paddle's is `:`.** Same idea, different byte.
 2. **Stripe headers can carry several signatures.** Accept the delivery if *any* `v1=` part matches, and ignore `v0=` parts entirely — those belong to Stripe's Connect/thin-payload scheme.
 3. **Lemon Squeezy signs no timestamp**, so there is nothing to check a replay window against. Dedupe is your only replay defense there.
-4. **Polar and Dodo Payments both implement [Standard Webhooks](https://www.standardwebhooks.com/)** and still derive the key differently. Polar's own SDK base64-encodes the raw secret before handing it to the shared library, which cancels out to "use it verbatim"; Dodo relies on the library's strict behavior, which strips the prefix and base64-decodes.
+4. **Polar and Dodo Payments both implement [Standard Webhooks](https://www.standardwebhooks.com/)** and still do not always derive the same key. Dodo relies on the library's strict behavior, which strips the prefix and base64-decodes. Polar does the same for every endpoint whose secret was generated or reset on or after 2026-09-08, and uses an older secret verbatim. The request does not say which key Polar used, so check the signature against both, as Polar's own SDK does.
 
 ## How do you verify a webhook signature in TypeScript?
 
@@ -221,9 +221,10 @@ using the wrong secret: the endpoint signing secret is not the API key.
 
 ### Can I use the same webhook verification code for Polar and Dodo Payments?
 
-No, not without a change to the key derivation. Both send Standard Webhooks headers and sign
-`{id}.{timestamp}.{body}`, but Polar uses the signing secret verbatim including its `whsec_` prefix,
-while Dodo Payments strips the prefix and base64-decodes the remainder into raw key bytes.
+Only if it checks both keys. Both send Standard Webhooks headers and sign
+`{id}.{timestamp}.{body}`. Dodo Payments strips the `whsec_` prefix and base64-decodes the remainder
+into raw key bytes. Polar does the same for secrets generated or reset on or after 2026-09-08, but uses
+an older secret verbatim, including its prefix. So a Polar verifier must accept both keys.
 
 ### Does Lemon Squeezy sign a timestamp?
 

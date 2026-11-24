@@ -5,8 +5,10 @@ import {
   hmacSha256,
   isTimestampWithinTolerance,
   sha256Hex,
+  STANDARD_WEBHOOKS_SECRET_PREFIX,
   timingSafeEqual,
   toIncomingWebhook,
+  toStandardWebhooksKey,
   type VerifyWebhookParams,
   type WebhookInput,
 } from '../../webhooks/verify.ts';
@@ -37,8 +39,20 @@ function matchesAnySignature(header: string, expected: string): boolean {
 }
 
 /**
- * Verifies a Polar webhook (Standard Webhooks headers). Polar derives the HMAC key from the
- * secret VERBATIM — including any `whsec_` prefix — unlike the Standard Webhooks spec.
+ * Polar picks the key per endpoint by the age of the secret and never says which one it used.
+ * Secrets generated or reset on or after 2026-09-08 use the Standard Webhooks key, older ones the
+ * secret VERBATIM.
+ */
+function toSigningKeys(secret: string): Array<string | Uint8Array> {
+  const standardKey = secret.startsWith(STANDARD_WEBHOOKS_SECRET_PREFIX)
+    ? toStandardWebhooksKey(secret)
+    : undefined;
+  return standardKey?.length ? [secret, standardKey] : [secret];
+}
+
+/**
+ * Verifies a Polar webhook (Standard Webhooks headers). Accepts a signature keyed by the secret
+ * verbatim or by the base64-decoded part after `whsec_`, as Polar's own SDK does.
  */
 export async function verifyWebhook(params: VerifyWebhookParams): Promise<boolean> {
   const { headers, body } = await toIncomingWebhook(params);
@@ -52,8 +66,14 @@ export async function verifyWebhook(params: VerifyWebhookParams): Promise<boolea
   if (!isTimestampWithinTolerance(timestampSeconds, TOLERANCE_SECONDS)) {
     return false;
   }
-  const signature = await hmacSha256(params.secret, `${id}.${timestampSeconds}.${body}`);
-  return matchesAnySignature(signatureHeader, bytesToBase64(signature));
+  const signedContent = `${id}.${timestampSeconds}.${body}`;
+  for (const key of toSigningKeys(params.secret)) {
+    const signature = await hmacSha256(key, signedContent);
+    if (matchesAnySignature(signatureHeader, bytesToBase64(signature))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 interface PolarWebhookEnvelope {

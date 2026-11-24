@@ -20,7 +20,7 @@ onto normalized models — but the underlying endpoints and quirks apply whichev
 - Authenticate with an **organization access token** (`polar_oat_…`) as a bearer credential; the token is scoped to one organization, so no organization ID is needed.
 - Polar's sandbox is a **separate host** (`sandbox-api.polar.sh`) with its own organization, products, and tokens.
 - A Polar **product is the purchasable unit** — checkouts take `products: string[]`, not price IDs.
-- Webhooks follow [Standard Webhooks](https://www.standardwebhooks.com/) and the signing secret is used **verbatim, including the `whsec_` prefix**.
+- Webhooks follow [Standard Webhooks](https://www.standardwebhooks.com/), but Polar signs with **one of two keys**, picked by the age of the endpoint's secret. A secret generated on or after 2026-09-08, or reset since, gets the base64-decoded part after `whsec_`. An older secret is used verbatim. Accept both.
 - Polar has **no idempotency keys**, so never blind-retry a checkout creation.
 
 ## How do you authenticate with the Polar API?
@@ -185,9 +185,12 @@ signing secret. Polar sends [Standard Webhooks](https://www.standardwebhooks.com
 `webhook-id`, `webhook-timestamp`, `webhook-signature` — and signs `{id}.{timestamp}.{body}` with
 HMAC-SHA256, base64-encoded, within a 300-second tolerance.
 
-The critical detail: **Polar's signing secret is used verbatim, including its `whsec_` prefix.** Do not
-strip it and do not base64-decode it. Dodo Payments uses the same Standard Webhooks headers but the
-opposite key derivation, which is why code copied between the two silently fails.
+The critical detail: **Polar signs with one of two HMAC keys, and the request does not say which.**
+Polar picks the key by the age of the endpoint's secret. A secret generated on or after 2026-09-08, or
+reset since, gets the Standard Webhooks key: strip `whsec_` and base64-decode the rest. An older secret
+is used verbatim, including its `whsec_` prefix. So check the signature against both keys, as Polar's
+own SDK does. `verifyWebhook` does this for you. Dodo Payments uses the same Standard Webhooks headers
+but only the decoded key, which is why code copied between the two fails for some endpoints.
 
 ```ts
 import { parseWebhookEvent, verifyWebhook } from 'revenue-sdk/polar';

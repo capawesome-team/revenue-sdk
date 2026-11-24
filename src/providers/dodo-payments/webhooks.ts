@@ -1,4 +1,4 @@
-import { base64ToBytes, bytesToBase64 } from '../../base64.ts';
+import { bytesToBase64 } from '../../base64.ts';
 import { RevenueError } from '../../errors.ts';
 import type { SubscriptionChange, WebhookEvent } from '../../types.ts';
 import {
@@ -7,6 +7,7 @@ import {
   sha256Hex,
   timingSafeEqual,
   toIncomingWebhook,
+  toStandardWebhooksKey,
   type VerifyWebhookParams,
   type WebhookInput,
 } from '../../webhooks/verify.ts';
@@ -21,7 +22,6 @@ import {
 } from './common.ts';
 
 const TOLERANCE_SECONDS = 300;
-const SECRET_PREFIX = 'whsec_';
 
 function matchesAnySignature(header: string, expected: string): boolean {
   let matched = false;
@@ -39,8 +39,8 @@ function matchesAnySignature(header: string, expected: string): boolean {
 
 /**
  * Verifies a Dodo Payments webhook (Standard Webhooks, strict): the `whsec_` prefix is
- * stripped and the remainder base64-DECODED into the HMAC key bytes — unlike Polar, which
- * uses the secret verbatim.
+ * stripped and the remainder base64-DECODED into the HMAC key bytes. Unlike Polar, Dodo never
+ * keys with the secret verbatim.
  */
 export async function verifyWebhook(params: VerifyWebhookParams): Promise<boolean> {
   const { headers, body } = await toIncomingWebhook(params);
@@ -54,13 +54,8 @@ export async function verifyWebhook(params: VerifyWebhookParams): Promise<boolea
   if (!isTimestampWithinTolerance(timestampSeconds, TOLERANCE_SECONDS)) {
     return false;
   }
-  const encodedKey = params.secret.startsWith(SECRET_PREFIX)
-    ? params.secret.slice(SECRET_PREFIX.length)
-    : params.secret;
-  let key: Uint8Array;
-  try {
-    key = base64ToBytes(encodedKey);
-  } catch {
+  const key = toStandardWebhooksKey(params.secret);
+  if (!key) {
     return false;
   }
   const signature = await hmacSha256(key, `${id}.${timestampSeconds}.${body}`);
