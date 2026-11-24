@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/capawesome-team/revenue-sdk/compare/v0.3.0...v0.3.1) (2026-11-24)
+
+
+### Bug Fixes
+
+* **polar:** verify webhooks signed with the Standard Webhooks key ([#18](https://github.com/capawesome-team/revenue-sdk/issues/18)) ([aa470ca](https://github.com/capawesome-team/revenue-sdk/commit/aa470ca3d6d6397f5bb57ec24d85676202ded8f8))
+
 ## [0.3.0](https://github.com/capawesome-team/revenue-sdk/compare/v0.2.3...v0.3.0) (2026-11-24)
 
 
