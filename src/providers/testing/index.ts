@@ -42,6 +42,7 @@ const DEFAULT_CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['invoice_now', 'none', 'prorate'],
   revoke: true,
   uncancel: true,
+  usageBatchReporting: true,
   usageReporting: true,
 };
 
@@ -443,13 +444,15 @@ export function createInMemoryProvider(
     },
 
     async reportUsage(params) {
-      state.usageEvents.push({
-        customerId: params.customerId,
-        eventName: params.eventName,
-        payload: toUsagePayload(params) ?? {},
-        idempotencyKey: params.idempotencyKey,
-        timestamp: params.timestamp,
-      });
+      for (const event of params.events) {
+        state.usageEvents.push({
+          customerId: event.customerId,
+          eventName: event.eventName,
+          payload: toUsagePayload(event) ?? {},
+          idempotencyKey: event.idempotencyKey,
+          timestamp: event.timestamp,
+        });
+      }
     },
 
     async listOrders(params) {

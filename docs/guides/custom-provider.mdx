@@ -86,6 +86,7 @@ const CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['none'],
   revoke: true,
   uncancel: false,
+  usageBatchReporting: false,
   usageReporting: false,
 };
 
@@ -187,7 +188,7 @@ A `false` capability is enforced at two different depths:
 | Capability                                                              | Effect when `false`                                                                    |
 | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `uncancel`, `endTrial`, `pause`, `usageReporting`, `revoke`, `licenseKeys` | The client throws `unsupported` **before dispatch** — your method is never called.      |
-| Everything else                                                          | Only the *parameter* is gated (`successUrl`, `customAmount`, `metadata`, `customerId` filters, …). The method still runs. |
+| Everything else                                                          | Only the *parameter* is gated (`successUrl`, `customAmount`, `metadata`, `customerId` filters, more than one usage event, …). The method still runs. |
 
 So the methods behind a gated capability can be one-line throws for symmetry, while every ungated method
 you don't implement — `createCheckout`, `createCustomerPortalSession`, `getOrderInvoiceUrl`, and so on —

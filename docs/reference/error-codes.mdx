@@ -108,11 +108,11 @@ These never touch the network:
 | Code          | Raised by                                                                                                     |
 | ------------- | -------------------------------------------------------------------------------------------------------------- |
 | `validation`  | An empty `id`, `customerId`, `product`, or `items[].product`; an empty `items` array; a `quantity` that isn't a positive integer |
-| `validation`  | An empty `customerId` or `eventName` on `usage.report`, or a usage `value` or numeric `metadata` entry that isn't finite |
+| `validation`  | An empty `customerId` or `eventName` in any `usage.report` event, or a usage `value` or numeric `metadata` entry that isn't finite |
 | `validation`  | An `expiresAt` on `checkouts.create` that is an invalid `Date`, or is not in the future                        |
 | `validation`  | A malformed pagination cursor, a cursor from another provider, or a cursor URL on a different origin           |
 | `validation`  | An empty `id` on `licenseKeys.get`/`update`, or a `licenseKeys.update` `activationLimit` that is neither `null` nor a positive integer |
-| `unsupported` | Capability gating — `successUrl`, `expiresAt`, `returnUrl`, `customerId` on a subscription list, `reason`/`comment`, `uncancel`, `endTrial`, `pause`, `resume`, `revoke`, `usage.report`, `licenseKeys.list`/`listAll`/`get`/`update`, a `behavior` outside `capabilities.pauseBehaviors`, and a `prorationBehavior` outside `capabilities.prorationBehaviors` |
+| `unsupported` | Capability gating — `successUrl`, `expiresAt`, `returnUrl`, `customerId` on a subscription list, `reason`/`comment`, `uncancel`, `endTrial`, `pause`, `resume`, `revoke`, `usage.report`, more than one `usage.report` event without `usageBatchReporting`, `licenseKeys.list`/`listAll`/`get`/`update`, a `behavior` outside `capabilities.pauseBehaviors`, and a `prorationBehavior` outside `capabilities.prorationBehaviors` |
 
 Adapters raise `unsupported` at call time for the finer-grained limits a capability boolean can't
 express — see [the capability matrix](/docs/reference/capability-matrix#beyond-the-capability-object).

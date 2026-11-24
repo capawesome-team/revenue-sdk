@@ -212,10 +212,14 @@ const licenseKey = await client.licenseKeys.get({ id: event.licenseKeyId });`;
 
 const usageCode = `// Meter AI tokens, API calls, seats — anything countable.
 await client.usage.report({
-  customerId: 'cus_123',
-  eventName: 'api_request',
-  value: 25,
-  idempotencyKey: 'req_8f3a2c', // safe to replay, never double-billed
+  events: [
+    {
+      customerId: 'cus_123',
+      eventName: 'api_request',
+      value: 25,
+      idempotencyKey: 'req_8f3a2c', // safe to replay, never double-billed
+    },
+  ],
 });`;
 
 const testingCode = `import { createClient } from 'revenue-sdk';

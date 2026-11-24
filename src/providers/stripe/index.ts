@@ -58,6 +58,8 @@ const CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['invoice_now', 'none', 'prorate'],
   revoke: true,
   uncancel: true,
+  // `/v1/billing/meter_events` records one event per call.
+  usageBatchReporting: false,
   usageReporting: true,
 };
 
@@ -404,6 +406,10 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
     },
 
     async reportUsage(params) {
+      const event = params.events[0];
+      if (params.events.length !== 1 || event === undefined) {
+        throw unsupported('stripe', 'batch usage reporting');
+      }
       // A 2xx does NOT mean the usage was recorded: meter events are validated synchronously but
       // processed asynchronously. An unknown customer or an `event_name` with no matching meter is
       // dropped silently and only reported through the `v1.billing.meter.error_report_triggered`
@@ -423,11 +429,11 @@ export function stripe(options: StripeProviderOptions): RevenueProvider {
       await http.json('/v1/billing/meter_events', {
         method: 'POST',
         form: encodeForm({
-          event_name: params.eventName,
+          event_name: event.eventName,
           // `stripe_customer_id` is written last so metadata can never clobber it.
-          payload: { ...toUsagePayload(params), stripe_customer_id: params.customerId },
-          identifier: params.idempotencyKey,
-          timestamp: params.timestamp,
+          payload: { ...toUsagePayload(event), stripe_customer_id: event.customerId },
+          identifier: event.idempotencyKey,
+          timestamp: event.timestamp,
         }),
         signal: params.signal,
       });

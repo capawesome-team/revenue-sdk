@@ -54,6 +54,7 @@ const CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['invoice_now', 'none'],
   revoke: true,
   uncancel: true,
+  usageBatchReporting: true,
   usageReporting: true,
 };
 
@@ -288,26 +289,24 @@ export function dodoPayments(options: DodoPaymentsProviderOptions): RevenueProvi
     },
 
     async reportUsage(params) {
-      // `event_id` is required and is what Dodo dedupes on across requests. A generated one is
-      // unique per attempt, so a retry without a caller-supplied `idempotencyKey` double-counts.
-      const eventId = params.idempotencyKey ?? crypto.randomUUID();
-      // The endpoint takes a batch of up to 1000 events; one event per call is enough here.
+      // The endpoint takes up to 1,000 events per call. Splitting a longer list is the caller's job.
       // Timestamps older than 1 hour or more than 5 minutes ahead are rejected with 400 — a much
       // tighter backdating window than Polar (unbounded) or Stripe (35 days).
       await http.json<unknown>('/events/ingest', {
         method: 'POST',
         body: {
-          events: [
-            {
-              event_id: eventId,
-              customer_id: params.customerId,
-              event_name: params.eventName,
-              timestamp: params.timestamp?.toISOString(),
-              // Metadata values must stay primitive — `Metadata` already enforces that. An
-              // unknown `customer_id` is dropped silently instead of erroring.
-              metadata: toUsagePayload(params),
-            },
-          ],
+          events: params.events.map((event) => ({
+            // `event_id` is required and is what Dodo dedupes on across requests. A generated one
+            // is unique per attempt, so a retry without a caller-supplied `idempotencyKey`
+            // double-counts.
+            event_id: event.idempotencyKey ?? crypto.randomUUID(),
+            customer_id: event.customerId,
+            event_name: event.eventName,
+            timestamp: event.timestamp?.toISOString(),
+            // Metadata values must stay primitive — `Metadata` already enforces that. An
+            // unknown `customer_id` is dropped silently instead of erroring.
+            metadata: toUsagePayload(event),
+          })),
         },
         signal: params.signal,
       });

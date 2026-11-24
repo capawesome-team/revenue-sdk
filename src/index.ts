@@ -67,6 +67,7 @@ export type {
   UnknownEvent,
   UpdateCustomerParams,
   UpdateLicenseKeyParams,
+  UsageEvent,
   WebhookEvent,
   WebhookEventBase,
   WebhookEventType,

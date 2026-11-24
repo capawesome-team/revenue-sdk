@@ -324,6 +324,8 @@ export interface RevenueCapabilities {
   revoke: boolean;
   /** Whether a scheduled cancellation can be reverted via `subscriptions.uncancel`. */
   uncancel: boolean;
+  /** Whether `usage.report` accepts more than one event per call. */
+  usageBatchReporting: boolean;
   /** Whether `usage.report` is supported. */
   usageReporting: boolean;
 }
@@ -485,7 +487,7 @@ export interface UpdateLicenseKeyParams extends BaseParams {
   expiresAt?: Date | null;
 }
 
-export interface ReportUsageParams extends BaseParams {
+export interface UsageEvent {
   /** The provider's customer identifier. */
   customerId: string;
   /** The meter's event name. Must match the meter configuration exactly — providers match case-sensitively. */
@@ -494,10 +496,22 @@ export interface ReportUsageParams extends BaseParams {
   value?: number;
   /** Event properties the meter can filter or aggregate on. */
   metadata?: Metadata;
-  /** Deduplicates replays. Polar dedupes permanently, Dodo Payments per event ID, Stripe over a rolling 24 hours. */
+  /**
+   * Deduplicates replays. Polar dedupes permanently, Dodo Payments per event ID, Stripe over a rolling
+   * 24 hours. Must be unique per event, because events that share a key are deduplicated to one.
+   */
   idempotencyKey?: string;
   /** When the usage occurred. Backdating windows differ sharply per provider — see the usage docs. */
   timestamp?: Date;
+}
+
+export interface ReportUsageParams extends BaseParams {
+  /**
+   * More than one event requires the `usageBatchReporting` capability, and an empty list sends
+   * nothing. The SDK never splits a list, so keep it within the provider's limit (1,000 events on
+   * Dodo Payments).
+   */
+  events: UsageEvent[];
 }
 
 export interface RevenueProvider {

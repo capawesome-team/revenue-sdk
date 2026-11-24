@@ -691,8 +691,7 @@ describe('stripe', () => {
     it('posts a minimal meter event and discards the response', async () => {
       const { provider, stub } = setupUsage();
       const result = await provider.reportUsage({
-        customerId: 'cus_1',
-        eventName: 'ai_search_api',
+        events: [{ customerId: 'cus_1', eventName: 'ai_search_api' }],
       });
       const request = stub.requests[0]!;
       expect(request.method).toBe('POST');
@@ -710,12 +709,16 @@ describe('stripe', () => {
     it('sends value, metadata, identifier and a unix-second timestamp', async () => {
       const { provider, stub } = setupUsage();
       await provider.reportUsage({
-        customerId: 'cus_1',
-        eventName: 'ai_search_api',
-        value: 25,
-        metadata: { region: 'eu', premium: true },
-        idempotencyKey: 'idmp_1',
-        timestamp: new Date(REPORTED_AT * 1000),
+        events: [
+          {
+            customerId: 'cus_1',
+            eventName: 'ai_search_api',
+            value: 25,
+            metadata: { region: 'eu', premium: true },
+            idempotencyKey: 'idmp_1',
+            timestamp: new Date(REPORTED_AT * 1000),
+          },
+        ],
       });
       const form = new URLSearchParams(stub.requests[0]!.body);
       expect(form.get('event_name')).toBe('ai_search_api');
@@ -730,13 +733,26 @@ describe('stripe', () => {
     it('lets an explicit value override metadata.value', async () => {
       const { provider, stub } = setupUsage();
       await provider.reportUsage({
-        customerId: 'cus_1',
-        eventName: 'ai_search_api',
-        value: 25,
-        metadata: { value: 1 },
+        events: [
+          { customerId: 'cus_1', eventName: 'ai_search_api', value: 25, metadata: { value: 1 } },
+        ],
       });
       const form = new URLSearchParams(stub.requests[0]!.body);
       expect(form.getAll('payload[value]')).toEqual(['25']);
+    });
+
+    it('refuses more than one event without sending a request', async () => {
+      const { provider, stub } = setupUsage();
+      await expectRevenueError(
+        provider.reportUsage({
+          events: [
+            { customerId: 'cus_1', eventName: 'ai_search_api' },
+            { customerId: 'cus_2', eventName: 'ai_search_api' },
+          ],
+        }),
+        'unsupported',
+      );
+      expect(stub.requests).toHaveLength(0);
     });
   });
 

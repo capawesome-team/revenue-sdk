@@ -61,6 +61,10 @@ live data. There is no `server` option — swap the key via environment variable
   license). See [License keys](/docs/concepts/license-keys).
 - **No pay-what-you-want.** `checkouts.create({ customAmount })` throws `unsupported`
   (`checkoutCustomAmount: false`).
+- **One usage event per call.** `POST /v1/billing/meter_events`, the endpoint the SDK uses, records one
+  meter event per call. So `usageBatchReporting` is `false` and `usage.report` with more than one
+  event throws `unsupported`. Send a list of one per
+  call. See [Usage-based billing](/docs/concepts/usage-based-billing#reporting-many-events).
 - **Pause is immediate only.** `subscriptions.pause({ behavior: 'period_end' })` throws `unsupported` —
   scheduling a pause would require Subscription Schedules — and `pauseAtPeriodEnd` is always `false`.
 - **A checkout expiry must be 30 minutes to 24 hours out.** The SDK deliberately does not enforce

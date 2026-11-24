@@ -57,6 +57,7 @@ const CAPABILITIES: RevenueCapabilities = {
   prorationBehaviors: ['invoice_now', 'none', 'prorate'],
   revoke: true,
   uncancel: true,
+  usageBatchReporting: false,
   // Paddle has no usage API at all; usage must be metered externally and billed as a one-time
   // charge (`POST /subscriptions/{id}/charge`) with a price the merchant computes itself.
   usageReporting: false,

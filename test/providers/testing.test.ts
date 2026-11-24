@@ -133,19 +133,23 @@ describe('createInMemoryProvider', () => {
     expect(paused.resumesAt).toBeUndefined();
   });
 
-  it('records reported usage events in state and merges value into the payload', async () => {
+  it('records each reported usage event in state and merges value into the payload', async () => {
     const provider = createInMemoryProvider();
     const timestamp = new Date('2026-08-06T12:00:00Z');
     await provider.reportUsage({
-      customerId: 'customer-1',
-      eventName: 'api_request',
-      value: 5,
-      // An explicit `metadata.value` loses against `params.value`.
-      metadata: { value: 1, region: 'eu' },
-      idempotencyKey: 'evt-1',
-      timestamp,
+      events: [
+        {
+          customerId: 'customer-1',
+          eventName: 'api_request',
+          value: 5,
+          // An explicit `metadata.value` loses against `value`.
+          metadata: { value: 1, region: 'eu' },
+          idempotencyKey: 'evt-1',
+          timestamp,
+        },
+        { customerId: 'customer-2', eventName: 'tokens' },
+      ],
     });
-    await provider.reportUsage({ customerId: 'customer-2', eventName: 'tokens' });
 
     expect(provider.state.usageEvents).toEqual([
       {

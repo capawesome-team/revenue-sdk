@@ -147,10 +147,11 @@ Dodo specifics:
   body, so the SDK re-fetches the subscription to return its updated state.
 - **A customer needs both a name and an email**, which is one of the two reasons `customers.create`
   takes `name` as a required parameter. `metadata` is supported and is replaced wholesale on update.
-- **Usage events require an `event_id`.** When `idempotencyKey` is omitted the SDK generates a UUID —
-  unique per attempt, so **that call is not replay-safe**. A `timestamp` may be at most **one hour** old
-  (and 5 minutes ahead), otherwise the request is rejected with `400`; you cannot backfill. An unknown
-  `customer_id` is dropped silently rather than erroring. See
+- **Usage events require an `event_id`.** For an event without an `idempotencyKey` the SDK generates a
+  UUID. It is unique per attempt, so **that event is not replay-safe**. A `timestamp` may be at most
+  **one hour** old (and 5 minutes ahead), otherwise the request is rejected with `400`. You cannot
+  backfill. An unknown `customer_id` is dropped silently rather than erroring. One call takes at most
+  **1,000 events**, and the SDK does not split a longer list. See
   [Usage-based billing](/docs/concepts/usage-based-billing).
 
 <CardGroup cols={2}>
