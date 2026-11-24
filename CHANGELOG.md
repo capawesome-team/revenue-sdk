@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/capawesome-team/revenue-sdk/compare/v0.2.3...v0.3.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* usage.report takes { events: UsageEvent[] } in place of the fields of one event. Custom providers must add the usageBatchReporting capability and read params.events in reportUsage.
+
+### Features
+
+* take a list of events in usage.report ([#16](https://github.com/capawesome-team/revenue-sdk/issues/16)) ([5e853ef](https://github.com/capawesome-team/revenue-sdk/commit/5e853ef8626319595ec26ec646653d3d1f0366d1))
+
 ## [0.2.3](https://github.com/capawesome-team/revenue-sdk/compare/v0.2.2...v0.2.3) (2026-11-18)
 
 
